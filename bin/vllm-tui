@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# vllm-tui — run local LLMs behind one OpenAI-compatible endpoint, with a k9s-style TUI.
+#
+# Deployments (BACKEND in ~/.vllm-tui/env):
+#   vllm  Linux + NVIDIA (or AMD ROCm) GPU, vLLM in Docker. Tuned automatically for unified-memory boxes
+#         such as the NVIDIA GB10 / DGX Spark; works on discrete and multi-GPU machines too.
+#   mlx   Apple Silicon Macs: mlx-lm's OpenAI-compatible server, run as a launchd agent.
+#
+# Config:   ~/.vllm-tui/env              (BACKEND, API_KEY, HF_TOKEN, PORT, BACKEND_PORT, GPU_MEM, IMAGE, ...)
+# Profiles: ~/.vllm-tui/profiles/<name>  (line 1: HF repo id, `ENV K=V` lines, then one server flag per line)
+set -euo pipefail
+
+VLLM_TUI_HOME="${VLLM_TUI_HOME:-$HOME/.vllm-tui}"
+PROFILES="$VLLM_TUI_HOME/profiles"
+APP="$VLLM_TUI_HOME/app"
+PY="$APP/.venv/bin/python"
+HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
+mkdir -p "$PROFILES" "$VLLM_TUI_HOME/logs"
+[[ -f "$VLLM_TUI_HOME/env" ]] && source "$VLLM_TUI_HOME/env"
+BACKEND="${BACKEND:-vllm}"
+PORT="${PORT:-8000}"                                 # public endpoint (vllm-tui-proxy)
+BACKEND_PORT="${BACKEND_PORT:-${VLLM_PORT:-8001}}"   # model server, localhost only
+GPU_MEM="${GPU_MEM:-0.85}"
+IMAGE="${IMAGE:-vllm/vllm-openai:v0.33.0}"
+CONTAINER="${CONTAINER:-vllm-tui}"
+GPU_ARGS="${GPU_ARGS:---gpus all}"
+HF="$HOME/.local/bin/hf"
+OS="$(uname -s)"
+LABEL="dev.vllm-tui.backend"
+PROXY_LABEL="dev.vllm-tui.proxy"
+LOG="$VLLM_TUI_HOME/logs/backend.log"
+
+die() { echo "error: $*" >&2; exit 1; }
+need_key() { [[ -n "${API_KEY:-}" ]] || die "API_KEY not set in $VLLM_TUI_HOME/env"; }
+active_profile() { [[ -L "$VLLM_TUI_HOME/active" ]] && basename "$(readlink "$VLLM_TUI_HOME/active")" || true; }
+
+usage() {
+  cat <<EOF
+usage: vllm-tui [command] [args]          (no command: open the terminal UI)
+
+  pull <org/repo> [hf args]              download a model (skips files the server never reads)
+  info <org/repo>                        model analysis: fit, context, parsers, recommended settings
+  serve <org/repo> [--name N] [--env K=V]... [server flags...]
+                                         save a profile and (re)start the server with it
+  use <profile>                          switch to a saved profile
+  profiles                               list saved profiles (* = active)
+  ls | rm <org/repo>                     downloaded models / delete one
+  status | logs [-f] | test              health, server log, test request
+  stop | start | restart                 control the model server
+  proxy status|restart|logs              the request proxy in front of the server
+  upgrade <image:tag>                    (vllm) switch vLLM image
+  hw                                     detected hardware and deployment
+  key                                    print the API key
+  tui                                    open the terminal UI
+
+deployment: $BACKEND   endpoint: http://$(host_ip):$PORT/v1
+EOF
+}
+
+host_ip() {
+  if [[ -x "$PY" ]]; then "$PY" -c "import sys; sys.path.insert(0, '$APP'); import hw; print(hw.host_ip())" 2>/dev/null && return; fi
+  hostname -I 2>/dev/null | awk '{print $1}' || echo localhost
+}
+
+# ------------------------------------------------------------------ backend: vllm (docker)
+vllm_start_profile() {
+  local name="$1" repo="$2"; shift 2
+  local -a envs=() flags=() gpu_args=()
+  read -ra gpu_args <<< "$GPU_ARGS"
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "ENV "* ]]; then envs+=(-e "${1#ENV }"); else flags+=("$1"); fi; shift
+  done
+  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  docker run -d --name "$CONTAINER" \
+    ${gpu_args[@]+"${gpu_args[@]}"} --ipc=host --restart unless-stopped \
+    -p "127.0.0.1:$BACKEND_PORT:8000" \
+    -v "$HF_CACHE:/root/.cache/huggingface" \
+    -e HF_TOKEN="${HF_TOKEN:-}" \
+    -e VLLM_API_KEY="$API_KEY" \
+    ${envs[@]+"${envs[@]}"} \
+    --label vllm-tui.profile="$name" --label llm.profile="$name" \
+    "$IMAGE" \
+    "$repo" --served-model-name "$name" --host 0.0.0.0 --port 8000 \
+    --gpu-memory-utilization "$GPU_MEM" ${flags[@]+"${flags[@]}"} >/dev/null
+}
+vllm_running() { [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" == "true" ]]; }
+
+# ------------------------------------------------------------------ backend: mlx (launchd)
+plist_path() { echo "$HOME/Library/LaunchAgents/$1.plist"; }
+xml() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<< "$1"; }
+mlx_start_profile() {
+  local name="$1" repo="$2"; shift 2
+  local args="" envxml="<key>HF_TOKEN</key><string>$(xml "${HF_TOKEN:-}")</string>"
+  for a in "$PY" -m mlx_lm.server --model "$repo" --host 127.0.0.1 --port "$BACKEND_PORT"; do
+    args+="<string>$(xml "$a")</string>"; done
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "ENV "* ]]; then local kv="${1#ENV }"; envxml+="<key>$(xml "${kv%%=*}")</key><string>$(xml "${kv#*=}")</string>"
+    else args+="<string>$(xml "$1")</string>"; fi; shift
+  done
+  [[ -f "$LOG" ]] && mv "$LOG" "$LOG.1"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$(plist_path $LABEL)" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array>$args</array>
+  <key>EnvironmentVariables</key><dict>$envxml<key>VLLM_TUI_PROFILE</key><string>$(xml "$name")</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardOutPath</key><string>$LOG</string>
+  <key>StandardErrorPath</key><string>$LOG</string>
+</dict></plist>
+EOF
+  launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
+  launchctl enable "gui/$UID/$LABEL"
+  launchctl bootstrap "gui/$UID" "$(plist_path $LABEL)"
+}
+mlx_running() { launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -q "state = running"; }
+
+# ------------------------------------------------------------------ common
+run_profile() {
+  local name="$1" file="$PROFILES/$1"
+  [[ -f "$file" ]] || die "no profile '$name' (see: vllm-tui profiles)"
+  need_key
+  local repo; repo="$(head -1 "$file")"
+  local -a lines=()
+  while IFS= read -r l; do [[ -n "$l" ]] && lines+=("$l"); done < <(tail -n +2 "$file")
+  echo "==> starting $name ($repo) [$BACKEND]"
+  if [[ "$BACKEND" == "mlx" ]]; then mlx_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}
+  else vllm_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}; fi
+  ln -sfn "$file" "$VLLM_TUI_HOME/active"
+  wait_ready
+}
+
+backend_running() { if [[ "$BACKEND" == "mlx" ]]; then mlx_running; else vllm_running; fi; }
+
+wait_ready() {
+  echo -n "==> waiting for the model server (first load of a model can take a few minutes)"
+  for _ in $(seq 1 720); do
+    if curl -sf -H "Authorization: Bearer $API_KEY" "localhost:$BACKEND_PORT/v1/models" >/dev/null 2>&1; then
+      echo; echo "==> ready: $(active_profile) on http://$(host_ip):$PORT/v1"; return 0
+    fi
+    if ! backend_running; then
+      echo; backend_logs --tail 40; die "model server exited"
+    fi
+    echo -n .; sleep 5
+  done
+  echo; die "timed out; check: vllm-tui logs"
+}
+
+backend_logs() {
+  if [[ "$BACKEND" == "mlx" ]]; then
+    if [[ "${1:-}" == "-f" ]]; then tail -n 100 -F "$LOG"; else tail -n "${2:-100}" "$LOG" 2>/dev/null; fi
+  else
+    if [[ "${1:-}" == "-f" ]]; then docker logs -f --tail 100 "$CONTAINER"; else docker logs --tail "${2:-100}" "$CONTAINER" 2>&1; fi
+  fi
+}
+
+proxy_ctl() {
+  local action="${1:-status}"
+  if [[ "$OS" == "Darwin" ]]; then
+    case "$action" in
+      status) launchctl print "gui/$UID/$PROXY_LABEL" 2>/dev/null | grep -E "state =|pid =" || echo "vllm-tui-proxy: not running" ;;
+      start) launchctl bootstrap "gui/$UID" "$(plist_path $PROXY_LABEL)" ;;
+      stop) launchctl bootout "gui/$UID/$PROXY_LABEL" ;;
+      restart) launchctl kickstart -k "gui/$UID/$PROXY_LABEL" ;;
+      logs) tail -n 100 "$VLLM_TUI_HOME/logs/proxy.log" ;;
+      *) die "usage: vllm-tui proxy status|start|stop|restart|logs" ;;
+    esac
+  else
+    case "$action" in
+      status) systemctl status vllm-tui-proxy --no-pager | head -5 ;;
+      start|stop|restart) sudo systemctl "$action" vllm-tui-proxy ;;
+      logs) journalctl -u vllm-tui-proxy -n 100 --no-pager ;;
+      *) die "usage: vllm-tui proxy status|start|stop|restart|logs" ;;
+    esac
+  fi
+}
+
+cmd="${1:-tui}"; shift || true
+case "$cmd" in
+  pull)
+    [[ $# -ge 1 ]] || die "usage: vllm-tui pull <org/repo>"
+    extra=()
+    if [[ " $* " != *" --include "* && " $* " != *" --exclude "* ]]; then
+      pats=()
+      while IFS= read -r pat; do [[ -n "$pat" ]] && pats+=("$pat") && extra+=(--exclude "$pat"); done \
+        < <("$PY" "$APP/hfmeta.py" exclude "$1" 2>/dev/null)
+      [[ ${#pats[@]} -gt 0 ]] && echo "==> skipping files the server doesn't use: ${pats[*]}  (pass --include/--exclude to override)"
+    fi
+    HF_TOKEN="${HF_TOKEN:-}" "$HF" download "$@" ${extra[@]+"${extra[@]}"} ;;
+  info) [[ $# -eq 1 ]] || die "usage: vllm-tui info <org/repo>"; "$PY" "$APP/hfmeta.py" report "$1" ;;
+  serve)
+    [[ $# -ge 1 ]] || die "usage: vllm-tui serve <org/repo> [--name N] [--env K=V]... [flags...]"
+    repo="$1"; shift
+    name="$(basename "$repo" | tr 'A-Z' 'a-z')"; envs=()
+    while [[ "${1:-}" == "--name" || "${1:-}" == "--env" ]]; do
+      if [[ "$1" == "--name" ]]; then name="$2"; else envs+=("$2"); fi; shift 2
+    done
+    { echo "$repo"; for e in ${envs[@]+"${envs[@]}"}; do echo "ENV $e"; done; for a in "$@"; do echo "$a"; done; } > "$PROFILES/$name"
+    echo "==> saved profile '$name'"
+    run_profile "$name" ;;
+  use) [[ $# -eq 1 ]] || die "usage: vllm-tui use <profile>"; run_profile "$1" ;;
+  profiles)
+    act="$(active_profile)"
+    for f in "$PROFILES"/*; do [[ -f "$f" ]] || continue
+      n="$(basename "$f")"; m=" "; [[ "$n" == "$act" ]] && m="*"
+      printf "%s %-28s %s  %s\n" "$m" "$n" "$(head -1 "$f")" "$(tail -n +2 "$f" | tr '\n' ' ')"
+    done ;;
+  ls) "$HF" cache ls 2>/dev/null || "$HF" cache scan ;;
+  rm) [[ $# -eq 1 ]] || die "usage: vllm-tui rm <org/repo>"; "$HF" cache rm "model/$1" -y ;;
+  status)
+    echo "deployment: $BACKEND   profile: $(active_profile)"
+    backend_running && echo "server: running" || echo "server: stopped"
+    proxy_ctl status | head -2
+    need_key; curl -s -m 3 -H "Authorization: Bearer $API_KEY" "localhost:$BACKEND_PORT/v1/models" \
+      | python3 -c 'import sys,json;[print("serving:",m["id"]) for m in json.load(sys.stdin)["data"]]' 2>/dev/null \
+      || echo "serving: (not ready)" ;;
+  logs) backend_logs "${1:-}" ;;
+  stop)
+    if [[ "$BACKEND" == "mlx" ]]; then launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true; launchctl disable "gui/$UID/$LABEL"
+    else docker stop "$CONTAINER" >/dev/null; fi; echo "stopped" ;;
+  start)
+    need_key
+    if [[ "$BACKEND" == "mlx" ]]; then
+      launchctl enable "gui/$UID/$LABEL"; launchctl bootstrap "gui/$UID" "$(plist_path $LABEL)" 2>/dev/null || true
+    else docker start "$CONTAINER" >/dev/null; fi
+    wait_ready ;;
+  restart)
+    need_key
+    if [[ "$BACKEND" == "mlx" ]]; then launchctl kickstart -k "gui/$UID/$LABEL"; else docker restart "$CONTAINER" >/dev/null; fi
+    wait_ready ;;
+  test)
+    need_key; m="$(active_profile)"
+    curl -s -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' "localhost:$PORT/v1/chat/completions" \
+      -d "{\"model\":\"$m\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in five words.\"}],\"max_tokens\":512}" \
+      | python3 -c 'import sys,json;r=json.load(sys.stdin);print(r["choices"][0]["message"]["content"]);print(r["usage"])' ;;
+  key) need_key; echo "$API_KEY" ;;
+  hw) "$PY" "$APP/hw.py" ;;
+  upgrade)
+    [[ "$BACKEND" == "vllm" ]] || die "upgrade is for the vllm deployment (mlx: re-run install.sh to update mlx-lm)"
+    [[ $# -eq 1 ]] || die "usage: vllm-tui upgrade <image:tag>"
+    docker pull "$1"
+    sed -i '/^IMAGE=/d' "$VLLM_TUI_HOME/env"; echo "IMAGE=$1" >> "$VLLM_TUI_HOME/env"; IMAGE="$1"
+    a="$(active_profile)"; [[ -n "$a" ]] && run_profile "$a" ;;
+  proxy) proxy_ctl "${1:-status}" ;;
+  tui|ui) exec "$PY" "$APP/tui.py" "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac
