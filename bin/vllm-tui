@@ -38,6 +38,8 @@ usage() {
   cat <<EOF
 usage: vllm-tui [command] [args]          (no command: open the terminal UI)
 
+  quickstart [org/repo]                  pull and serve a model with recommended settings
+                                         (no repo: the largest starter model that fits this machine)
   pull <org/repo> [hf args]              download a model (skips files the server never reads)
   info <org/repo>                        model analysis: fit, context, parsers, recommended settings
   serve <org/repo> [--name N] [--env K=V]... [server flags...]
@@ -52,6 +54,8 @@ usage: vllm-tui [command] [args]          (no command: open the terminal UI)
   hw                                     detected hardware and deployment
   key                                    print the API key
   tui                                    open the terminal UI
+  uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
+                                         remove vllm-tui (downloaded models stay unless --remove-models)
 
 deployment: $BACKEND   endpoint: http://$(host_ip):$PORT/v1
 EOF
@@ -112,9 +116,20 @@ mlx_start_profile() {
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict></plist>
 EOF
-  launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-  launchctl enable "gui/$UID/$LABEL"
-  launchctl bootstrap "gui/$UID" "$(plist_path $LABEL)"
+  launchd_load "$LABEL"
+}
+# (re)load a launchd agent. bootout returns before the old job is gone, and bootstrapping too early fails with
+# "Input/output error", so wait for it to disappear and retry.
+launchd_load() {
+  local label="$1" i
+  launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+  for i in $(seq 1 50); do launchctl print "gui/$UID/$label" >/dev/null 2>&1 || break; sleep 0.2; done
+  launchctl enable "gui/$UID/$label"
+  for i in 1 2 3 4 5; do
+    launchctl bootstrap "gui/$UID" "$(plist_path "$label")" 2>/dev/null && return 0
+    sleep 1
+  done
+  die "launchctl couldn't start $label"
 }
 mlx_running() { launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -q "state = running"; }
 
@@ -162,7 +177,7 @@ proxy_ctl() {
   if [[ "$OS" == "Darwin" ]]; then
     case "$action" in
       status) launchctl print "gui/$UID/$PROXY_LABEL" 2>/dev/null | grep -E "state =|pid =" || echo "vllm-tui-proxy: not running" ;;
-      start) launchctl bootstrap "gui/$UID" "$(plist_path $PROXY_LABEL)" ;;
+      start) launchd_load "$PROXY_LABEL" ;;
       stop) launchctl bootout "gui/$UID/$PROXY_LABEL" ;;
       restart) launchctl kickstart -k "gui/$UID/$PROXY_LABEL" ;;
       logs) tail -n 100 "$VLLM_TUI_HOME/logs/proxy.log" ;;
@@ -191,6 +206,18 @@ case "$cmd" in
     fi
     HF_TOKEN="${HF_TOKEN:-}" "$HF" download "$@" ${extra[@]+"${extra[@]}"} ;;
   info) [[ $# -eq 1 ]] || die "usage: vllm-tui info <org/repo>"; "$PY" "$APP/hfmeta.py" report "$1" ;;
+  quickstart)
+    repo="${1:-}"
+    if [[ -z "$repo" ]]; then
+      echo "==> picking a starter model that fits this machine"
+      repo="$("$PY" "$APP/hfmeta.py" starter)" || die "no starter model fits; pick one with: vllm-tui info <org/repo>"
+    fi
+    echo "==> model: $repo"
+    args="$("$PY" "$APP/hfmeta.py" serveargs "$repo")" || die "$repo can't be served here (see: vllm-tui info $repo)"
+    "$0" pull "$repo"
+    eval "set -- $args"
+    echo "==> serving with the recommended settings: $*"
+    exec "$0" serve "$@" ;;
   serve)
     [[ $# -ge 1 ]] || die "usage: vllm-tui serve <org/repo> [--name N] [--env K=V]... [flags...]"
     repo="$1"; shift
@@ -224,7 +251,7 @@ case "$cmd" in
   start)
     need_key
     if [[ "$BACKEND" == "mlx" ]]; then
-      launchctl enable "gui/$UID/$LABEL"; launchctl bootstrap "gui/$UID" "$(plist_path $LABEL)" 2>/dev/null || true
+      launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || launchd_load "$LABEL"
     else docker start "$CONTAINER" >/dev/null; fi
     wait_ready ;;
   restart)
@@ -246,6 +273,75 @@ case "$cmd" in
     a="$(active_profile)"; [[ -n "$a" ]] && run_profile "$a" ;;
   proxy) proxy_ctl "${1:-status}" ;;
   tui|ui) exec "$PY" "$APP/tui.py" "$@" ;;
+  uninstall)
+    yes=0 keep=0 rmmodels=0 rmimage=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -y|--yes) yes=1 ;; --keep-config) keep=1 ;; --remove-models) rmmodels=1 ;; --remove-image) rmimage=1 ;;
+        *) die "usage: vllm-tui uninstall [-y] [--keep-config] [--remove-models] [--remove-image]" ;;
+      esac; shift
+    done
+    repos=()
+    for f in "$PROFILES"/*; do [[ -f "$f" ]] && repos+=("$(head -1 "$f")"); done
+    echo "This removes vllm-tui from this machine:"
+    echo "  - the model server ($([[ "$BACKEND" == "mlx" ]] && echo "launchd agent $LABEL" || echo "container $CONTAINER"))"
+    echo "  - the request proxy service, the vllm-tui command"
+    [[ $keep -eq 1 ]] && echo "  - $VLLM_TUI_HOME/{app,bin,src,cache,logs} (settings, profiles and history are kept)" \
+                      || echo "  - $VLLM_TUI_HOME (settings, API key, profiles, request history)"
+    [[ $rmmodels -eq 1 && ${#repos[@]} -gt 0 ]] && echo "  - downloaded models used by your profiles: ${repos[*]}"
+    [[ $rmimage -eq 1 && "$BACKEND" == "vllm" ]] && echo "  - the Docker image $IMAGE"
+    [[ $rmmodels -eq 0 ]] && echo "Downloaded models stay in $HF_CACHE (add --remove-models to delete the ones your profiles use)."
+    if [[ $yes -eq 0 ]]; then
+      [[ -r /dev/tty ]] || die "no terminal to confirm on; re-run with -y"
+      read -r -p "Continue? [y/N] " ans < /dev/tty
+      [[ "$ans" == [yY]* ]] || { echo "cancelled"; exit 1; }
+    fi
+    if [[ "$BACKEND" == "mlx" ]]; then
+      launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
+      rm -f "$(plist_path $LABEL)"
+    else
+      docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+      [[ $rmimage -eq 1 ]] && docker rmi "$IMAGE" >/dev/null 2>&1 || true
+    fi
+    echo "==> model server removed"
+    if [[ "$OS" == "Darwin" ]]; then
+      launchctl bootout "gui/$UID/$PROXY_LABEL" 2>/dev/null || true
+      rm -f "$(plist_path $PROXY_LABEL)"
+    else
+      sudo systemctl disable --now vllm-tui-proxy >/dev/null 2>&1 || true
+      sudo rm -f /etc/systemd/system/vllm-tui-proxy.service
+      sudo systemctl daemon-reload
+    fi
+    echo "==> proxy service removed"
+    if [[ $rmmodels -eq 1 && ${#repos[@]} -gt 0 && -x "$PY" ]]; then
+      "$PY" - "${repos[@]}" <<'PYEOF2'
+import sys
+from huggingface_hub import scan_cache_dir
+info = scan_cache_dir()
+hashes = [rev.commit_hash for r in info.repos if r.repo_id in sys.argv[1:] for rev in r.revisions]
+if hashes:
+    strategy = info.delete_revisions(*hashes)
+    print(f"==> deleted models, freed {strategy.expected_freed_size / 1e9:.1f} GB")
+    strategy.execute()
+PYEOF2
+    fi
+    for link in /usr/local/bin/vllm-tui /usr/local/bin/llm "$HOME/.local/bin/vllm-tui"; do
+      if [[ -L "$link" && "$(readlink "$link")" == "$VLLM_TUI_HOME/bin/vllm-tui" ]]; then
+        if [[ -w "$(dirname "$link")" ]]; then rm -f "$link"; else sudo rm -f "$link"; fi
+      fi
+    done
+    if [[ $keep -eq 1 ]]; then
+      rm -rf "$VLLM_TUI_HOME/app" "$VLLM_TUI_HOME/bin" "$VLLM_TUI_HOME/src" "$VLLM_TUI_HOME/cache" "$VLLM_TUI_HOME/logs" \
+             "$VLLM_TUI_HOME/downloads" "$VLLM_TUI_HOME/active"
+    else
+      rm -rf "$VLLM_TUI_HOME"
+    fi
+    left="uv and the hf CLI (~/.local/bin)"
+    [[ $rmmodels -eq 0 ]] && left+=", downloaded models ($HF_CACHE)"
+    [[ $rmimage -eq 0 && "$BACKEND" == "vllm" ]] && left+=", the vLLM Docker image"
+    [[ $keep -eq 1 ]] && left+=", your settings/profiles/history in $VLLM_TUI_HOME"
+    echo "==> vllm-tui uninstalled. Left in place: $left."
+    exit 0 ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;
 esac

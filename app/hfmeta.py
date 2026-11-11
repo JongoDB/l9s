@@ -987,13 +987,21 @@ def render_markdown(A: dict, caps: dict | None) -> str:
     return "\n".join(L)
 
 
+# starter models for `vllm-tui quickstart`, largest first; the first one that fits is used
+STARTERS = {
+    "vllm": ["Qwen/Qwen3-8B-FP8", "Qwen/Qwen3-4B-FP8", "Qwen/Qwen3-1.7B-FP8", "Qwen/Qwen3-0.6B"],
+    "mlx": ["mlx-community/Qwen3-8B-4bit", "mlx-community/Qwen3-4B-4bit", "mlx-community/Qwen3-0.6B-4bit"],
+}
+
+
 # ======================================================================= CLI (used by `vllm-tui pull` / `vllm-tui info`)
 def _cli() -> None:
     import os
     import sys
     from huggingface_hub import HfApi
-    if len(sys.argv) != 3 or sys.argv[1] not in ("exclude", "report"):
-        print("usage: hfmeta.py exclude|report <org/repo>", file=sys.stderr)
+    if not (len(sys.argv) == 3 and sys.argv[1] in ("exclude", "report", "serveargs")
+            or len(sys.argv) == 2 and sys.argv[1] == "starter"):
+        print("usage: hfmeta.py exclude|report|serveargs <org/repo>  |  hfmeta.py starter", file=sys.stderr)
         sys.exit(2)
     env = {}
     try:
@@ -1004,7 +1012,37 @@ def _cli() -> None:
     except FileNotFoundError:
         pass
     token = env.get("HF_TOKEN") or os.environ.get("HF_TOKEN") or None
-    meta = fetch_meta(sys.argv[2], HfApi(token=token), token)
+    api = HfApi(token=token)
+    if sys.argv[1] in ("starter", "serveargs"):
+        import hw
+        h = hw.detect()
+        backend = env.get("BACKEND", h.backend)
+        caps = load_caps("mlx" if backend == "mlx" else env.get("IMAGE", h.default_image()))
+
+        def analysis(repo: str) -> dict:
+            return analyze(fetch_meta(repo, api, token), caps, h.pool_per_gpu(), float(env.get("GPU_MEM", "0.85")),
+                           backend, max(1, h.n_gpus), h.card_tags())
+        if sys.argv[1] == "starter":
+            for repo in STARTERS["mlx" if backend == "mlx" else "vllm"]:
+                A = analysis(repo)
+                if not A["blockers"] and (A["ctx"] or 0) >= 16384:
+                    print(repo)
+                    return
+                print(f"skip {repo}: {'; '.join(A['blockers']) or 'not enough memory for 16K context'}", file=sys.stderr)
+            sys.exit(1)
+        A = analysis(sys.argv[2])
+        if A["blockers"]:
+            print("\n".join(A["blockers"]), file=sys.stderr)
+            sys.exit(3)
+        pr = A["presets"][0]
+        args = [sys.argv[2], "--name", sys.argv[2].split("/")[-1].lower()]
+        for k, v in pr["env"].items():
+            args += ["--env", f"{k}={v}"]
+        for f, (v, _src) in pr["flags"].items():
+            args += [f] + ([v] if v is not None else [])
+        print(" ".join(shlex.quote(a) for a in args))
+        return
+    meta = fetch_meta(sys.argv[2], api, token)
     if sys.argv[1] == "exclude":
         print("\n".join(download_plan(meta.get("files", []))["exclude"]))
         return

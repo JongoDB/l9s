@@ -100,6 +100,17 @@ Speculative-decoding drafter models referenced by a preset are pulled too.
 
 ---
 
+## Install, quick start, uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash          # install + starter model
+curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash -s -- --no-model
+vllm-tui quickstart [org/repo]     # pull + serve with recommended settings (no repo: starter that fits)
+vllm-tui uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
+```
+
+Re-running the one-liner updates vllm-tui in place (code in `~/.vllm-tui/src`).
+
 ## Everyday commands
 
 ```bash

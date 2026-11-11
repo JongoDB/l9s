@@ -58,35 +58,47 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
 
 ## Install
 
+One line, on the GPU box or Mac that will serve the model:
+
 ```bash
-git clone https://github.com/JongoDB/vllm-tui.git
-cd vllm-tui
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash
 ```
+
+That downloads vllm-tui, installs it, and **starts serving a starter model** sized for the machine (the largest of
+Qwen3 8B / 4B / 1.7B / 0.6B that fits with 16K+ context: FP8 builds for vLLM, 4-bit MLX builds on a Mac), so the
+endpoint answers right away. Options go after `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash -s -- --model Qwen/Qwen3-4B-FP8
+curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash -s -- --no-model
+```
+
+Or from a clone: `git clone https://github.com/JongoDB/vllm-tui.git && cd vllm-tui && ./install.sh [--model <repo>|--no-model]`.
 
 The installer detects your hardware and deployment, sets up [uv](https://github.com/astral-sh/uv) and a private Python
 environment in `~/.vllm-tui`, installs the `vllm-tui` command, the request proxy as a service (systemd / launchd) and
-the model server (vLLM image, or mlx-lm), generates an API key, and probes what the server supports. Re-running it
-updates vllm-tui and keeps your settings, profiles and history.
+the model server (vLLM image, or mlx-lm), generates an API key, and probes what the server supports. Running it again
+updates vllm-tui and keeps your settings, profiles and history (no starter model if you already have one).
 
 **Linux (vllm) needs:** Docker with GPU access (`docker run --gpus all …` works: NVIDIA container toolkit, or ROCm),
 and `sudo` for the `vllm-tui` symlink and the proxy service.
 **macOS (mlx) needs:** an Apple Silicon Mac; nothing else (no Docker, no sudo).
 
+**Uninstall:** `vllm-tui uninstall` removes the model server, the proxy service, the command and `~/.vllm-tui`.
+Downloaded models stay in the Hugging Face cache unless you add `--remove-models`; `--keep-config` keeps your
+settings, profiles and history; `--remove-image` also deletes the vLLM Docker image.
+
 ## Quick start
 
 ```bash
-vllm-tui                                     # TUI: 4 = Hub → search → highlight → `s` (pull, then serve)
+vllm-tui                                   # TUI: watch the server and requests; 4 = Hub to find more models
 
-# or from the shell
-vllm-tui info Qwen/Qwen3-0.6B                # does it fit, how much context, recommended settings
-vllm-tui pull Qwen/Qwen3-0.6B
-vllm-tui serve Qwen/Qwen3-0.6B --name qwen3 --max-model-len 40960 \
-  --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
+vllm-tui quickstart Qwen/Qwen3-8B-FP8      # pull + serve any model with its recommended settings
+vllm-tui info Qwen/Qwen3-8B-FP8            # just the analysis: does it fit, how much context, settings
 vllm-tui test
 ```
 
-On a Mac use MLX builds, e.g. `vllm-tui serve mlx-community/Qwen3-8B-4bit --name qwen3-8b`.
+On a Mac, use MLX builds, e.g. `vllm-tui quickstart mlx-community/Qwen3-8B-4bit`.
 
 Point any OpenAI-compatible client at it:
 
@@ -102,6 +114,7 @@ On a remote box, run the TUI over SSH: `ssh -t <host> vllm-tui`.
 | Command | |
 |---|---|
 | `vllm-tui` | terminal UI |
+| `vllm-tui quickstart [repo]` | pull and serve a model with its recommended settings (no repo: starter model that fits) |
 | `vllm-tui info <repo>` | model analysis and recommended serve command |
 | `vllm-tui pull <repo>` | download (skips files the server doesn't use; `--include/--exclude` to override) |
 | `vllm-tui serve <repo> [--name N] [--env K=V]... [server flags]` | save a profile and switch the server to it |
@@ -112,6 +125,7 @@ On a remote box, run the TUI over SSH: `ssh -t <host> vllm-tui`.
 | `vllm-tui proxy status\|restart\|logs` | the request proxy |
 | `vllm-tui upgrade <image:tag>` | (vllm) switch vLLM version |
 | `vllm-tui hw` · `vllm-tui key` | detected hardware / API key |
+| `vllm-tui uninstall [-y] [--keep-config] [--remove-models] [--remove-image]` | remove vllm-tui |
 
 Full reference: [docs/USAGE.md](docs/USAGE.md).
 
@@ -126,7 +140,9 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 
 | Path | |
 |---|---|
-| `bin/vllm-tui` | CLI (bash): profiles, serve/switch, pull, status; drives Docker (vllm) or launchd (mlx) |
+| `get.sh` | one-line installer: downloads a release and runs `install.sh` |
+| `install.sh` | installer (both deployments); `--model <repo>` / `--no-model` |
+| `bin/vllm-tui` | CLI (bash): profiles, serve/switch, pull, quickstart, status, uninstall; drives Docker (vllm) or launchd (mlx) |
 | `app/tui.py` | terminal UI ([Textual](https://github.com/Textualize/textual)) |
 | `app/hfmeta.py` | model analysis: Hub metadata, memory and KV math, card command extraction and sanitizing, presets |
 | `app/hw.py` | hardware detection: vendor, GPUs, unified vs dedicated memory, Docker GPU flags, live GPU stats |

@@ -5,6 +5,17 @@
 # Safe to re-run: updates the code and keeps ~/.vllm-tui/env, profiles and history.
 set -euo pipefail
 cd "$(dirname "$0")"
+# options: --model <org/repo>  serve this model when done
+#          --no-model          don't serve a starter model
+MODEL="" NO_MODEL=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model) MODEL="${2:?--model needs an org/repo}"; shift 2 ;;
+    --no-model) NO_MODEL=1; shift ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 1 ;;
+  esac
+done
 VLLM_TUI_HOME="${VLLM_TUI_HOME:-$HOME/.vllm-tui}"
 OS="$(uname -s)"
 UV="$HOME/.local/bin/uv"
@@ -123,6 +134,13 @@ print(f"    {sys.argv[1] if sys.argv[1] != 'mlx' else 'mlx-lm'} {c.get('version'
 PY
 
 "$PY" "$VLLM_TUI_HOME/app/hw.py" | sed 's/^/    /'
+
+# ---------------------------------------------------------------- starter model
+if [[ $NO_MODEL -eq 0 ]] && { [[ -n "$MODEL" ]] || [[ ! -L "$VLLM_TUI_HOME/active" ]]; }; then
+  say "starting a model${MODEL:+: $MODEL} (skip with --no-model)"
+  "$VLLM_TUI_HOME/bin/vllm-tui" quickstart ${MODEL:+"$MODEL"} \
+    || echo "    couldn't start a model automatically; pick one with: vllm-tui  (Hub tab) or vllm-tui quickstart <org/repo>"
+fi
 IP="$("$PY" -c "import sys; sys.path.insert(0, '$VLLM_TUI_HOME/app'); import hw; print(hw.host_ip())")"
 cat <<MSG
 
