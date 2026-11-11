@@ -909,12 +909,17 @@ L9S_THEME = Theme(name="l9s", primary=K9["dodger"], secondary=K9["cadet"], accen
                   error=K9["orangered"], success=K9["greenyellow"], foreground="#E4E4E4", background="#000000",
                   surface="#000000", panel="#121212", dark=True)
 LOGO = r"""
- _   ___
-| | / _ \  ___
-| || (_) |/ __|
-| | \__, |\__ \
-|_|   /_/ |___/
+ _       ___
+| |     / _ \  ___
+| |    | (_) |/ __|
+| |___  \__, |\__ \
+|_____|   /_/ |___/
 """.strip("\n")
+
+
+def clk(action: str, text: str, style: str = "") -> str:
+    """Clickable markup: clicking runs an app action (same as its key)."""
+    return f"[@click=app.{action}]" + (f"[{style}]{text}[/]" if style else text) + "[/]"
 
 
 def ktitle(name: str, count=None, scope: str | None = None, filt: str | None = None, extra: str = "") -> str:
@@ -1116,8 +1121,8 @@ class LLMTui(App):
                 yield DataTable(id="models", cursor_type="row", zebra_stripes=False)
             with TabPane("4 Hub", id="hub"):
                 with Horizontal(id="hub-bar"):
-                    yield Input(placeholder="search Hugging Face, enter to search, esc to leave the box "
-                                            "(e.g. qwen3.8 nvfp4, heretic, coder fp8)", id="hub-q")
+                    yield Input(placeholder="/ to search Hugging Face · enter searches · esc back to results "
+                                            "(e.g. qwen3.8 nvfp4, coder fp8)", id="hub-q")
                     yield Select([("most downloads", "downloads"), ("trending", "trendingScore"),
                                   ("most likes", "likes"), ("newest", "createdAt"),
                                   ("recently updated", "lastModified")],
@@ -1129,13 +1134,14 @@ class LLMTui(App):
                         with Horizontal(id="hub-btns"):
                             yield Button("Pull (p)", id="b-pull", variant="primary")
                             yield Button("Pull + serve (s)", id="b-pullserve", variant="success")
-                        yield Static("[dim]Search, then highlight a result to see details and its model card.[/dim]",
+                        yield Static("[dim]" + clk("filter", "Press / to search Hugging Face") + ", then highlight a result to "
+                                     "see details and its model card.[/dim]",
                                      id="hub-meta")
                         with VerticalScroll():
                             yield Markdown("", id="hub-card")
             with TabPane("5 Downloads", id="downloads"):
                 yield Label("Downloads   [dim]run in the background and keep going if you quit · enter show log · "
-                            "x cancel / clear[/dim]", classes="section")
+                            + clk("delete", "x cancel / clear") + "[/dim]", classes="section")
                 yield DataTable(id="dls", cursor_type="row", zebra_stripes=False)
             with TabPane("6 Events", id="events"):
                 yield DataTable(id="events-t", cursor_type="row", zebra_stripes=False)
@@ -1204,7 +1210,7 @@ class LLMTui(App):
         views = []
         for i, t in enumerate(TABS):
             style = f"b {K9['white']}" if t == tab else K9["gray"]
-            views.append((f"<{i + 1}> {t}", f"[{K9['fuchsia']}]<{i + 1}>[/] [{style}]{t}[/]"))
+            views.append((f"<{i + 1}> {t}", clk(f"tab('{t}')", f"[{K9['fuchsia']}]<{i + 1}>[/] [{style}]{t}[/]")))
         acts = []
         for b in self.BINDINGS:
             if not b.show or b.action.startswith("tab("):
@@ -1212,7 +1218,8 @@ class LLMTui(App):
             if not self.check_action(b.action.split("(")[0], ()):
                 continue
             key = b.key_display or b.key
-            acts.append((f"<{key}> {b.description}", f"[{K9['dodger']}]<{key}>[/] [{K9['gray']}]{b.description}[/]"))
+            acts.append((f"<{key}> {b.description}",
+                         clk(b.action, f"[{K9['dodger']}]<{key}>[/] [{K9['gray']}]{b.description}[/]")))
         cols = [views] + [acts[i:i + 7] for i in range(0, len(acts), 7)]
         widths = [max(len(p) for p, _ in c) + 3 for c in cols]
         lines = []
@@ -1245,11 +1252,11 @@ class LLMTui(App):
         px = s.get("proxy")
         mode = "unified" if self.hw.unified else f"{self.hw.n_gpus}× GPU" if self.hw.n_gpus > 1 else "GPU"
         lines = [
-            lab("Model:") + val(active_profile() or "-"),
+            lab("Model:") + clk("tab('local')", val(active_profile() or "-")),
             lab("Deploy:") + val(f"{self.backend} · {self.hw.gpus[0].name if self.hw.gpus else 'cpu'} ({mode})"),
-            lab("Endpoint:") + val(self.endpoint),
-            lab("Status:") + val(f"● {badge}", color) + (f" {val('in flight ' + str(px['active']))}" if px and px.get("active") else ""),
-            lab("Server:") + val(s.get("image") or self.server_name()),
+            lab("Endpoint:") + clk("connect", val(self.endpoint)),
+            lab("Status:") + clk("tab('server')", val(f"● {badge}", color)) + (f" {val('in flight ' + str(px['active']))}" if px and px.get("active") else ""),
+            lab("Server:") + clk("tab('settings')", val(s.get("image") or self.server_name())),
             lab("GPU:") + val(f"{(sum(util) / len(util)) if util else 0:.0f}%"),
             lab("MEM:") + val(f"{s.get('mem_used', 0) / 1e9:.0f}/{self.mem_total / 1e9:.0f} GB"),
         ]
@@ -1258,6 +1265,11 @@ class LLMTui(App):
     def on_mount(self) -> None:
         self.register_theme(L9S_THEME)
         self.theme = "l9s"
+        # clickable hints keep their own k9s colors (Textual would otherwise restyle every clickable span)
+        for sel in ("#hdr-keys", "#hdr-info", "#req-summary", "#local-hdr1", "#local-hdr2", "#st-head", "#hub-meta",
+                    ".section"):
+            for w in self.query(sel):
+                w.auto_links = False
         self.set_timer(0.1, self.render_chrome)
         self.query_one("#srvlog", Log).highlighter = LogHighlighter()
         self.sub_title = self.endpoint
@@ -1368,11 +1380,14 @@ class LLMTui(App):
             self.refresh_local()
             self.query_one("#models", DataTable).focus()
         elif pid == "hub":
-            self.query_one("#hub-q", Input).focus()
+            self.query_one("#hub-results", DataTable).focus()
         elif pid == "downloads":
             self.query_one("#dls", DataTable).focus()
         elif pid == "server":
-            self.query_one("#srvlog", Log).focus()
+            lg = self.query_one("#srvlog", Log)
+            lg.focus()
+            if lg.auto_scroll:
+                self.call_after_refresh(lambda: lg.scroll_end(animate=False))
         elif pid == "settings":
             self.load_settings_form()
         elif pid == "requests":
@@ -1419,6 +1434,11 @@ class LLMTui(App):
         return None
 
     def action_filter(self) -> None:
+        if self.query_one(TabbedContent).active == "hub":  # k9s-style: `/` is the search prompt here
+            q = self.query_one("#hub-q", Input)
+            q.focus()
+            q.cursor_position = len(q.value)
+            return
         target = self.filter_target()
         if not target:
             return
@@ -1644,8 +1664,10 @@ class LLMTui(App):
             f"speed [b]{med(tps) or 0:.1f}[/b] tok/s   ·   "
             f"tokens {human(sum(r.get('prompt_tokens') or 0 for r in win))} in / "
             f"{human(sum(r.get('gen_tokens') or 0 for r in win))} out\n"
-            f"[dim]enter/d describe · ctrl+k cancel in-flight · a in-flight only{' [b](on)[/b]' if self.req_active_only else ''}"
-            f" · / filter · y copy id · history: {len(rec)} requests in ~/.l9s/requests.jsonl[/dim]")
+            + "[dim]" + clk("describe", "enter/d describe") + " · " + clk("kill", "ctrl+k cancel in-flight") + " · "
+            + clk("toggle_active", "a in-flight only" + (" [b](on)[/b]" if self.req_active_only else "")) + " · "
+            + clk("filter", "/ filter") + " · " + clk("copy_row", "y copy id")
+            + f" · history: {len(rec)} requests in ~/.l9s/requests.jsonl[/dim]")
         rows = act + ([] if self.req_active_only else rec)
         f = self.filters.get("reqs", "")
         icons = {"running": ("▶", STATE_COLOR["running"]), "done": ("✓", K9["greenyellow"]),
@@ -2159,7 +2181,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         px = s.get("proxy")
         pxs = (f"[green]proxy ●[/green] {px['active']} in flight" if px else
                "[b red]proxy DOWN: clients can't connect (l9s proxy restart)[/b red]")
-        lines.append(f"endpoint [b]{self.endpoint}[/b]  {pxs}   [dim](c = connection details)[/dim]   "
+        lines.append(f"endpoint [b]{self.endpoint}[/b]  {pxs}   " + clk("connect", "[dim](c = connection details)[/dim]") + "   "
                      f"uptime {dur(up)}   image [dim]{s.get('image', '-')}[/dim]")
         kv = ""
         if tr.kv_tokens:
@@ -2372,6 +2394,8 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             self.log_buf.append(line)
             if self.log_visible(line, errors_only):
                 rl.write_line(line)
+        if rl.auto_scroll:  # a big backlog written before layout can leave the view mid-way; pin it to the end
+            rl.scroll_end(animate=False)
 
     def log_visible(self, line: str, errors_only: bool) -> bool:
         if errors_only and not (ERR_RE.search(line) or "WARNING" in line or line.startswith(("──", "$ l9s", "==>"))):
@@ -2507,7 +2531,8 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             if pt.row_count:
                 pt.move_cursor(row=min(row, pt.row_count - 1))
             self.query_one("#local-hdr1", Label).update(
-                f"Profiles ({len(profs)})   [dim]enter switch server to it · e edit flags · x delete · / filter[/dim]")
+                f"Profiles ({len(profs)})   [dim]enter switch server to it · " + clk("edit_profile", "e edit flags") + " · "
+                + clk("delete", "x delete") + " · " + clk("filter", "/ filter") + " · " + clk("info", "i analysis") + "[/dim]")
         self._scan_cache()
 
     @work(thread=True, exclusive=True, group="scan")
@@ -2535,8 +2560,9 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
 
         def fill():
             self.query_one("#local-hdr2", Label).update(
-                f"Downloaded models ({len(rows)})   [dim]{gb(total)} used, {gb(free)} free · enter/s serve · "
-                "i analysis · x delete weights · / filter[/dim]")
+                f"Downloaded models ({len(rows)})   [dim]{gb(total)} used, {gb(free)} free · " + clk("serve", "enter/s serve")
+                + " · " + clk("info", "i analysis") + " · " + clk("delete", "x delete weights") + " · " + clk("filter", "/ filter")
+                + "[/dim]")
             if rows == getattr(self, "_models_sig", None):
                 return
             self._models_sig = rows

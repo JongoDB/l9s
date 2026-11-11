@@ -37,7 +37,7 @@ Press `?` inside for help. The header always shows server state, model, endpoint
 | `1`/`F1` | Server | state (READY / STARTING + phase & progress / STOPPED / CRASHED + last error), context, KV capacity, proxy health, live tok/s + KV sparklines, totals (TTFT, ITL, prefix-cache hits), GPU/mem/disk, server log. Buttons: Test, Restart, Stop, Start, Connect |
 | `2`/`F2` | **Requests** | every request in flight (▶) and recently finished (✓ ✗ ■): client, model, tokens in/out, TTFT, tok/s, duration, finish reason / tool calls / errors. Clients table: who uses the server |
 | `3`/`F3` | Local | profiles and downloaded models (serve, edit, delete, `i` analysis) |
-| `4`/`F4` | Hub | search Hugging Face; full model analysis + model card; pull / pull + serve |
+| `4`/`F4` | Hub | `/` to search Hugging Face (enter searches, esc back to the results); full model analysis + model card; pull / pull + serve |
 | `5`/`F5` | Downloads | progress, speed, ETA, logs; keeps running after you quit |
 | `6`/`F6` | **Events** | timeline: container start / exit / OOM, ready, model switches, cancels, error bursts (recorded even when the TUI is closed) |
 | `7`/`F7` | Settings | HF token (with test), API key, GPU_MEM, port, vLLM image (with release check), prompt-preview logging |
@@ -47,13 +47,16 @@ k9s-style keys:
 | Key | Action |
 |---|---|
 | `:` | command bar: `:requests` `:events` `:logs` `:serve <profile>` `:pull <repo>` `:info <repo>` `:search <text>` `:stop` `:restart` `:test` … (tab completes) |
-| `/` | filter the current table or the log (phrase, case-insensitive; `!text` hides matches); `esc` clears |
+| `/` | filter the current table or the log (phrase, case-insensitive; `!text` hides matches); `esc` clears. In the Hub, `/` opens the search box |
 | `d` / `enter` | describe the highlighted request (params, timings, tokens, prompt/response preview) or event |
 | `ctrl+k` | cancel an in-flight request: the client is disconnected and vLLM stops generating it |
 | `a` | requests: in-flight only |
 | `f` / `ctrl+s` | log: pause/resume following / save the full server log to `~/.l9s/logs/` |
 | `y` | copy the highlighted id / repo / profile |
 | `c` / `i` / `?` | connection details / model analysis / help |
+
+Everything that does something is clickable: the key hints in the header (views and actions), the breadcrumbs at the
+bottom, the Model / Endpoint / Status / Server fields, and the inline hints in panels. Clicking a table row selects it.
 
 Copying text: click-drag selects text in the log, panels and dialogs, `ctrl+c` copies (iTerm2 needs
 Settings → General → Selection → "Applications in terminal may access clipboard"). Or hold ⌥ Option (iTerm2) /

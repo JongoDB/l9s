@@ -39,6 +39,7 @@ async def main():
             check(f"key {i+1} -> {t}", tabs() == t)
             await pilot.press("f1" if t != "server" else "f2"); await pilot.pause(0.2)
         await pilot.press("f4"); await pilot.pause(0.3)
+        await pilot.press("slash"); await pilot.pause(0.3)
         await pilot.press(*"qwen")
         await pilot.press("f2"); await pilot.pause(0.3)
         check("F2 from inside search box -> requests", tabs() == "requests")

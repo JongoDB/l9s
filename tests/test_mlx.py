@@ -103,6 +103,9 @@ async def main():
         check("events present", await wait(pilot, lambda: et.row_count >= 1, 10), et.row_count)
         # hub: mlx filter
         await pilot.press("4")
+        await pilot.pause(0.4)
+        await pilot.press("slash")
+        await pilot.pause(0.3)
         q = app.query_one("#hub-q", Input)
         q.value = "qwen3"
         await pilot.press("enter")

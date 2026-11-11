@@ -16,7 +16,8 @@ clients ──▶ :8000  l9s-proxy ──▶ 127.0.0.1:8001  model server
 
 ## Deployments
 
-l9s picks the deployment from your hardware when you install it:
+The installer looks at the machine it runs on and installs only what that machine needs: on a Mac it installs
+mlx-lm (no Docker, no vLLM, no sudo); on Linux with a GPU it installs vLLM in Docker. `l9s hw` shows what it detected.
 
 | Deployment | Hardware | Model server | Status |
 |---|---|---|---|
@@ -56,7 +57,9 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
     TUI is closed
   - **Local / Hub / Downloads / Settings:** profiles, Hugging Face search with fit estimates, background downloads,
     HF token (with check), API key, memory budget, port, server version (with release check)
-  - `:` command bar · `/` filters · `d` describe · `ctrl+k` cancel · `y` copy · `?` help
+  - `:` command bar · `/` filter (search, in the Hub) · `d` describe · `ctrl+k` cancel · `y` copy · `?` help
+  - **mouse-friendly:** every key hint in the header, the breadcrumbs, the header fields and the inline hints are
+    clickable; table rows select on click
 
 ## Screenshots
 
@@ -64,7 +67,8 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
 
 ![l9s server view](docs/img/server.svg)
 
-**Hub** (mlx-lm on an Apple Silicon Mac): search Hugging Face, see what fits and how to run it before downloading.
+**Hub** (mlx-lm on an Apple Silicon Mac): press `/` to search Hugging Face, see what fits and how to run it before
+downloading.
 
 ![l9s hub view](docs/img/hub-mlx.svg)
 
@@ -103,7 +107,7 @@ settings, profiles and history; `--remove-image` also deletes the vLLM Docker im
 ## Quick start
 
 ```bash
-l9s                                   # TUI: watch the server and requests; 4 = Hub to find more models
+l9s                                   # TUI: watch the server and requests; 4 = Hub, then / to search Hugging Face
 
 l9s quickstart Qwen/Qwen3-8B-FP8      # pull + serve any model with its recommended settings
 l9s info Qwen/Qwen3-8B-FP8            # just the analysis: does it fit, how much context, settings
