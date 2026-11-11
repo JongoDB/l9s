@@ -4,6 +4,8 @@
 your network, and gives you a terminal UI to find, pull, serve and *watch* models: every request in flight,
 throughput, latency, memory, startup progress, events.
 
+![l9s requests view: requests in flight on an NVIDIA GB10 serving Nemotron 3 Super with vLLM](docs/img/requests.svg)
+
 ```
 clients ──▶ :8000  l9s-proxy ──▶ 127.0.0.1:8001  model server
               │  API key, request log,        ▲      vllm: vLLM in Docker (Linux + NVIDIA/AMD GPU)
@@ -55,6 +57,16 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
   - **Local / Hub / Downloads / Settings:** profiles, Hugging Face search with fit estimates, background downloads,
     HF token (with check), API key, memory budget, port, server version (with release check)
   - `:` command bar · `/` filters · `d` describe · `ctrl+k` cancel · `y` copy · `?` help
+
+## Screenshots
+
+**Server** (vLLM on a GB10): state, context and KV capacity, live throughput, latency, memory breakdown, server log.
+
+![l9s server view](docs/img/server.svg)
+
+**Hub** (mlx-lm on an Apple Silicon Mac): search Hugging Face, see what fits and how to run it before downloading.
+
+![l9s hub view](docs/img/hub-mlx.svg)
 
 ## Install
 

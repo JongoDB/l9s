@@ -1,6 +1,7 @@
 """TUI checks for the mlx deployment (Apple Silicon). Needs a model being served (l9s serve ...).
 Run: ~/.l9s/app/.venv/bin/python tests/test_mlx.py   (results in /tmp/test_mlx.out)"""
 import asyncio
+import re
 import json
 import sys
 import threading
@@ -68,8 +69,8 @@ async def main():
         json.load(chat("Say hi. /no_think", 20))
         live = lambda: str(app.query_one("#st-live", Static).render())  # noqa: E731
         totals = lambda: str(app.query_one("#st-totals", Static).render())  # noqa: E731
-        check("metrics derived from proxy", await wait(pilot, lambda: "requests  2" in totals() or "requests  3" in totals(), 15),
-              totals())
+        check("metrics derived from proxy", await wait(pilot, lambda: re.search(r"requests\s+\d+", totals())
+                                                       and "tokens" in totals(), 15), totals())
         check("KV line says not reported", "not reported by mlx-lm" in live(), live())
         await pilot.press("2")
         rq = app.query_one("#reqs", DataTable)
@@ -123,6 +124,7 @@ async def main():
         ok = await wait(pilot, lambda: isinstance(app.screen, ServeDialog), 40)
         check("serve dialog", ok)
         if ok:
+            await wait(pilot, lambda: app.screen.query_one("#flags", Input).value != "", 10)
             f = app.screen.query_one("#flags", Input).value
             check("mlx preset flags valid", "--max-tokens" in f and "--max-model-len" not in f, f)
             app.screen.query_one("#flags", Input).value = "--max-model-len 4096"

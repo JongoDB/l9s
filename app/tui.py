@@ -899,26 +899,80 @@ HELP_MD = """
 # ================================================================ app
 TABS = ["server", "requests", "local", "hub", "downloads", "events", "settings"]
 
-# Color meaning used throughout: cyan/blue = normal activity, green = good, yellow = needs attention,
-# red = failure only. Textual's default accent is orange, which renders as red on many terminals.
-GB10_THEME = Theme(name="gb10", primary="#2F81F7", secondary="#3D6A99", accent="#38BDF8", warning="#E8C547",
-                   error="#F85149", success="#3FB950", foreground="#E6EDF3", background="#0D1117",
-                   surface="#161B22", panel="#21262D", dark=True)
+# k9s-style skin. Same color names as k9s' default skin, except gold replaces k9s' orange (orange renders as
+# red on many terminals, and red is reserved for failures here).
+K9 = {"aqua": "#00FFFF", "dodger": "#1E90FF", "cadet": "#5F9EA0", "sky": "#87CEFA", "fuchsia": "#FF00FF",
+      "greenyellow": "#ADFF2F", "slate": "#778899", "orangered": "#FF4500", "purple": "#9370DB", "papaya": "#FFEFD5",
+      "seagreen": "#2E8B57", "gold": "#FFD75F", "white": "#FFFFFF", "gray": "#808080"}
+STATE_COLOR = {"running": K9["sky"], "done": K9["white"], "error": K9["orangered"], "cancelled": K9["purple"]}
+L9S_THEME = Theme(name="l9s", primary=K9["dodger"], secondary=K9["cadet"], accent=K9["aqua"], warning=K9["gold"],
+                  error=K9["orangered"], success=K9["greenyellow"], foreground="#E4E4E4", background="#000000",
+                  surface="#000000", panel="#121212", dark=True)
+LOGO = r"""
+ _   ___
+| | / _ \  ___
+| || (_) |/ __|
+| | \__, |\__ \
+|_|   /_/ |___/
+""".strip("\n")
+
+
+def ktitle(name: str, count=None, scope: str | None = None, filt: str | None = None, extra: str = "") -> str:
+    """k9s-style frame title: Name(scope)[count] </filter>"""
+    t = f"[b {K9['aqua']}]{name}[/]"
+    if scope:
+        t += f"([b {K9['fuchsia']}]{scope}[/])"
+    if count is not None:
+        t += f"\\[[b {K9['papaya']}]{count}[/]]"
+    if filt:
+        t += f" [{K9['seagreen']}]</{filt}>[/]"
+    return t + extra
 
 
 class LLMTui(App):
     TITLE = "l9s"
     CSS = """
-    #st-head { height: auto; padding: 0 1; border: round $primary; }
+    Screen { background: #000000; }
+    #l9s-header { dock: top; height: 7; padding: 0 1; }
+    #tabs { height: 1fr; }
+    #tabs > ContentSwitcher { height: 1fr; }
+    TabPane { height: 1fr; }
+    #hdr-info { width: 58; }
+    #hdr-keys { width: 1fr; }
+    #hdr-logo { width: 22; color: #FFD75F; text-style: bold; }
+    #crumbs { dock: bottom; height: 1; padding: 0 1; }
+    .crumb { margin-right: 1; padding: 0 1; background: #5F9EA0; color: #000000; }
+    .crumb.-active { background: #FFD75F; color: #000000; text-style: bold; }
+    #tabs > ContentTabs { display: none; }
+    TabbedContent, TabPane { padding: 0; }
+    DataTable { background: #000000; scrollbar-size-vertical: 1; }
+    DataTable > .datatable--header { background: #00FFFF; color: #000000; text-style: bold; }
+    DataTable > .datatable--cursor { background: #1E90FF; color: #000000; text-style: bold; }
+    DataTable > .datatable--hover { background: #1C1C1C; }
+    DataTable > .datatable--header-hover { background: #00FFFF; }
+    * { border-title-align: center; border-title-color: #00FFFF; border-title-style: bold; }
+    #st-head { height: auto; padding: 0 1; border: solid #87CEFA; }
     #panels { height: auto; }
-    .panel { width: 1fr; height: auto; padding: 0 1; border: round $secondary; }
+    .panel { width: 1fr; height: auto; padding: 0 1; border: solid #87CEFA; }
     .sparkrow { height: 1; }
     .sparklabel { width: 12; color: $text-muted; }
     Sparkline { width: 1fr; height: 1; }
-    #srv-bar { height: auto; }
-    #srv-bar Button { margin-right: 1; }
+    #srv-bar { height: 1; margin: 0 0 1 0; }
+    #srv-bar Button { height: 1; min-width: 9; margin-right: 1; border: none; padding: 0 1; background: #1C1C1C;
+                      color: #87CEFA; text-style: bold; }
+    #srv-bar Button:hover, #srv-bar Button:focus { background: #1E90FF; color: #000000; }
+    #srv-bar Button.-error { color: #FF4500; }
+    #srv-bar Button.-warning { color: #FFD75F; }
+    #srv-bar Button.-success { color: #ADFF2F; }
+    #srv-bar Checkbox { height: 1; }
+    Button { border: none; height: 1; padding: 0 1; min-width: 8; background: #1C1C1C; color: #87CEFA; text-style: bold; }
+    Button:hover, Button:focus { background: #1E90FF; color: #000000; }
+    Button.-primary { color: #00FFFF; }
+    Button.-error { color: #FF4500; }
+    Button.-warning { color: #FFD75F; }
+    Button.-success { color: #ADFF2F; }
     #srv-bar Checkbox { margin-left: 1; border: none; padding: 0; }
-    #srvlog { border: round $secondary; }
+    #srvlog { border: solid #87CEFA; background: #000000; color: #87CEFA; }
     .section { padding: 0 1; text-style: bold; color: $text; }
     #profiles { height: 40%; }
     #hub-bar { height: auto; }
@@ -927,15 +981,16 @@ class LLMTui(App):
     #hub-compat { width: auto; }
     #hub-body { height: 1fr; }
     #hub-results { width: 3fr; }
-    #hub-detail { width: 2fr; border-left: solid $secondary; padding: 0 1; }
+    #hub-detail { width: 2fr; border: solid #87CEFA; padding: 0 1; }
     #hub-btns { height: auto; }
     #hub-btns Button { margin-right: 1; }
     #settings-form { padding: 0 2; }
     #vllm-settings { height: auto; }
-    #req-summary { height: auto; padding: 0 1; border: round $primary; }
-    #reqs { height: 2fr; border: round $secondary; }
-    #clients { height: 1fr; border: round $secondary; }
-    #events-t { border: round $secondary; }
+    #req-summary { height: auto; padding: 0 1; border: solid #87CEFA; }
+    #reqs { height: 2fr; border: solid #87CEFA; }
+    #clients { height: 1fr; border: solid #87CEFA; }
+    #events-t { border: solid #87CEFA; }
+    #profiles, #models, #dls, #hub-results { border: solid #87CEFA; }
     .frow { height: auto; margin-bottom: 1; }
     .frow Input { width: 1fr; }
     .frow Button { margin-left: 1; }
@@ -951,10 +1006,10 @@ class LLMTui(App):
         Binding("colon", "command", "Cmd", key_display=":"),
         Binding("slash", "filter", "Filter", key_display="/"),
         Binding("d", "describe", "Describe"),
-        Binding("ctrl+k", "kill", "Cancel req", key_display="^k"),
+        Binding("ctrl+k", "kill", "Cancel req", key_display="ctrl-k"),
         Binding("a", "toggle_active", "In-flight"),
         Binding("f", "follow", "Follow"),
-        Binding("ctrl+s", "save_log", "Save log", key_display="^s"),
+        Binding("ctrl+s", "save_log", "Save log", key_display="ctrl-s"),
         Binding("y", "copy_row", "Copy"),
         Binding("escape", "escape", "Back", show=False),
         Binding("p", "pull", "Pull"),
@@ -1022,8 +1077,11 @@ class LLMTui(App):
 
     # ------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
-        yield Header()
-        with TabbedContent(initial="server"):
+        with Horizontal(id="l9s-header"):
+            yield Static("", id="hdr-info")
+            yield Static("", id="hdr-keys")
+            yield Static(LOGO, id="hdr-logo")
+        with TabbedContent(initial="server", id="tabs"):
             with TabPane("1 Server", id="server"):
                 yield Static("loading…", id="st-head")
                 with Horizontal(id="panels"):
@@ -1049,13 +1107,13 @@ class LLMTui(App):
                 yield Log(id="srvlog", max_lines=5000, highlight=True)
             with TabPane("2 Requests", id="requests"):
                 yield Static("", id="req-summary")
-                yield DataTable(id="reqs", cursor_type="row", zebra_stripes=True)
-                yield DataTable(id="clients", cursor_type="row", zebra_stripes=True)
+                yield DataTable(id="reqs", cursor_type="row", zebra_stripes=False)
+                yield DataTable(id="clients", cursor_type="row", zebra_stripes=False)
             with TabPane("3 Local", id="local"):
                 yield Label("", id="local-hdr1", classes="section")
-                yield DataTable(id="profiles", cursor_type="row", zebra_stripes=True)
+                yield DataTable(id="profiles", cursor_type="row", zebra_stripes=False)
                 yield Label("", id="local-hdr2", classes="section")
-                yield DataTable(id="models", cursor_type="row", zebra_stripes=True)
+                yield DataTable(id="models", cursor_type="row", zebra_stripes=False)
             with TabPane("4 Hub", id="hub"):
                 with Horizontal(id="hub-bar"):
                     yield Input(placeholder="search Hugging Face, enter to search, esc to leave the box "
@@ -1066,7 +1124,7 @@ class LLMTui(App):
                                  value="downloads", allow_blank=False, id="hub-sort")
                     yield Checkbox("compatible only", True, id="hub-compat")
                 with Horizontal(id="hub-body"):
-                    yield DataTable(id="hub-results", cursor_type="row", zebra_stripes=True)
+                    yield DataTable(id="hub-results", cursor_type="row", zebra_stripes=False)
                     with Vertical(id="hub-detail"):
                         with Horizontal(id="hub-btns"):
                             yield Button("Pull (p)", id="b-pull", variant="primary")
@@ -1078,9 +1136,9 @@ class LLMTui(App):
             with TabPane("5 Downloads", id="downloads"):
                 yield Label("Downloads   [dim]run in the background and keep going if you quit · enter show log · "
                             "x cancel / clear[/dim]", classes="section")
-                yield DataTable(id="dls", cursor_type="row", zebra_stripes=True)
+                yield DataTable(id="dls", cursor_type="row", zebra_stripes=False)
             with TabPane("6 Events", id="events"):
-                yield DataTable(id="events-t", cursor_type="row", zebra_stripes=True)
+                yield DataTable(id="events-t", cursor_type="row", zebra_stripes=False)
             with TabPane("7 Settings", id="settings"):
                 with VerticalScroll(id="settings-form"):
                     yield Static(f"Server settings, stored in [b]{LLM_HOME / 'env'}[/b] (readable only by you). "
@@ -1128,14 +1186,82 @@ class LLMTui(App):
                         yield Button("Save", id="set-save", variant="primary")
                         yield Button("Save & apply", id="set-apply", variant="warning")
                         yield Button("Revert", id="set-revert")
-        yield Footer()
+        with Horizontal(id="crumbs"):
+            for t in TABS:
+                yield Label(f"<{t}>", id=f"crumb-{t}", classes="crumb")
+
+    def on_click(self, ev) -> None:
+        w = getattr(ev, "widget", None)
+        if w is not None and (w.id or "").startswith("crumb-"):
+            self.action_tab(w.id[len("crumb-"):])
+
+    def render_chrome(self) -> None:
+        """k9s-style key hints (contextual) and breadcrumbs."""
+        try:
+            tab = self.query_one(TabbedContent).active
+        except Exception:
+            return
+        views = []
+        for i, t in enumerate(TABS):
+            style = f"b {K9['white']}" if t == tab else K9["gray"]
+            views.append((f"<{i + 1}> {t}", f"[{K9['fuchsia']}]<{i + 1}>[/] [{style}]{t}[/]"))
+        acts = []
+        for b in self.BINDINGS:
+            if not b.show or b.action.startswith("tab("):
+                continue
+            if not self.check_action(b.action.split("(")[0], ()):
+                continue
+            key = b.key_display or b.key
+            acts.append((f"<{key}> {b.description}", f"[{K9['dodger']}]<{key}>[/] [{K9['gray']}]{b.description}[/]"))
+        cols = [views] + [acts[i:i + 7] for i in range(0, len(acts), 7)]
+        widths = [max(len(p) for p, _ in c) + 3 for c in cols]
+        lines = []
+        for r in range(7):
+            line = ""
+            for c, w in zip(cols, widths):
+                if r < len(c):
+                    plain, markup = c[r]
+                    line += markup + " " * (w - len(plain))
+                else:
+                    line += " " * w
+            lines.append(line.rstrip())
+        self.query_one("#hdr-keys", Static).update("\n".join(lines))
+        for t in TABS:
+            self.query_one(f"#crumb-{t}", Label).set_class(t == tab, "-active")
+
+    def render_info(self, s: dict | None = None) -> None:
+        """k9s-style context block (white labels, gold values)."""
+        s = s or self.state
+        lab = lambda k: f"[b {K9['white']}]{k:<11}[/]"  # noqa: E731
+        val = lambda v, c=K9["gold"]: f"[{c}]{v}[/]"  # noqa: E731
+        st = s.get("status", "?")
+        badge, color = ("READY", K9["greenyellow"]) if s.get("ready") else \
+            ("STARTING", K9["sky"]) if st == "running" else ("NO SERVER", K9["gray"]) if st == "absent" else \
+            (("CRASHED", K9["orangered"]) if s.get("exit") not in (0, None, 137, 143) else ("STOPPED", K9["gray"]))
+        if self.serving:
+            badge, color = f"SWITCHING → {self.serving}", K9["sky"]
+        gpus = s.get("gpus") or []
+        util = [g["util"] for g in gpus if g.get("util") is not None]
+        px = s.get("proxy")
+        mode = "unified" if self.hw.unified else f"{self.hw.n_gpus}× GPU" if self.hw.n_gpus > 1 else "GPU"
+        lines = [
+            lab("Model:") + val(active_profile() or "-"),
+            lab("Deploy:") + val(f"{self.backend} · {self.hw.gpus[0].name if self.hw.gpus else 'cpu'} ({mode})"),
+            lab("Endpoint:") + val(self.endpoint),
+            lab("Status:") + val(f"● {badge}", color) + (f" {val('in flight ' + str(px['active']))}" if px and px.get("active") else ""),
+            lab("Server:") + val(s.get("image") or self.server_name()),
+            lab("GPU:") + val(f"{(sum(util) / len(util)) if util else 0:.0f}%"),
+            lab("MEM:") + val(f"{s.get('mem_used', 0) / 1e9:.0f}/{self.mem_total / 1e9:.0f} GB"),
+        ]
+        self.query_one("#hdr-info", Static).update("\n".join(lines))
 
     def on_mount(self) -> None:
-        self.register_theme(GB10_THEME)
-        self.theme = "gb10"
+        self.register_theme(L9S_THEME)
+        self.theme = "l9s"
+        self.set_timer(0.1, self.render_chrome)
         self.query_one("#srvlog", Log).highlighter = LogHighlighter()
         self.sub_title = self.endpoint
-        self.query_one("#st-head").border_title = "vLLM server"
+        self.query_one("#st-head").border_title = ktitle(f"{self.server_name()} server")
         self.query_one("#p-live").border_title = "Live"
         self.query_one("#st-totals").border_title = "Since server start"
         self.query_one("#st-sys").border_title = "System"
@@ -1257,6 +1383,7 @@ class LLMTui(App):
             self.query_one("#events-t", DataTable).focus()
             self.poll_events()
         self.refresh_bindings()
+        self.render_chrome()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         tabs = self.ACTION_TABS.get(action)
@@ -1307,7 +1434,7 @@ class LLMTui(App):
                   "models": "Downloaded models", "profiles": "Profiles", "hub-results": None}
         w = self.query_one(f"#{target}")
         if titles.get(target):
-            w.border_title = titles[target] + (f"  [b yellow]/{text}[/]" if text else "")
+            w.border_title = ktitle(titles[target], None, None, text)
         if target == "srvlog":
             self.rerender_log()
         elif target in ("reqs", "clients"):
@@ -1521,7 +1648,8 @@ class LLMTui(App):
             f" · / filter · y copy id · history: {len(rec)} requests in ~/.l9s/requests.jsonl[/dim]")
         rows = act + ([] if self.req_active_only else rec)
         f = self.filters.get("reqs", "")
-        icons = {"running": ("▶", "cyan"), "done": ("✓", "green"), "error": ("✗", "red"), "cancelled": ("■", "bright_black")}
+        icons = {"running": ("▶", STATE_COLOR["running"]), "done": ("✓", K9["greenyellow"]),
+                 "error": ("✗", STATE_COLOR["error"]), "cancelled": ("■", STATE_COLOR["cancelled"])}
         t = self.query_one("#reqs", DataTable)
         cur = self.selected_key("reqs")
         t.clear()
@@ -1544,15 +1672,14 @@ class LLMTui(App):
             if not match(f, *cells, r.get("ua"), r.get("prompt_preview")):
                 continue
             ic, col = icons.get(r.get("state"), ("?", "white"))
-            t.add_row(Text(ic, style=col), *[str(c) for c in cells[:-1]], Text(str(cells[-1]), style=col if col != "green" else ""),
-                      key=r["id"])
+            row_col = STATE_COLOR.get(r.get("state"), K9["white"])  # k9s colors the whole row by state
+            t.add_row(Text(ic, style=col), *[Text(str(c), style=row_col) for c in cells], key=r["id"])
             shown += 1
             if shown >= 400:
                 break
         if cur and cur in t.rows:
             t.move_cursor(row=t.get_row_index(cur))
-        t.border_title = f"Requests ({shown})" + (f"  [b yellow]/{f}[/]" if f else "") + \
-            ("  [b]in-flight only[/b]" if self.req_active_only else "")
+        t.border_title = ktitle("Requests", shown, "in-flight" if self.req_active_only else "all", f)
         # clients
         agg: dict[str, dict] = {}
         for r in act + rec:
@@ -1575,8 +1702,7 @@ class LLMTui(App):
                 ct.add_row(*[Text(str(x), style="red") if i == 5 and x else str(x) for i, x in enumerate(cells)], key=ip)
         if ccur and ccur in ct.rows:
             ct.move_cursor(row=ct.get_row_index(ccur))
-        ct.border_title = f"Clients ({len(agg)})  [dim]enter = show this client's requests[/dim]" + \
-            (f"  [b yellow]/{cf}[/]" if cf else "")
+        ct.border_title = ktitle("Clients", len(agg), None, cf)
 
     # ------------------------------------------------------------ events
     @work(thread=True, exclusive=True, group="events")
@@ -1598,7 +1724,7 @@ class LLMTui(App):
         cur = self.selected_key("events-t")
         t.clear()
         f = self.filters.get("events-t", "")
-        icons = {"error": ("✗", "red"), "warning": ("!", "yellow"), "info": ("•", "cyan")}
+        icons = {"error": ("✗", K9["orangered"]), "warning": ("!", K9["gold"]), "info": ("•", K9["sky"])}
         today = datetime.now().date()
         n = 0
         for e in reversed(self.events_data):
@@ -1611,8 +1737,7 @@ class LLMTui(App):
             n += 1
         if cur and cur in t.rows:
             t.move_cursor(row=t.get_row_index(cur))
-        t.border_title = f"Events ({n})" + (f"  [b yellow]/{f}[/]" if f else "") + \
-            "  [dim]recorded by l9s-proxy, also while the TUI is closed[/dim]"
+        t.border_title = ktitle("Events", n, None, f)
 
     def action_refresh(self) -> None:
         self.env = load_env()
@@ -2007,12 +2132,13 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
 
     def render_status(self, s: dict) -> None:
         self.state = s
+        self.render_info(s)
         st = s["status"]
         prof = s.get("cprofile") or active_profile()
         repo = profile_repo(prof) if prof else ""
         up = (s["t"] - s["started"]) if s.get("started") and st == "running" else None
         if s["ready"]:
-            badge, color = "READY", "green"
+            badge, color = "READY", K9["greenyellow"]
         elif st == "running":
             badge, color = "STARTING", "cyan"
         elif st == "absent":
@@ -2097,8 +2223,9 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             hit = m.get("vllm:prefix_cache_hits_total", 0) / q if q else 0
             bad = r.get("error", 0) + r.get("abort", 0)
             totals = [
-                f"requests  [b]{nreq:.0f}[/b]   " + (f"[red]{r.get('error', 0):.0f} error  {r.get('abort', 0):.0f} aborted[/red]"
-                                                    if bad else "[green]no errors[/green]")
+                f"requests  [b]{nreq:.0f}[/b]   "
+                + (f"[{K9['orangered']}]{r.get('error', 0):.0f} errors[/]" if r.get("error") else f"[{K9['greenyellow']}]no errors[/]")
+                + (f"  [{K9['purple']}]{r.get('abort', 0):.0f} cancelled[/]" if r.get("abort") else "")
                 + (f"   [yellow]{r.get('length', 0):.0f} hit max_tokens[/yellow]" if r.get("length") else ""),
                 f"tokens    {human(m.get('vllm:prompt_tokens_total', 0))} in · {human(m.get('vllm:generation_tokens_total', 0))} out",
                 f"latency   TTFT [b]{ttft:.2f}s[/b] · ITL [b]{itl * 1000:.0f}ms[/b]"
@@ -2583,8 +2710,8 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                           ("~" + gb(r["size"])) if r["size"] else "?", fit_label(r["size"], self.budget_gb),
                           key=r["repo"])
             extra = f" ({hidden} incompatible hidden)" if hidden else ""
-            self.query_one("#hub-results").border_title = f"{len(rows)} results for '{q}'{extra}" + \
-                (f"  [b yellow]/{f}[/]" if f else "")
+            self.query_one("#hub-results").border_title = ktitle("Hub", len(rows), q, f,
+                                                                 f" [{K9['gray']}]{extra.strip()}[/]" if extra else "")
             if notify:
                 self.notify(f"{len(rows)} results{extra}")
             if rows:

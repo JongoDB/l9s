@@ -123,7 +123,7 @@ async def main():
         await pilot.press("1")
         await pilot.pause(0.3)
         for name in ("local", "hub", "downloads", "server"):
-            await pilot.click(f"#--content-tab-{name}")
+            await pilot.click(f"#crumb-{name}")
             await pilot.pause(0.4)
             check(f"mouse -> {name}", tabs() == name)
 

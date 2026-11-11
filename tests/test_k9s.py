@@ -72,7 +72,7 @@ async def main():
         check("filter narrows requests (matches prompt text)", rq.row_count == 1, rq.row_count)
         check("filter shown in title", f"/{RUN}-1" in str(rq.border_title))
         await pilot.press("escape"); await pilot.pause(0.6)
-        check("esc clears filter", rq.row_count >= 3 and "/" not in str(rq.border_title).split("Requests")[1][:5], rq.border_title)
+        check("esc clears filter", rq.row_count >= 3 and not app.filters.get("reqs"), rq.border_title)
         # clients -> drill into requests
         cl.focus(); cl.move_cursor(row=0); await pilot.press("enter"); await pilot.pause(0.6)
         check("enter on client filters its requests", app.filters.get("reqs") == "127.0.0.1" and app.focused is rq)
