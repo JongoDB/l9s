@@ -1,42 +1,42 @@
 #!/usr/bin/env bash
-# vllm-tui — run local LLMs behind one OpenAI-compatible endpoint, with a k9s-style TUI.
+# l9s — run local LLMs behind one OpenAI-compatible endpoint, with a k9s-style TUI.
 #
-# Deployments (BACKEND in ~/.vllm-tui/env):
+# Deployments (BACKEND in ~/.l9s/env):
 #   vllm  Linux + NVIDIA (or AMD ROCm) GPU, vLLM in Docker. Tuned automatically for unified-memory boxes
 #         such as the NVIDIA GB10 / DGX Spark; works on discrete and multi-GPU machines too.
 #   mlx   Apple Silicon Macs: mlx-lm's OpenAI-compatible server, run as a launchd agent.
 #
-# Config:   ~/.vllm-tui/env              (BACKEND, API_KEY, HF_TOKEN, PORT, BACKEND_PORT, GPU_MEM, IMAGE, ...)
-# Profiles: ~/.vllm-tui/profiles/<name>  (line 1: HF repo id, `ENV K=V` lines, then one server flag per line)
+# Config:   ~/.l9s/env              (BACKEND, API_KEY, HF_TOKEN, PORT, BACKEND_PORT, GPU_MEM, IMAGE, ...)
+# Profiles: ~/.l9s/profiles/<name>  (line 1: HF repo id, `ENV K=V` lines, then one server flag per line)
 set -euo pipefail
 
-VLLM_TUI_HOME="${VLLM_TUI_HOME:-$HOME/.vllm-tui}"
-PROFILES="$VLLM_TUI_HOME/profiles"
-APP="$VLLM_TUI_HOME/app"
+L9S_HOME="${L9S_HOME:-$HOME/.l9s}"
+PROFILES="$L9S_HOME/profiles"
+APP="$L9S_HOME/app"
 PY="$APP/.venv/bin/python"
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
-mkdir -p "$PROFILES" "$VLLM_TUI_HOME/logs"
-[[ -f "$VLLM_TUI_HOME/env" ]] && source "$VLLM_TUI_HOME/env"
+mkdir -p "$PROFILES" "$L9S_HOME/logs"
+[[ -f "$L9S_HOME/env" ]] && source "$L9S_HOME/env"
 BACKEND="${BACKEND:-vllm}"
-PORT="${PORT:-8000}"                                 # public endpoint (vllm-tui-proxy)
+PORT="${PORT:-8000}"                                 # public endpoint (l9s-proxy)
 BACKEND_PORT="${BACKEND_PORT:-${VLLM_PORT:-8001}}"   # model server, localhost only
 GPU_MEM="${GPU_MEM:-0.85}"
 IMAGE="${IMAGE:-vllm/vllm-openai:v0.33.0}"
-CONTAINER="${CONTAINER:-vllm-tui}"
+CONTAINER="${CONTAINER:-l9s-vllm}"
 GPU_ARGS="${GPU_ARGS:---gpus all}"
 HF="$HOME/.local/bin/hf"
 OS="$(uname -s)"
-LABEL="dev.vllm-tui.backend"
-PROXY_LABEL="dev.vllm-tui.proxy"
-LOG="$VLLM_TUI_HOME/logs/backend.log"
+LABEL="dev.l9s.backend"
+PROXY_LABEL="dev.l9s.proxy"
+LOG="$L9S_HOME/logs/backend.log"
 
 die() { echo "error: $*" >&2; exit 1; }
-need_key() { [[ -n "${API_KEY:-}" ]] || die "API_KEY not set in $VLLM_TUI_HOME/env"; }
-active_profile() { [[ -L "$VLLM_TUI_HOME/active" ]] && basename "$(readlink "$VLLM_TUI_HOME/active")" || true; }
+need_key() { [[ -n "${API_KEY:-}" ]] || die "API_KEY not set in $L9S_HOME/env"; }
+active_profile() { [[ -L "$L9S_HOME/active" ]] && basename "$(readlink "$L9S_HOME/active")" || true; }
 
 usage() {
   cat <<EOF
-usage: vllm-tui [command] [args]          (no command: open the terminal UI)
+usage: l9s [command] [args]          (no command: open the terminal UI)
 
   quickstart [org/repo]                  pull and serve a model with recommended settings
                                          (no repo: the largest starter model that fits this machine)
@@ -55,7 +55,7 @@ usage: vllm-tui [command] [args]          (no command: open the terminal UI)
   key                                    print the API key
   tui                                    open the terminal UI
   uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
-                                         remove vllm-tui (downloaded models stay unless --remove-models)
+                                         remove l9s (downloaded models stay unless --remove-models)
 
 deployment: $BACKEND   endpoint: http://$(host_ip):$PORT/v1
 EOF
@@ -82,7 +82,7 @@ vllm_start_profile() {
     -e HF_TOKEN="${HF_TOKEN:-}" \
     -e VLLM_API_KEY="$API_KEY" \
     ${envs[@]+"${envs[@]}"} \
-    --label vllm-tui.profile="$name" --label llm.profile="$name" \
+    --label l9s.profile="$name" --label llm.profile="$name" \
     "$IMAGE" \
     "$repo" --served-model-name "$name" --host 0.0.0.0 --port 8000 \
     --gpu-memory-utilization "$GPU_MEM" ${flags[@]+"${flags[@]}"} >/dev/null
@@ -109,7 +109,7 @@ mlx_start_profile() {
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array>$args</array>
-  <key>EnvironmentVariables</key><dict>$envxml<key>VLLM_TUI_PROFILE</key><string>$(xml "$name")</string></dict>
+  <key>EnvironmentVariables</key><dict>$envxml<key>L9S_PROFILE</key><string>$(xml "$name")</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>StandardOutPath</key><string>$LOG</string>
@@ -136,7 +136,7 @@ mlx_running() { launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -q "state =
 # ------------------------------------------------------------------ common
 run_profile() {
   local name="$1" file="$PROFILES/$1"
-  [[ -f "$file" ]] || die "no profile '$name' (see: vllm-tui profiles)"
+  [[ -f "$file" ]] || die "no profile '$name' (see: l9s profiles)"
   need_key
   local repo; repo="$(head -1 "$file")"
   local -a lines=()
@@ -144,7 +144,7 @@ run_profile() {
   echo "==> starting $name ($repo) [$BACKEND]"
   if [[ "$BACKEND" == "mlx" ]]; then mlx_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}
   else vllm_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}; fi
-  ln -sfn "$file" "$VLLM_TUI_HOME/active"
+  ln -sfn "$file" "$L9S_HOME/active"
   wait_ready
 }
 
@@ -161,7 +161,7 @@ wait_ready() {
     fi
     echo -n .; sleep 5
   done
-  echo; die "timed out; check: vllm-tui logs"
+  echo; die "timed out; check: l9s logs"
 }
 
 backend_logs() {
@@ -176,19 +176,19 @@ proxy_ctl() {
   local action="${1:-status}"
   if [[ "$OS" == "Darwin" ]]; then
     case "$action" in
-      status) launchctl print "gui/$UID/$PROXY_LABEL" 2>/dev/null | grep -E "state =|pid =" || echo "vllm-tui-proxy: not running" ;;
+      status) launchctl print "gui/$UID/$PROXY_LABEL" 2>/dev/null | grep -E "state =|pid =" || echo "l9s-proxy: not running" ;;
       start) launchd_load "$PROXY_LABEL" ;;
       stop) launchctl bootout "gui/$UID/$PROXY_LABEL" ;;
       restart) launchctl kickstart -k "gui/$UID/$PROXY_LABEL" ;;
-      logs) tail -n 100 "$VLLM_TUI_HOME/logs/proxy.log" ;;
-      *) die "usage: vllm-tui proxy status|start|stop|restart|logs" ;;
+      logs) tail -n 100 "$L9S_HOME/logs/proxy.log" ;;
+      *) die "usage: l9s proxy status|start|stop|restart|logs" ;;
     esac
   else
     case "$action" in
-      status) systemctl status vllm-tui-proxy --no-pager | head -5 ;;
-      start|stop|restart) sudo systemctl "$action" vllm-tui-proxy ;;
-      logs) journalctl -u vllm-tui-proxy -n 100 --no-pager ;;
-      *) die "usage: vllm-tui proxy status|start|stop|restart|logs" ;;
+      status) systemctl status l9s-proxy --no-pager | head -5 ;;
+      start|stop|restart) sudo systemctl "$action" l9s-proxy ;;
+      logs) journalctl -u l9s-proxy -n 100 --no-pager ;;
+      *) die "usage: l9s proxy status|start|stop|restart|logs" ;;
     esac
   fi
 }
@@ -196,7 +196,7 @@ proxy_ctl() {
 cmd="${1:-tui}"; shift || true
 case "$cmd" in
   pull)
-    [[ $# -ge 1 ]] || die "usage: vllm-tui pull <org/repo>"
+    [[ $# -ge 1 ]] || die "usage: l9s pull <org/repo>"
     extra=()
     if [[ " $* " != *" --include "* && " $* " != *" --exclude "* ]]; then
       pats=()
@@ -205,21 +205,21 @@ case "$cmd" in
       [[ ${#pats[@]} -gt 0 ]] && echo "==> skipping files the server doesn't use: ${pats[*]}  (pass --include/--exclude to override)"
     fi
     HF_TOKEN="${HF_TOKEN:-}" "$HF" download "$@" ${extra[@]+"${extra[@]}"} ;;
-  info) [[ $# -eq 1 ]] || die "usage: vllm-tui info <org/repo>"; "$PY" "$APP/hfmeta.py" report "$1" ;;
+  info) [[ $# -eq 1 ]] || die "usage: l9s info <org/repo>"; "$PY" "$APP/hfmeta.py" report "$1" ;;
   quickstart)
     repo="${1:-}"
     if [[ -z "$repo" ]]; then
       echo "==> picking a starter model that fits this machine"
-      repo="$("$PY" "$APP/hfmeta.py" starter)" || die "no starter model fits; pick one with: vllm-tui info <org/repo>"
+      repo="$("$PY" "$APP/hfmeta.py" starter)" || die "no starter model fits; pick one with: l9s info <org/repo>"
     fi
     echo "==> model: $repo"
-    args="$("$PY" "$APP/hfmeta.py" serveargs "$repo")" || die "$repo can't be served here (see: vllm-tui info $repo)"
+    args="$("$PY" "$APP/hfmeta.py" serveargs "$repo")" || die "$repo can't be served here (see: l9s info $repo)"
     "$0" pull "$repo"
     eval "set -- $args"
     echo "==> serving with the recommended settings: $*"
     exec "$0" serve "$@" ;;
   serve)
-    [[ $# -ge 1 ]] || die "usage: vllm-tui serve <org/repo> [--name N] [--env K=V]... [flags...]"
+    [[ $# -ge 1 ]] || die "usage: l9s serve <org/repo> [--name N] [--env K=V]... [flags...]"
     repo="$1"; shift
     name="$(basename "$repo" | tr 'A-Z' 'a-z')"; envs=()
     while [[ "${1:-}" == "--name" || "${1:-}" == "--env" ]]; do
@@ -228,7 +228,7 @@ case "$cmd" in
     { echo "$repo"; for e in ${envs[@]+"${envs[@]}"}; do echo "ENV $e"; done; for a in "$@"; do echo "$a"; done; } > "$PROFILES/$name"
     echo "==> saved profile '$name'"
     run_profile "$name" ;;
-  use) [[ $# -eq 1 ]] || die "usage: vllm-tui use <profile>"; run_profile "$1" ;;
+  use) [[ $# -eq 1 ]] || die "usage: l9s use <profile>"; run_profile "$1" ;;
   profiles)
     act="$(active_profile)"
     for f in "$PROFILES"/*; do [[ -f "$f" ]] || continue
@@ -236,7 +236,7 @@ case "$cmd" in
       printf "%s %-28s %s  %s\n" "$m" "$n" "$(head -1 "$f")" "$(tail -n +2 "$f" | tr '\n' ' ')"
     done ;;
   ls) "$HF" cache ls 2>/dev/null || "$HF" cache scan ;;
-  rm) [[ $# -eq 1 ]] || die "usage: vllm-tui rm <org/repo>"; "$HF" cache rm "model/$1" -y ;;
+  rm) [[ $# -eq 1 ]] || die "usage: l9s rm <org/repo>"; "$HF" cache rm "model/$1" -y ;;
   status)
     echo "deployment: $BACKEND   profile: $(active_profile)"
     backend_running && echo "server: running" || echo "server: stopped"
@@ -267,9 +267,9 @@ case "$cmd" in
   hw) "$PY" "$APP/hw.py" ;;
   upgrade)
     [[ "$BACKEND" == "vllm" ]] || die "upgrade is for the vllm deployment (mlx: re-run install.sh to update mlx-lm)"
-    [[ $# -eq 1 ]] || die "usage: vllm-tui upgrade <image:tag>"
+    [[ $# -eq 1 ]] || die "usage: l9s upgrade <image:tag>"
     docker pull "$1"
-    sed -i '/^IMAGE=/d' "$VLLM_TUI_HOME/env"; echo "IMAGE=$1" >> "$VLLM_TUI_HOME/env"; IMAGE="$1"
+    sed -i '/^IMAGE=/d' "$L9S_HOME/env"; echo "IMAGE=$1" >> "$L9S_HOME/env"; IMAGE="$1"
     a="$(active_profile)"; [[ -n "$a" ]] && run_profile "$a" ;;
   proxy) proxy_ctl "${1:-status}" ;;
   tui|ui) exec "$PY" "$APP/tui.py" "$@" ;;
@@ -278,16 +278,16 @@ case "$cmd" in
     while [[ $# -gt 0 ]]; do
       case "$1" in
         -y|--yes) yes=1 ;; --keep-config) keep=1 ;; --remove-models) rmmodels=1 ;; --remove-image) rmimage=1 ;;
-        *) die "usage: vllm-tui uninstall [-y] [--keep-config] [--remove-models] [--remove-image]" ;;
+        *) die "usage: l9s uninstall [-y] [--keep-config] [--remove-models] [--remove-image]" ;;
       esac; shift
     done
     repos=()
     for f in "$PROFILES"/*; do [[ -f "$f" ]] && repos+=("$(head -1 "$f")"); done
-    echo "This removes vllm-tui from this machine:"
+    echo "This removes l9s from this machine:"
     echo "  - the model server ($([[ "$BACKEND" == "mlx" ]] && echo "launchd agent $LABEL" || echo "container $CONTAINER"))"
-    echo "  - the request proxy service, the vllm-tui command"
-    [[ $keep -eq 1 ]] && echo "  - $VLLM_TUI_HOME/{app,bin,src,cache,logs} (settings, profiles and history are kept)" \
-                      || echo "  - $VLLM_TUI_HOME (settings, API key, profiles, request history)"
+    echo "  - the request proxy service, the l9s command"
+    [[ $keep -eq 1 ]] && echo "  - $L9S_HOME/{app,bin,src,cache,logs} (settings, profiles and history are kept)" \
+                      || echo "  - $L9S_HOME (settings, API key, profiles, request history)"
     [[ $rmmodels -eq 1 && ${#repos[@]} -gt 0 ]] && echo "  - downloaded models used by your profiles: ${repos[*]}"
     [[ $rmimage -eq 1 && "$BACKEND" == "vllm" ]] && echo "  - the Docker image $IMAGE"
     [[ $rmmodels -eq 0 ]] && echo "Downloaded models stay in $HF_CACHE (add --remove-models to delete the ones your profiles use)."
@@ -308,8 +308,8 @@ case "$cmd" in
       launchctl bootout "gui/$UID/$PROXY_LABEL" 2>/dev/null || true
       rm -f "$(plist_path $PROXY_LABEL)"
     else
-      sudo systemctl disable --now vllm-tui-proxy >/dev/null 2>&1 || true
-      sudo rm -f /etc/systemd/system/vllm-tui-proxy.service
+      sudo systemctl disable --now l9s-proxy >/dev/null 2>&1 || true
+      sudo rm -f /etc/systemd/system/l9s-proxy.service
       sudo systemctl daemon-reload
     fi
     echo "==> proxy service removed"
@@ -325,22 +325,22 @@ if hashes:
     strategy.execute()
 PYEOF2
     fi
-    for link in /usr/local/bin/vllm-tui /usr/local/bin/llm "$HOME/.local/bin/vllm-tui"; do
-      if [[ -L "$link" && "$(readlink "$link")" == "$VLLM_TUI_HOME/bin/vllm-tui" ]]; then
+    for link in /usr/local/bin/l9s /usr/local/bin/llm "$HOME/.local/bin/l9s"; do
+      if [[ -L "$link" && "$(readlink "$link")" == "$L9S_HOME/bin/l9s" ]]; then
         if [[ -w "$(dirname "$link")" ]]; then rm -f "$link"; else sudo rm -f "$link"; fi
       fi
     done
     if [[ $keep -eq 1 ]]; then
-      rm -rf "$VLLM_TUI_HOME/app" "$VLLM_TUI_HOME/bin" "$VLLM_TUI_HOME/src" "$VLLM_TUI_HOME/cache" "$VLLM_TUI_HOME/logs" \
-             "$VLLM_TUI_HOME/downloads" "$VLLM_TUI_HOME/active"
+      rm -rf "$L9S_HOME/app" "$L9S_HOME/bin" "$L9S_HOME/src" "$L9S_HOME/cache" "$L9S_HOME/logs" \
+             "$L9S_HOME/downloads" "$L9S_HOME/active"
     else
-      rm -rf "$VLLM_TUI_HOME"
+      rm -rf "$L9S_HOME"
     fi
     left="uv and the hf CLI (~/.local/bin)"
     [[ $rmmodels -eq 0 ]] && left+=", downloaded models ($HF_CACHE)"
     [[ $rmimage -eq 0 && "$BACKEND" == "vllm" ]] && left+=", the vLLM Docker image"
-    [[ $keep -eq 1 ]] && left+=", your settings/profiles/history in $VLLM_TUI_HOME"
-    echo "==> vllm-tui uninstalled. Left in place: $left."
+    [[ $keep -eq 1 ]] && left+=", your settings/profiles/history in $L9S_HOME"
+    echo "==> l9s uninstalled. Left in place: $left."
     exit 0 ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;

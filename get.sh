@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# vllm-tui one-line install:
-#   curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash
+# l9s one-line install:
+#   curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash
 # Options (pass after `bash -s --`):
 #   --model <org/repo>   serve this model instead of the starter model
 #   --no-model           install only
 #   --ref <branch|tag>   install a specific version (default: main)
-# e.g. curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash -s -- --no-model
-# Re-running it updates vllm-tui and keeps your settings, profiles and history.
+# e.g. curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --no-model
+# Re-running it updates l9s and keeps your settings, profiles and history.
 set -euo pipefail
-REPO="JongoDB/vllm-tui"
+REPO="JongoDB/l9s"
 REF="main"
 ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -17,14 +17,14 @@ while [[ $# -gt 0 ]]; do
     *) ARGS+=("$1"); shift ;;
   esac
 done
-command -v curl >/dev/null || { echo "vllm-tui needs curl" >&2; exit 1; }
-command -v tar >/dev/null || { echo "vllm-tui needs tar" >&2; exit 1; }
-SRC="${VLLM_TUI_HOME:-$HOME/.vllm-tui}/src"
+command -v curl >/dev/null || { echo "l9s needs curl" >&2; exit 1; }
+command -v tar >/dev/null || { echo "l9s needs tar" >&2; exit 1; }
+SRC="${L9S_HOME:-$HOME/.l9s}/src"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-echo "==> downloading vllm-tui ($REF)"
+echo "==> downloading l9s ($REF)"
 curl -fsSL "https://codeload.github.com/$REPO/tar.gz/$REF" | tar xz -C "$TMP"
 mkdir -p "$(dirname "$SRC")"
 rm -rf "$SRC"
-mv "$TMP"/vllm-tui-* "$SRC"
+mv "$TMP"/l9s-* "$SRC"
 exec bash "$SRC/install.sh" ${ARGS[@]+"${ARGS[@]}"}

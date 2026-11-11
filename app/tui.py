@@ -1,4 +1,4 @@
-"""vllm-tui TUI — k9s-style terminal UI for a local LLM server (vLLM in Docker, or mlx-lm on Apple Silicon).
+"""l9s TUI — k9s-style terminal UI for a local LLM server (vLLM in Docker, or mlx-lm on Apple Silicon).
 
 Wraps the `llm` helper (profiles, serve, stop...) and the Hugging Face Hub API.
 Downloads run detached (setsid) so they survive quitting the TUI.
@@ -36,14 +36,14 @@ import hfmeta
 import hw
 
 HOME = Path.home()
-VLLM_TUI_HOME = Path(os.environ.get("VLLM_TUI_HOME", HOME / ".vllm-tui"))
-LLM_HOME = VLLM_TUI_HOME
+L9S_HOME = Path(os.environ.get("L9S_HOME", HOME / ".l9s"))
+LLM_HOME = L9S_HOME
 PROFILES = LLM_HOME / "profiles"
 DL_DIR = LLM_HOME / "downloads"
 HF_HUB = HOME / ".cache/huggingface/hub"
 HF_BIN = HOME / ".local/bin/hf"
-LLM_BIN = str(VLLM_TUI_HOME / "bin/vllm-tui")
-BACKEND_LABEL = "dev.vllm-tui.backend"
+LLM_BIN = str(L9S_HOME / "bin/l9s")
+BACKEND_LABEL = "dev.l9s.backend"
 for d in (PROFILES, DL_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -292,7 +292,7 @@ def parse_ts(s: str) -> float | None:
 
 
 def proxy_metrics(d: dict, since: float) -> tuple[dict, dict]:
-    """vLLM-style counters computed from vllm-tui-proxy's request records (for servers without /metrics)."""
+    """vLLM-style counters computed from l9s-proxy's request records (for servers without /metrics)."""
     recs = [r for r in d.get("recent", []) if r.get("start", 0) >= since and r.get("path", "").startswith("/v1/")]
     act = [r for r in d.get("active", []) if r.get("path", "").startswith("/v1/")]
     m: dict = collections.defaultdict(float)
@@ -414,7 +414,7 @@ class LogHighlighter(Highlighter):
         if s.startswith("──"):
             text.stylize("bold cyan")
             return
-        if s.startswith(("$ vllm-tui", "==>")):
+        if s.startswith(("$ l9s", "==>")):
             text.stylize("cyan")
             return
         m = LOG_PREFIX.match(s)
@@ -435,7 +435,7 @@ def style_log(line: str) -> Text:
         return Text(line, style="bold green")
     if line.startswith("──"):
         return Text(line, style="bold cyan")
-    if line.startswith("$ vllm-tui"):
+    if line.startswith("$ l9s"):
         return Text(line, style="bold magenta")
     if line.startswith("==>"):
         return Text(line, style="cyan")
@@ -843,7 +843,7 @@ HELP_MD = """
 | `ctrl+k` | cancel the highlighted in-flight request (vLLM stops generating it) |
 | `a` | requests: toggle in-flight only |
 | `f` | log: follow on/off (pause scrolling to read) |
-| `ctrl+s` | save the full server log to `~/.vllm-tui/logs/` |
+| `ctrl+s` | save the full server log to `~/.l9s/logs/` |
 
 ### Copying text
 * **Click-drag** selects text in the log, status panels, model analysis and dialogs; **Ctrl+C** copies it.
@@ -870,7 +870,7 @@ HELP_MD = """
 ### Concepts
 * **One model at a time.** Serving a model replaces the current one; the endpoint is down while the new one loads
   (small models ~2 min, ~120B models ~10 min on first load).
-* **Profile** = model repo + vLLM flags + env vars + the name clients use as `"model"`. Stored in `~/.vllm-tui/profiles/`.
+* **Profile** = model repo + vLLM flags + env vars + the name clients use as `"model"`. Stored in `~/.l9s/profiles/`.
 * **Launch settings** come from the model itself: `config.json` (context, attention layout, custom code,
   calibrated KV scales), the chat template (tools / thinking), `generation_config.json` (sampling defaults) and any
   `vllm serve` / `docker run` command in the model card. Card flags are checked against the installed vLLM:
@@ -884,9 +884,9 @@ HELP_MD = """
 * **Memory:** CPU and GPU share one 128 GB pool. When a model loads, vLLM reserves GPU_MEM of it up front (weights +
   KV cache + runtime) and holds it, busy or idle, so "used" stays high. Lower GPU_MEM in Settings to leave more free
   memory (less context/concurrency), or stop the server to release it.
-* **Request proxy:** clients talk to `vllm-tui-proxy` on the public port, which forwards to vLLM on localhost:8001 and
+* **Request proxy:** clients talk to `l9s-proxy` on the public port, which forwards to vLLM on localhost:8001 and
   records each request (client, model, tokens, timings, short prompt/response previews unless disabled in Settings).
-  History lives in `~/.vllm-tui/requests.jsonl` and `~/.vllm-tui/events.jsonl`. The proxy adds ~1 ms.
+  History lives in `~/.l9s/requests.jsonl` and `~/.l9s/events.jsonl`. The proxy adds ~1 ms.
 
 ### Metrics glossary
 * **TTFT**: time to first token (prompt processing + queueing).
@@ -907,7 +907,7 @@ GB10_THEME = Theme(name="gb10", primary="#2F81F7", secondary="#3D6A99", accent="
 
 
 class LLMTui(App):
-    TITLE = "vllm-tui"
+    TITLE = "l9s"
     CSS = """
     #st-head { height: auto; padding: 0 1; border: round $primary; }
     #panels { height: auto; }
@@ -979,7 +979,7 @@ class LLMTui(App):
         self.api = HfApi(token=self.env.get("HF_TOKEN") or None)
         self.hw = hw.detect()
         self.backend = self.env.get("BACKEND", self.hw.backend)
-        self.container = self.env.get("CONTAINER", "vllm-tui")
+        self.container = self.env.get("CONTAINER", "l9s-vllm")
         self.mem_total = self.hw.system_mem or hw.mem_snapshot()["total"] or 128e9
         self.pool = self.hw.pool_per_gpu() or self.mem_total
         self.port = self.env.get("PORT", "8000")
@@ -1441,7 +1441,7 @@ class LLMTui(App):
     @work(thread=True)
     def _cancel_request(self, rid: str) -> None:
         try:
-            urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{self.port}/_vllm-tui/requests/{rid}/cancel",
+            urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{self.port}/_l9s/requests/{rid}/cancel",
                                                           method="POST", data=b""), timeout=5)
             self.call_from_thread(self.notify, f"request {rid} cancelled")
         except Exception as e:
@@ -1469,7 +1469,7 @@ class LLMTui(App):
         path = d / f"vllm-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
         with path.open("w") as f:
             if self.backend == "mlx":
-                src = VLLM_TUI_HOME / "logs/backend.log"
+                src = L9S_HOME / "logs/backend.log"
                 f.write(src.read_text(errors="replace") if src.exists() else "")
             else:
                 subprocess.run(["docker", "logs", self.container], stdout=f, stderr=subprocess.STDOUT, timeout=60)
@@ -1486,7 +1486,7 @@ class LLMTui(App):
     @work(thread=True, exclusive=True, group="reqs")
     def _fetch_requests(self) -> None:
         try:
-            data = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_vllm-tui/requests?limit=1000", timeout=2))
+            data = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/requests?limit=1000", timeout=2))
             ok = True
         except Exception:
             data, ok = None, False
@@ -1497,7 +1497,7 @@ class LLMTui(App):
         summ = self.query_one("#req-summary", Static)
         if not ok or data is None:
             summ.update(f"[red]● request proxy not reachable on :{self.port}[/red]: clients can't connect either. "
-                        "Run [b]vllm-tui proxy status[/b] / [b]vllm-tui proxy restart[/b].")
+                        "Run [b]l9s proxy status[/b] / [b]l9s proxy restart[/b].")
             return
         now = data["now"]
         act = sorted(data["active"], key=lambda r: r["start"], reverse=True)
@@ -1518,7 +1518,7 @@ class LLMTui(App):
             f"tokens {human(sum(r.get('prompt_tokens') or 0 for r in win))} in / "
             f"{human(sum(r.get('gen_tokens') or 0 for r in win))} out\n"
             f"[dim]enter/d describe · ctrl+k cancel in-flight · a in-flight only{' [b](on)[/b]' if self.req_active_only else ''}"
-            f" · / filter · y copy id · history: {len(rec)} requests in ~/.vllm-tui/requests.jsonl[/dim]")
+            f" · / filter · y copy id · history: {len(rec)} requests in ~/.l9s/requests.jsonl[/dim]")
         rows = act + ([] if self.req_active_only else rec)
         f = self.filters.get("reqs", "")
         icons = {"running": ("▶", "cyan"), "done": ("✓", "green"), "error": ("✗", "red"), "cancelled": ("■", "bright_black")}
@@ -1583,7 +1583,7 @@ class LLMTui(App):
     def poll_events(self) -> None:
         evs = None
         try:
-            evs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_vllm-tui/events?limit=1000", timeout=2))["events"]
+            evs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/events?limit=1000", timeout=2))["events"]
         except Exception:
             try:
                 evs = [json.loads(l) for l in (LLM_HOME / "events.jsonl").read_text().splitlines()[-1000:] if l.strip()]
@@ -1612,7 +1612,7 @@ class LLMTui(App):
         if cur and cur in t.rows:
             t.move_cursor(row=t.get_row_index(cur))
         t.border_title = f"Events ({n})" + (f"  [b yellow]/{f}[/]" if f else "") + \
-            "  [dim]recorded by vllm-tui-proxy, also while the TUI is closed[/dim]"
+            "  [dim]recorded by l9s-proxy, also while the TUI is closed[/dim]"
 
     def action_refresh(self) -> None:
         self.env = load_env()
@@ -1928,7 +1928,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                 snap.update(status=st["Status"], exit=st.get("ExitCode"), oom=st.get("OOMKilled"),
                             started=parse_ts(st.get("StartedAt", "")), finished=parse_ts(st.get("FinishedAt", "")),
                             image=info[0]["Config"]["Image"],
-                            cprofile=labels.get("vllm-tui.profile") or labels.get("llm.profile", ""))
+                            cprofile=labels.get("l9s.profile") or labels.get("llm.profile", ""))
             else:
                 snap["status"] = "absent"
         snap["ready"] = False
@@ -1949,13 +1949,13 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                 except Exception:
                     pass
         try:
-            snap["proxy"] = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_vllm-tui/health", timeout=2))
+            snap["proxy"] = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/health", timeout=2))
         except Exception:
             snap["proxy"] = None
         if self.backend == "mlx" and snap["proxy"] and snap["ready"]:
             # mlx-lm has no Prometheus endpoint: derive the same numbers from the proxy's request records
             try:
-                d = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_vllm-tui/requests?limit=2000", timeout=2))
+                d = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/requests?limit=2000", timeout=2))
                 snap["m"], snap["reasons"] = proxy_metrics(d, snap.get("started") or 0)
             except Exception:
                 pass
@@ -2032,7 +2032,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         lines = [f"[b {color}]● {badge}[/]   [b]{prof or '-'}[/b]  [dim]{repo}[/dim]"]
         px = s.get("proxy")
         pxs = (f"[green]proxy ●[/green] {px['active']} in flight" if px else
-               "[b red]proxy DOWN: clients can't connect (vllm-tui proxy restart)[/b red]")
+               "[b red]proxy DOWN: clients can't connect (l9s proxy restart)[/b red]")
         lines.append(f"endpoint [b]{self.endpoint}[/b]  {pxs}   [dim](c = connection details)[/dim]   "
                      f"uptime {dur(up)}   image [dim]{s.get('image', '-')}[/dim]")
         kv = ""
@@ -2165,7 +2165,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
     def follow_logs(self) -> None:
         """Stream the server log: `docker logs -f` (vllm) or the launchd log file (mlx), from server start."""
         if self.backend == "mlx":
-            return self._follow_file(VLLM_TUI_HOME / "logs/backend.log")
+            return self._follow_file(L9S_HOME / "logs/backend.log")
         last_started, since = None, None
         while not self.stopping:
             started = sh(["docker", "inspect", "-f", "{{.State.StartedAt}}", self.container])
@@ -2203,7 +2203,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             except FileNotFoundError:
                 time.sleep(1)
                 continue
-            if st.st_ino != ino:  # vllm-tui rotates the log each time the server starts
+            if st.st_ino != ino:  # l9s rotates the log each time the server starts
                 ino, pos = st.st_ino, 0
                 self.log_q.append(("reset", datetime.fromtimestamp(st.st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
             if st.st_size < pos:
@@ -2247,7 +2247,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                 rl.write_line(line)
 
     def log_visible(self, line: str, errors_only: bool) -> bool:
-        if errors_only and not (ERR_RE.search(line) or "WARNING" in line or line.startswith(("──", "$ vllm-tui", "==>"))):
+        if errors_only and not (ERR_RE.search(line) or "WARNING" in line or line.startswith(("──", "$ l9s", "==>"))):
             return False
         return match(self.filters.get("srvlog", ""), line)
 
@@ -2272,7 +2272,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
 
     @work(thread=True, group="llm")
     def _run_llm(self, args: list[str], done_msg: str | None) -> None:
-        self.call_from_thread(self.slog, f"$ vllm-tui {' '.join(shlex.quote(a) for a in args)}")
+        self.call_from_thread(self.slog, f"$ l9s {' '.join(shlex.quote(a) for a in args)}")
         p = subprocess.Popen([LLM_BIN] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                              errors="replace")
         tail = []
@@ -2283,9 +2283,9 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         if args and args[0] in ("serve", "use"):
             self.serving = ""
         if rc == 0:
-            self.call_from_thread(self.notify, done_msg or f"vllm-tui {args[0]} finished")
+            self.call_from_thread(self.notify, done_msg or f"l9s {args[0]} finished")
         else:
-            self.call_from_thread(self.notify, f"vllm-tui {args[0]} failed: {' | '.join(tail)[-300:]}",
+            self.call_from_thread(self.notify, f"l9s {args[0]} failed: {' | '.join(tail)[-300:]}",
                                   severity="error", timeout=15)
         self.call_from_thread(self.refresh_local)
         self.call_from_thread(self.poll_status)
@@ -2692,7 +2692,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         plan = A["plan"]
         expected = plan["download_bytes"]
         if not expected:
-            self.call_from_thread(self.notify, f"can't list files of {repo} (gated? set HF_TOKEN in ~/.vllm-tui/env)",
+            self.call_from_thread(self.notify, f"can't list files of {repo} (gated? set HF_TOKEN in ~/.l9s/env)",
                                   severity="error")
             return
         free = shutil.disk_usage(HF_HUB).free

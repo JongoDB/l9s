@@ -1,20 +1,20 @@
-# vllm-tui
+# l9s
 
-**k9s for local LLMs.** vllm-tui turns a GPU box or an Apple Silicon Mac into an OpenAI-compatible model server for
+**k9s for local LLMs.** l9s turns a GPU box or an Apple Silicon Mac into an OpenAI-compatible model server for
 your network, and gives you a terminal UI to find, pull, serve and *watch* models: every request in flight,
 throughput, latency, memory, startup progress, events.
 
 ```
-clients ──▶ :8000  vllm-tui-proxy ──▶ 127.0.0.1:8001  model server
+clients ──▶ :8000  l9s-proxy ──▶ 127.0.0.1:8001  model server
               │  API key, request log,        ▲      vllm: vLLM in Docker (Linux + NVIDIA/AMD GPU)
               │  events, cancel               │      mlx:  mlx-lm server (Apple Silicon)
               ▼                               │
-           vllm-tui (TUI + CLI): analyze, pull, serve, switch, observe
+           l9s (TUI + CLI): analyze, pull, serve, switch, observe
 ```
 
 ## Deployments
 
-vllm-tui picks the deployment from your hardware when you install it:
+l9s picks the deployment from your hardware when you install it:
 
 | Deployment | Hardware | Model server | Status |
 |---|---|---|---|
@@ -29,7 +29,7 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
 
 - **One OpenAI-compatible endpoint** with an API key, one model at a time, restarted automatically after a crash or
   reboot. Clients use the profile name as `model`, the same on both deployments.
-- **Model analysis before you download** (`vllm-tui info <repo>`, the Hub tab, the serve dialog). vllm-tui reads the model's
+- **Model analysis before you download** (`l9s info <repo>`, the Hub tab, the serve dialog). l9s reads the model's
   `config.json`, chat template, `generation_config.json` and model card, and checks them against what *your* server
   supports:
   - format and quantization (NVFP4, FP8, AWQ, GPTQ, MXFP4, MLX 4/8-bit…) and whether this server can load it
@@ -43,7 +43,7 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
   - presets (*Recommended* = card + computed fixes, *Computed only*, each card command), with the source of every flag
 - **Smart downloads:** skips files the server never reads (GGUF, `.pth`, `original/`, duplicate `.bin`, TF/Flax).
   gpt-oss-20b: 41 GB → 14 GB. Speculative-decoding drafter models are pulled too.
-- **Terminal UI** (`vllm-tui`), k9s-style:
+- **Terminal UI** (`l9s`), k9s-style:
   - **Server:** state, startup phase and progress, last error, context and KV capacity, live tok/s, KV-cache
     sparklines, TTFT / inter-token latency / prefix-cache hits, memory breakdown (weights / KV cache / runtime),
     filterable log
@@ -61,77 +61,77 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
 One line, on the GPU box or Mac that will serve the model:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash
+curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash
 ```
 
-That downloads vllm-tui, installs it, and **starts serving a starter model** sized for the machine (the largest of
+That downloads l9s, installs it, and **starts serving a starter model** sized for the machine (the largest of
 Qwen3 8B / 4B / 1.7B / 0.6B that fits with 16K+ context: FP8 builds for vLLM, 4-bit MLX builds on a Mac), so the
 endpoint answers right away. Options go after `bash -s --`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash -s -- --model Qwen/Qwen3-4B-FP8
-curl -fsSL https://raw.githubusercontent.com/JongoDB/vllm-tui/main/get.sh | bash -s -- --no-model
+curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --model Qwen/Qwen3-4B-FP8
+curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --no-model
 ```
 
-Or from a clone: `git clone https://github.com/JongoDB/vllm-tui.git && cd vllm-tui && ./install.sh [--model <repo>|--no-model]`.
+Or from a clone: `git clone https://github.com/JongoDB/l9s.git && cd l9s && ./install.sh [--model <repo>|--no-model]`.
 
 The installer detects your hardware and deployment, sets up [uv](https://github.com/astral-sh/uv) and a private Python
-environment in `~/.vllm-tui`, installs the `vllm-tui` command, the request proxy as a service (systemd / launchd) and
+environment in `~/.l9s`, installs the `l9s` command, the request proxy as a service (systemd / launchd) and
 the model server (vLLM image, or mlx-lm), generates an API key, and probes what the server supports. Running it again
-updates vllm-tui and keeps your settings, profiles and history (no starter model if you already have one).
+updates l9s and keeps your settings, profiles and history (no starter model if you already have one).
 
 **Linux (vllm) needs:** Docker with GPU access (`docker run --gpus all …` works: NVIDIA container toolkit, or ROCm),
-and `sudo` for the `vllm-tui` symlink and the proxy service.
+and `sudo` for the `l9s` symlink and the proxy service.
 **macOS (mlx) needs:** an Apple Silicon Mac; nothing else (no Docker, no sudo).
 
-**Uninstall:** `vllm-tui uninstall` removes the model server, the proxy service, the command and `~/.vllm-tui`.
+**Uninstall:** `l9s uninstall` removes the model server, the proxy service, the command and `~/.l9s`.
 Downloaded models stay in the Hugging Face cache unless you add `--remove-models`; `--keep-config` keeps your
 settings, profiles and history; `--remove-image` also deletes the vLLM Docker image.
 
 ## Quick start
 
 ```bash
-vllm-tui                                   # TUI: watch the server and requests; 4 = Hub to find more models
+l9s                                   # TUI: watch the server and requests; 4 = Hub to find more models
 
-vllm-tui quickstart Qwen/Qwen3-8B-FP8      # pull + serve any model with its recommended settings
-vllm-tui info Qwen/Qwen3-8B-FP8            # just the analysis: does it fit, how much context, settings
-vllm-tui test
+l9s quickstart Qwen/Qwen3-8B-FP8      # pull + serve any model with its recommended settings
+l9s info Qwen/Qwen3-8B-FP8            # just the analysis: does it fit, how much context, settings
+l9s test
 ```
 
-On a Mac, use MLX builds, e.g. `vllm-tui quickstart mlx-community/Qwen3-8B-4bit`.
+On a Mac, use MLX builds, e.g. `l9s quickstart mlx-community/Qwen3-8B-4bit`.
 
 Point any OpenAI-compatible client at it:
 
 ```bash
 export OPENAI_BASE_URL=http://<host>:8000/v1
-export OPENAI_API_KEY=<output of: vllm-tui key>
+export OPENAI_API_KEY=<output of: l9s key>
 ```
 
-On a remote box, run the TUI over SSH: `ssh -t <host> vllm-tui`.
+On a remote box, run the TUI over SSH: `ssh -t <host> l9s`.
 
 ## CLI
 
 | Command | |
 |---|---|
-| `vllm-tui` | terminal UI |
-| `vllm-tui quickstart [repo]` | pull and serve a model with its recommended settings (no repo: starter model that fits) |
-| `vllm-tui info <repo>` | model analysis and recommended serve command |
-| `vllm-tui pull <repo>` | download (skips files the server doesn't use; `--include/--exclude` to override) |
-| `vllm-tui serve <repo> [--name N] [--env K=V]... [server flags]` | save a profile and switch the server to it |
-| `vllm-tui use <profile>` · `vllm-tui profiles` | switch to / list profiles |
-| `vllm-tui status` · `vllm-tui logs [-f]` · `vllm-tui test` | health, server log, test request |
-| `vllm-tui stop` · `start` · `restart` | control the model server |
-| `vllm-tui ls` · `vllm-tui rm <repo>` | downloaded models / delete weights |
-| `vllm-tui proxy status\|restart\|logs` | the request proxy |
-| `vllm-tui upgrade <image:tag>` | (vllm) switch vLLM version |
-| `vllm-tui hw` · `vllm-tui key` | detected hardware / API key |
-| `vllm-tui uninstall [-y] [--keep-config] [--remove-models] [--remove-image]` | remove vllm-tui |
+| `l9s` | terminal UI |
+| `l9s quickstart [repo]` | pull and serve a model with its recommended settings (no repo: starter model that fits) |
+| `l9s info <repo>` | model analysis and recommended serve command |
+| `l9s pull <repo>` | download (skips files the server doesn't use; `--include/--exclude` to override) |
+| `l9s serve <repo> [--name N] [--env K=V]... [server flags]` | save a profile and switch the server to it |
+| `l9s use <profile>` · `l9s profiles` | switch to / list profiles |
+| `l9s status` · `l9s logs [-f]` · `l9s test` | health, server log, test request |
+| `l9s stop` · `start` · `restart` | control the model server |
+| `l9s ls` · `l9s rm <repo>` | downloaded models / delete weights |
+| `l9s proxy status\|restart\|logs` | the request proxy |
+| `l9s upgrade <image:tag>` | (vllm) switch vLLM version |
+| `l9s hw` · `l9s key` | detected hardware / API key |
+| `l9s uninstall [-y] [--keep-config] [--remove-models] [--remove-image]` | remove l9s |
 
 Full reference: [docs/USAGE.md](docs/USAGE.md).
 
 ## Example: what reading the model card is worth
 
-On a GB10, Nemotron-3-Super-120B-A12B-NVFP4 with hand-picked vLLM flags ran at **16.5 tok/s**. vllm-tui's
+On a GB10, Nemotron-3-Super-120B-A12B-NVFP4 with hand-picked vLLM flags ran at **16.5 tok/s**. l9s's
 *Recommended* preset took the card's "vLLM on DGX Spark" command, removed what vLLM 0.33 no longer accepts
 (`--swap-space`, a reasoning-parser plugin file, multi-GPU settings), capped the context to what fits, and kept its MTP
 speculative decoding. The result was **26–30 tok/s** with a 262K context (single request, same machine).
@@ -142,7 +142,7 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 |---|---|
 | `get.sh` | one-line installer: downloads a release and runs `install.sh` |
 | `install.sh` | installer (both deployments); `--model <repo>` / `--no-model` |
-| `bin/vllm-tui` | CLI (bash): profiles, serve/switch, pull, quickstart, status, uninstall; drives Docker (vllm) or launchd (mlx) |
+| `bin/l9s` | CLI (bash): profiles, serve/switch, pull, quickstart, status, uninstall; drives Docker (vllm) or launchd (mlx) |
 | `app/tui.py` | terminal UI ([Textual](https://github.com/Textualize/textual)) |
 | `app/hfmeta.py` | model analysis: Hub metadata, memory and KV math, card command extraction and sanitizing, presets |
 | `app/hw.py` | hardware detection: vendor, GPUs, unified vs dedicated memory, Docker GPU flags, live GPU stats |
@@ -150,13 +150,13 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 | `app/vllm_caps.py` / `app/mlx_caps.py` | ask the installed server which flags, architectures, parsers and quant methods it supports |
 | `tests/` | end-to-end tests that drive the real TUI and proxy against a live server (some switch models: run them on a box you can interrupt) |
 
-State lives in `~/.vllm-tui` (config `env`, `profiles/`, `requests.jsonl`, `events.jsonl`, `logs/`); model weights stay
+State lives in `~/.l9s` (config `env`, `profiles/`, `requests.jsonl`, `events.jsonl`, `logs/`); model weights stay
 in the standard Hugging Face cache, shared with other tools.
 
 ## Privacy
 
 Everything stays on your machine. The proxy keeps the first ~400 characters of each prompt and response in
-`~/.vllm-tui/requests.jsonl` (mode 600) so the Requests view can show them; turn that off in Settings (`LOG_PROMPTS=0`).
+`~/.l9s/requests.jsonl` (mode 600) so the Requests view can show them; turn that off in Settings (`LOG_PROMPTS=0`).
 
 ## License
 

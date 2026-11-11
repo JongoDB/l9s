@@ -11,7 +11,7 @@ import time
 import traceback
 from pathlib import Path
 
-sys.path.insert(0, str(Path.home() / ".vllm-tui/app"))
+sys.path.insert(0, str(Path.home() / ".l9s/app"))
 import tui as llm_tui  # noqa: E402
 from huggingface_hub import scan_cache_dir  # noqa: E402
 from tui import Confirm, ServeDialog, TextModal  # noqa: E402
@@ -22,7 +22,7 @@ RESULTS, NOTES = [], []
 SMALL, EXT, TEST_PROFILE = "Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B", "e2e-qwen06"
 ORIG_REPO = llm_tui.profile_repo(llm_tui.active_profile())
 # a downloaded model other than the one being served (pull one first if there is none)
-AEON = os.environ.get("VLLM_TUI_TEST_REPO") or next((r for r in sorted(llm_tui.local_repos()) if r != ORIG_REPO), ORIG_REPO)
+AEON = os.environ.get("L9S_TEST_REPO") or next((r for r in sorted(llm_tui.local_repos()) if r != ORIG_REPO), ORIG_REPO)
 ORIG_PROFILE = llm_tui.active_profile()
 
 
@@ -445,7 +445,7 @@ async def main():
                 check(f"cleanup: {repo} deleted", await wait(pilot, lambda: repo not in rows(mt), 20))
         subprocess.run(["rm", "-rf", str(llm_tui.HF_HUB / f"models--{EXT.replace('/', '--')}")])
 
-        evs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{app.port}/_vllm-tui/events?limit=1000"))["events"]
+        evs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{app.port}/_l9s/events?limit=1000"))["events"]
         recent_kinds = [e["kind"] for e in evs if e["t"] > T0]
         check("events: container start/exit/ready captured during run",
               {"start", "exit", "ready"} <= set(recent_kinds), recent_kinds[-15:])

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# vllm-tui installer.
+# l9s installer.
 #   Linux + NVIDIA (or AMD ROCm) GPU  -> "vllm" deployment: vLLM in Docker (auto-tuned for GB10 / DGX Spark).
 #   macOS on Apple Silicon             -> "mlx" deployment: mlx-lm server as a launchd agent.
-# Safe to re-run: updates the code and keeps ~/.vllm-tui/env, profiles and history.
+# Safe to re-run: updates the code and keeps ~/.l9s/env, profiles and history.
 set -euo pipefail
 cd "$(dirname "$0")"
 # options: --model <org/repo>  serve this model when done
@@ -16,7 +16,7 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
-VLLM_TUI_HOME="${VLLM_TUI_HOME:-$HOME/.vllm-tui}"
+L9S_HOME="${L9S_HOME:-$HOME/.l9s}"
 OS="$(uname -s)"
 UV="$HOME/.local/bin/uv"
 
@@ -35,73 +35,73 @@ say "uv + Hugging Face CLI"
 "$UV" tool install -q --upgrade "huggingface_hub[hf_xet]"
 
 # ---------------------------------------------------------------- code + Python environment
-say "vllm-tui -> $VLLM_TUI_HOME"
-mkdir -p "$VLLM_TUI_HOME/app" "$VLLM_TUI_HOME/bin" "$VLLM_TUI_HOME/profiles" "$VLLM_TUI_HOME/cache" "$VLLM_TUI_HOME/logs"
-cp app/*.py "$VLLM_TUI_HOME/app/"
-install -m 755 bin/vllm-tui "$VLLM_TUI_HOME/bin/vllm-tui"
-[[ -d "$VLLM_TUI_HOME/app/.venv" ]] || "$UV" venv -q --python 3.12 "$VLLM_TUI_HOME/app/.venv"
-"$UV" pip install -q --python "$VLLM_TUI_HOME/app/.venv/bin/python" -r requirements.txt
+say "l9s -> $L9S_HOME"
+mkdir -p "$L9S_HOME/app" "$L9S_HOME/bin" "$L9S_HOME/profiles" "$L9S_HOME/cache" "$L9S_HOME/logs"
+cp app/*.py "$L9S_HOME/app/"
+install -m 755 bin/l9s "$L9S_HOME/bin/l9s"
+[[ -d "$L9S_HOME/app/.venv" ]] || "$UV" venv -q --python 3.12 "$L9S_HOME/app/.venv"
+"$UV" pip install -q --python "$L9S_HOME/app/.venv/bin/python" -r requirements.txt
 if [[ "$OS" == "Darwin" ]]; then
   say "mlx-lm (Apple's MLX inference server)"
-  "$UV" pip install -q --upgrade --python "$VLLM_TUI_HOME/app/.venv/bin/python" mlx-lm
+  "$UV" pip install -q --upgrade --python "$L9S_HOME/app/.venv/bin/python" mlx-lm
 fi
-PY="$VLLM_TUI_HOME/app/.venv/bin/python"
+PY="$L9S_HOME/app/.venv/bin/python"
 
 if [[ "$OS" == "Darwin" ]]; then
   mkdir -p "$HOME/.local/bin"
-  ln -sf "$VLLM_TUI_HOME/bin/vllm-tui" "$HOME/.local/bin/vllm-tui"
-  BIN_NOTE="~/.local/bin/vllm-tui"
+  ln -sf "$L9S_HOME/bin/l9s" "$HOME/.local/bin/l9s"
+  BIN_NOTE="~/.local/bin/l9s"
 else
-  sudo ln -sf "$VLLM_TUI_HOME/bin/vllm-tui" /usr/local/bin/vllm-tui
-  BIN_NOTE="/usr/local/bin/vllm-tui"
+  sudo ln -sf "$L9S_HOME/bin/l9s" /usr/local/bin/l9s
+  BIN_NOTE="/usr/local/bin/l9s"
 fi
 
 # ---------------------------------------------------------------- config
-eval "$("$PY" "$VLLM_TUI_HOME/app/hw.py" env)"   # BACKEND, GPU_ARGS, IMAGE defaults for this machine
-if [[ ! -f "$VLLM_TUI_HOME/env" ]]; then
-  say "config -> $VLLM_TUI_HOME/env (new API key)"
+eval "$("$PY" "$L9S_HOME/app/hw.py" env)"   # BACKEND, GPU_ARGS, IMAGE defaults for this machine
+if [[ ! -f "$L9S_HOME/env" ]]; then
+  say "config -> $L9S_HOME/env (new API key)"
   {
     echo "BACKEND=$BACKEND"
-    echo "API_KEY=sk-vllm-tui-$(openssl rand -hex 16)"
+    echo "API_KEY=sk-l9s-$(openssl rand -hex 16)"
     echo "HF_TOKEN="
     echo "PORT=8000"
     echo "BACKEND_PORT=8001"
     echo "LOG_PROMPTS=1"
     if [[ "$BACKEND" == "vllm" ]]; then
-      echo "IMAGE=$IMAGE"; echo "GPU_ARGS=\"$GPU_ARGS\""; echo "GPU_MEM=0.85"; echo "CONTAINER=vllm-tui"
+      echo "IMAGE=$IMAGE"; echo "GPU_ARGS=\"$GPU_ARGS\""; echo "GPU_MEM=0.85"; echo "CONTAINER=l9s-vllm"
     fi
-  } > "$VLLM_TUI_HOME/env"
-  chmod 600 "$VLLM_TUI_HOME/env"
+  } > "$L9S_HOME/env"
+  chmod 600 "$L9S_HOME/env"
 fi
-grep -q '^BACKEND=' "$VLLM_TUI_HOME/env" || echo "BACKEND=$BACKEND" >> "$VLLM_TUI_HOME/env"
-envget() { ( set +u; source "$VLLM_TUI_HOME/env"; eval "echo \"\${$1:-}\"" ); }
+grep -q '^BACKEND=' "$L9S_HOME/env" || echo "BACKEND=$BACKEND" >> "$L9S_HOME/env"
+envget() { ( set +u; source "$L9S_HOME/env"; eval "echo \"\${$1:-}\"" ); }
 BACKEND="$(envget BACKEND)"
 
 # ---------------------------------------------------------------- request proxy service
-say "request proxy (vllm-tui-proxy)"
+say "request proxy (l9s-proxy)"
 if [[ "$OS" == "Darwin" ]]; then
-  PL="$HOME/Library/LaunchAgents/dev.vllm-tui.proxy.plist"
+  PL="$HOME/Library/LaunchAgents/dev.l9s.proxy.plist"
   mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$PL" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>Label</key><string>dev.vllm-tui.proxy</string>
-  <key>ProgramArguments</key><array><string>$PY</string><string>$VLLM_TUI_HOME/app/proxy.py</string></array>
+  <key>Label</key><string>dev.l9s.proxy</string>
+  <key>ProgramArguments</key><array><string>$PY</string><string>$L9S_HOME/app/proxy.py</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$VLLM_TUI_HOME/logs/proxy.log</string>
-  <key>StandardErrorPath</key><string>$VLLM_TUI_HOME/logs/proxy.log</string>
+  <key>StandardOutPath</key><string>$L9S_HOME/logs/proxy.log</string>
+  <key>StandardErrorPath</key><string>$L9S_HOME/logs/proxy.log</string>
 </dict></plist>
 EOF
-  launchctl bootout "gui/$UID/dev.vllm-tui.proxy" 2>/dev/null || true
+  launchctl bootout "gui/$UID/dev.l9s.proxy" 2>/dev/null || true
   launchctl bootstrap "gui/$UID" "$PL"
 else
-  sed -e "s|@USER@|$USER|" -e "s|@HOME@|$HOME|g" -e "s|@VLLM_TUI_HOME@|$VLLM_TUI_HOME|g" systemd/vllm-tui-proxy.service \
-    | sudo tee /etc/systemd/system/vllm-tui-proxy.service >/dev/null
+  sed -e "s|@USER@|$USER|" -e "s|@HOME@|$HOME|g" -e "s|@L9S_HOME@|$L9S_HOME|g" systemd/l9s-proxy.service \
+    | sudo tee /etc/systemd/system/l9s-proxy.service >/dev/null
   sudo systemctl daemon-reload
-  sudo systemctl enable vllm-tui-proxy >/dev/null 2>&1
-  sudo systemctl restart vllm-tui-proxy
+  sudo systemctl enable l9s-proxy >/dev/null 2>&1
+  sudo systemctl restart l9s-proxy
 fi
 
 # ---------------------------------------------------------------- model server prerequisites
@@ -111,7 +111,7 @@ if [[ "$BACKEND" == "vllm" ]]; then
     sudo usermod -aG docker "$USER"
     die "added $USER to the docker group: log out and back in (or run: newgrp docker), then re-run ./install.sh"
   fi
-  grep -q '^GPU_ARGS=' "$VLLM_TUI_HOME/env" || echo "GPU_ARGS=\"$GPU_ARGS\"" >> "$VLLM_TUI_HOME/env"
+  grep -q '^GPU_ARGS=' "$L9S_HOME/env" || echo "GPU_ARGS=\"$GPU_ARGS\"" >> "$L9S_HOME/env"
   IMAGE="$(envget IMAGE)"
   GPU_ARGS="$(envget GPU_ARGS)"
   read -ra GA <<< "${GPU_ARGS:---gpus all}"
@@ -126,30 +126,30 @@ fi
 say "probing what the model server supports (flags, architectures, parsers)"
 "$PY" - "$CAPS_KEY" "${GPU_ARGS:-}" <<'PY'
 import os, sys
-sys.path.insert(0, os.path.expanduser(os.environ.get("VLLM_TUI_HOME", "~/.vllm-tui")) + "/app")
+sys.path.insert(0, os.path.expanduser(os.environ.get("L9S_HOME", "~/.l9s")) + "/app")
 import hfmeta
 c = hfmeta.build_caps(sys.argv[1], sys.argv[2].split() or None)
 kinds = len(c.get("archs") or c.get("model_types") or [])
 print(f"    {sys.argv[1] if sys.argv[1] != 'mlx' else 'mlx-lm'} {c.get('version')}: {kinds} model architectures, {len(c['flags'])} flags")
 PY
 
-"$PY" "$VLLM_TUI_HOME/app/hw.py" | sed 's/^/    /'
+"$PY" "$L9S_HOME/app/hw.py" | sed 's/^/    /'
 
 # ---------------------------------------------------------------- starter model
-if [[ $NO_MODEL -eq 0 ]] && { [[ -n "$MODEL" ]] || [[ ! -L "$VLLM_TUI_HOME/active" ]]; }; then
+if [[ $NO_MODEL -eq 0 ]] && { [[ -n "$MODEL" ]] || [[ ! -L "$L9S_HOME/active" ]]; }; then
   say "starting a model${MODEL:+: $MODEL} (skip with --no-model)"
-  "$VLLM_TUI_HOME/bin/vllm-tui" quickstart ${MODEL:+"$MODEL"} \
-    || echo "    couldn't start a model automatically; pick one with: vllm-tui  (Hub tab) or vllm-tui quickstart <org/repo>"
+  "$L9S_HOME/bin/l9s" quickstart ${MODEL:+"$MODEL"} \
+    || echo "    couldn't start a model automatically; pick one with: l9s  (Hub tab) or l9s quickstart <org/repo>"
 fi
-IP="$("$PY" -c "import sys; sys.path.insert(0, '$VLLM_TUI_HOME/app'); import hw; print(hw.host_ip())")"
+IP="$("$PY" -c "import sys; sys.path.insert(0, '$L9S_HOME/app'); import hw; print(hw.host_ip())")"
 cat <<MSG
 
-vllm-tui is installed ($BIN_NOTE).  Deployment: $BACKEND
-Endpoint: http://$IP:$(envget PORT)/v1     API key: vllm-tui key
+l9s is installed ($BIN_NOTE).  Deployment: $BACKEND
+Endpoint: http://$IP:$(envget PORT)/v1     API key: l9s key
 
-  vllm-tui                     open the terminal UI (Hub tab: search, pull and serve a model)
-  vllm-tui info <org/repo>     what a model needs and the recommended settings
-  vllm-tui help                all commands
+  l9s                     open the terminal UI (Hub tab: search, pull and serve a model)
+  l9s info <org/repo>     what a model needs and the recommended settings
+  l9s help                all commands
 MSG
-[[ "$OS" == "Darwin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && echo "Add ~/.local/bin to your PATH to use 'vllm-tui'."
+[[ "$OS" == "Darwin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && echo "Add ~/.local/bin to your PATH to use 'l9s'."
 exit 0

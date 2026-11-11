@@ -1,0 +1,14 @@
+[Unit]
+Description=l9s-proxy: request-tracking proxy in front of the model server
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=@USER@
+Environment=L9S_HOME=@L9S_HOME@
+ExecStart=@L9S_HOME@/app/.venv/bin/python @L9S_HOME@/app/proxy.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,4 @@
-"""vllm-tui-proxy: transparent request-tracking proxy in front of the model server (the "pods" view for vllm-tui).
+"""l9s-proxy: transparent request-tracking proxy in front of the model server (the "pods" view for l9s).
 
   clients ──▶ 0.0.0.0:$PORT (this proxy) ──▶ 127.0.0.1:$BACKEND_PORT (vLLM container or mlx-lm server)
 
@@ -9,7 +9,7 @@
   so token counts are exact without changing what clients receive.
 * Cancelling a request (from the TUI) closes the upstream connection, which makes the server abort the generation.
 * Watches the container (docker events + readiness polling) and writes a persistent event timeline.
-* Admin API (localhost only): GET /_vllm-tui/requests, GET /_vllm-tui/events, POST /_vllm-tui/requests/<id>/cancel, GET /_vllm-tui/health
+* Admin API (localhost only): GET /_l9s/requests, GET /_l9s/events, POST /_l9s/requests/<id>/cancel, GET /_l9s/health
 """
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ import aiohttp
 from aiohttp import web
 
 HOME = Path.home()
-VLLM_TUI_HOME = Path(os.environ.get("VLLM_TUI_HOME", HOME / ".vllm-tui"))
-DATA_DIR = Path(os.environ.get("LLMPROXY_DATA", VLLM_TUI_HOME))
+L9S_HOME = Path(os.environ.get("L9S_HOME", HOME / ".l9s"))
+DATA_DIR = Path(os.environ.get("LLMPROXY_DATA", L9S_HOME))
 REQ_LOG = DATA_DIR / "requests.jsonl"
 EVENT_LOG = DATA_DIR / "events.jsonl"
 MAX_LOG_BYTES = 50 * 1024 * 1024
@@ -35,7 +35,7 @@ MAX_LOG_BYTES = 50 * 1024 * 1024
 def load_env() -> dict:
     env = {}
     try:
-        for line in (VLLM_TUI_HOME / "env").read_text().splitlines():
+        for line in (L9S_HOME / "env").read_text().splitlines():
             if "=" in line and not line.lstrip().startswith("#"):
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
@@ -48,7 +48,7 @@ ENV = load_env()
 PORT = int(os.environ.get("LLMPROXY_PORT") or ENV.get("PORT", "8000"))
 VLLM_PORT = int(os.environ.get("LLMPROXY_VLLM_PORT") or ENV.get("BACKEND_PORT") or ENV.get("VLLM_PORT", "8001"))
 BACKEND = ENV.get("BACKEND", "vllm")
-CONTAINER = ENV.get("CONTAINER", "vllm-tui")
+CONTAINER = ENV.get("CONTAINER", "l9s-vllm")
 API_KEY = ENV.get("API_KEY", "")
 UPSTREAM = f"http://127.0.0.1:{VLLM_PORT}"
 LOG_PROMPTS = ENV.get("LOG_PROMPTS", "1") != "0"
@@ -97,9 +97,9 @@ def _load_history() -> None:
 def active_model() -> tuple[str, str]:
     """(profile name, HF repo) of the profile being served."""
     try:
-        link = VLLM_TUI_HOME / "active"
+        link = L9S_HOME / "active"
         name = os.path.basename(os.readlink(link))
-        repo = (VLLM_TUI_HOME / "profiles" / name).read_text().splitlines()[0].strip()
+        repo = (L9S_HOME / "profiles" / name).read_text().splitlines()[0].strip()
         return name, repo
     except (OSError, IndexError):
         return "", ""
@@ -200,7 +200,7 @@ def finish(rec: dict, state: str) -> None:
 
 # ------------------------------------------------------------------ proxy
 async def proxy(request: web.Request) -> web.StreamResponse:
-    if request.path.startswith("/_vllm-tui/"):
+    if request.path.startswith("/_l9s/"):
         return await admin(request)
     if BACKEND == "mlx" and request.path.startswith("/v1/") and API_KEY:
         if request.headers.get("Authorization", "") != f"Bearer {API_KEY}":
@@ -209,7 +209,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
     if BACKEND == "mlx" and request.method == "GET" and request.path == "/v1/models":
         # like vLLM's --served-model-name: clients see the profile name, not every model in the HF cache
         name, repo = active_model()
-        return web.json_response({"object": "list", "data": [{"id": name, "object": "model", "owned_by": "vllm-tui",
+        return web.json_response({"object": "list", "data": [{"id": name, "object": "model", "owned_by": "l9s",
                                                               "root": repo}] if name else []})
     body = await request.read()
     record = (request.method, request.path) not in QUIET and not request.path.startswith("/_")
@@ -322,22 +322,22 @@ async def admin(request: web.Request) -> web.Response:
     if request.remote not in ("127.0.0.1", "::1"):
         return web.json_response({"error": "admin API is localhost-only"}, status=403)
     path = request.path
-    if path == "/_vllm-tui/health":
+    if path == "/_l9s/health":
         return web.json_response({"ok": True, "uptime": time.time() - started_at, "upstream": UPSTREAM,
                                   "active": len(active)})
-    if path == "/_vllm-tui/requests":
+    if path == "/_l9s/requests":
         limit = int(request.query.get("limit", "500"))
         return web.json_response({"now": time.time(), "active": [public(r) for r in active.values()],
                                   "recent": list(recent)[-limit:]})
-    if path == "/_vllm-tui/events":
+    if path == "/_l9s/events":
         limit = int(request.query.get("limit", "500"))
         return web.json_response({"events": list(events)[-limit:]})
-    if path.startswith("/_vllm-tui/requests/") and path.endswith("/cancel") and request.method == "POST":
+    if path.startswith("/_l9s/requests/") and path.endswith("/cancel") and request.method == "POST":
         rid = path.split("/")[3]
         rec = active.get(rid)
         if not rec:
             return web.json_response({"error": "not running"}, status=404)
-        rec["_cancel_reason"] = "cancelled from vllm-tui"
+        rec["_cancel_reason"] = "cancelled from l9s"
         rec["_task"].cancel()
         event("cancel", f"request {rid} from {rec.get('client')} cancelled by operator")
         return web.json_response({"ok": True})
@@ -358,7 +358,7 @@ async def watch_docker() -> None:
                     continue
                 st = e.get("status") or e.get("Action", "")
                 attrs = (e.get("Actor") or {}).get("Attributes") or {}
-                prof = attrs.get("vllm-tui.profile") or attrs.get("llm.profile", "")
+                prof = attrs.get("l9s.profile") or attrs.get("llm.profile", "")
                 if st == "start":
                     event("start", f"container started: profile {prof}", profile=prof)
                 elif st == "die":

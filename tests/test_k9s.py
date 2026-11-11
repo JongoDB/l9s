@@ -1,6 +1,6 @@
 import asyncio, json, sys, threading, time, urllib.request
 from pathlib import Path
-sys.path.insert(0, str(Path.home() / ".vllm-tui/app"))
+sys.path.insert(0, str(Path.home() / ".l9s/app"))
 import tui as llm_tui
 from tui import CommandScreen, Confirm, FilterScreen, TextModal
 from textual.widgets import DataTable, Input, Log, OptionList, Static, TabbedContent

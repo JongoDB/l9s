@@ -1,5 +1,5 @@
-"""TUI checks for the mlx deployment (Apple Silicon). Needs a model being served (vllm-tui serve ...).
-Run: ~/.vllm-tui/app/.venv/bin/python tests/test_mlx.py   (results in /tmp/test_mlx.out)"""
+"""TUI checks for the mlx deployment (Apple Silicon). Needs a model being served (l9s serve ...).
+Run: ~/.l9s/app/.venv/bin/python tests/test_mlx.py   (results in /tmp/test_mlx.out)"""
 import asyncio
 import json
 import sys
@@ -8,7 +8,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path.home() / ".vllm-tui/app"))
+sys.path.insert(0, str(Path.home() / ".l9s/app"))
 import tui  # noqa: E402
 from tui import Confirm, ServeDialog, TextModal  # noqa: E402
 from textual.widgets import DataTable, Input, Log, Static, TabbedContent  # noqa: E402

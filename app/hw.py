@@ -1,6 +1,6 @@
-"""Hardware detection for vllm-tui.
+"""Hardware detection for l9s.
 
-Answers the questions the rest of vllm-tui needs, on any Linux box that can run vLLM:
+Answers the questions the rest of l9s needs, on any Linux box that can run vLLM:
   * which accelerator vendor (NVIDIA / AMD / none) and CPU architecture (amd64 / arm64)
   * which GPUs, and whether memory is unified with the CPU (GB10 / DGX Spark, Jetson, AMD APUs)
     or dedicated VRAM per GPU (RTX, A/H/B/L-series, Instinct)
@@ -8,7 +8,7 @@ Answers the questions the rest of vllm-tui needs, on any Linux box that can run 
   * how Docker gets access to the GPUs, and a sensible default vLLM image
   * live GPU stats for the TUI
 
-`python hw.py` prints a summary; `python hw.py env` prints KEY=value defaults for ~/.vllm-tui/env.
+`python hw.py` prints a summary; `python hw.py env` prints KEY=value defaults for ~/.l9s/env.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 UNIFIED_NAMES = re.compile(r"GB10|Thor|Orin|Xavier|MI300A|Radeon 8060S|Strix Halo", re.I)
 NVIDIA_IMAGE = "vllm/vllm-openai:v0.33.0"
-AMD_IMAGE = "rocm/vllm:latest"  # experimental: set IMAGE in ~/.vllm-tui/env to the ROCm vLLM image you use
+AMD_IMAGE = "rocm/vllm:latest"  # experimental: set IMAGE in ~/.l9s/env to the ROCm vLLM image you use
 
 
 def _run(cmd: list[str], timeout: float = 10) -> str:

@@ -1,4 +1,4 @@
-"""Runs in vllm-tui's venv on Apple Silicon. Prints a JSON description of what the installed mlx-lm supports:
+"""Runs in l9s's venv on Apple Silicon. Prints a JSON description of what the installed mlx-lm supports:
 server flags (+ choices), model types it can load, and how much memory Metal lets the GPU wire."""
 import json
 import pkgutil

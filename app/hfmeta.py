@@ -1,4 +1,4 @@
-"""Model analysis for vllm-tui: everything the TUI knows about a Hugging Face model before pulling/serving it.
+"""Model analysis for l9s: everything the TUI knows about a Hugging Face model before pulling/serving it.
 
 fetch_meta()  -> raw facts from the Hub (or the local cache): config, generation config, chat template,
                  model card, file list, license, gating.
@@ -24,9 +24,9 @@ from pathlib import Path
 
 HOME = Path.home()
 import os as _os
-VLLM_TUI_HOME = Path(_os.environ.get("VLLM_TUI_HOME", HOME / ".vllm-tui"))
-LLM_HOME = VLLM_TUI_HOME  # backwards-compatible name
-CACHE_DIR = VLLM_TUI_HOME / "cache"
+L9S_HOME = Path(_os.environ.get("L9S_HOME", HOME / ".l9s"))
+LLM_HOME = L9S_HOME  # backwards-compatible name
+CACHE_DIR = L9S_HOME / "cache"
 HF_HUB = HOME / ".cache/huggingface/hub"
 GIB = 1024 ** 3
 OVERHEAD = 3 * GIB  # activations + CUDA graphs + allocator slack (measured ~2.3-3 GiB on this box)
@@ -380,11 +380,11 @@ def guess_parsers(arch: str, repo: str) -> tuple[str | None, str | None, str]:
 
 # ======================================================================= model card commands
 DROP_FLAGS = {
-    "--host": "set by vllm-tui", "--port": "set by vllm-tui", "--served-model-name": "set from the profile name",
-    "--api-key": "set by vllm-tui from ~/.vllm-tui/env", "--model": "the repo is passed by vllm-tui",
+    "--host": "set by l9s", "--port": "set by l9s", "--served-model-name": "set from the profile name",
+    "--api-key": "set by l9s from ~/.l9s/env", "--model": "the repo is passed by l9s",
     "--download-dir": "uses the shared HF cache",
     "--pipeline-parallel-size": "single GPU", "--data-parallel-size": "single GPU",
-    "--gpu-memory-utilization": "managed by GPU_MEM in ~/.vllm-tui/env", "--uvicorn-log-level": "not needed",
+    "--gpu-memory-utilization": "managed by GPU_MEM in ~/.l9s/env", "--uvicorn-log-level": "not needed",
     "--disable-log-requests": "not needed", "--disable-log-stats": "keeps metrics/logs visible",
 }
 SHORT = {"-tp": "--tensor-parallel-size", "-pp": "--pipeline-parallel-size", "-dp": "--data-parallel-size",
@@ -742,13 +742,13 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
                                  "re-run install.sh to update mlx-lm")
         else:
             A["blockers"].append(f"architecture {A['arch']} isn't supported by vLLM {caps.get('version')}: "
-                                 "try `vllm-tui upgrade` to a newer image")
+                                 "try `l9s upgrade` to a newer image")
     if A["quant"] and A["quant"]["supported"] is False:
         A["blockers"].append(f"quantization '{A['quant']['method']}' isn't supported by this vLLM")
     if not plan["weight_files"] and meta.get("files"):
         A["blockers"].append("no safetensors/bin weight files in the repo")
     if no_access:
-        A["warnings"].append("gated: accept the license on huggingface.co and put HF_TOKEN in ~/.vllm-tui/env (or Settings). "
+        A["warnings"].append("gated: accept the license on huggingface.co and put HF_TOKEN in ~/.l9s/env (or Settings). "
                              "Until then config/template can't be read, so the analysis below is partial")
     elif not cfg and loadable:
         A["warnings"].append("no config.json found: limited analysis")
@@ -766,7 +766,7 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
         env = {k: v for k, v in p["env"].items() if k not in DROP_ENV and not v.startswith("$")}
         for k in p["env"]:
             if k in DROP_ENV or p["env"][k].startswith("$"):
-                notes.append(("drop", f"env {k}: {'handled by vllm-tui' if k in DROP_ENV else 'refers to a variable on the author machine'}"))
+                notes.append(("drop", f"env {k}: {'handled by l9s' if k in DROP_ENV else 'refers to a variable on the author machine'}"))
         if p["image"] and not any(p["image"].startswith(o) for o in OFFICIAL_IMAGES):
             notes.append(("warn", f"card uses a custom image ({p['image']}); some flags may only work there"))
         p.update(kept=kept, notes=notes, env=env)
@@ -987,14 +987,14 @@ def render_markdown(A: dict, caps: dict | None) -> str:
     return "\n".join(L)
 
 
-# starter models for `vllm-tui quickstart`, largest first; the first one that fits is used
+# starter models for `l9s quickstart`, largest first; the first one that fits is used
 STARTERS = {
     "vllm": ["Qwen/Qwen3-8B-FP8", "Qwen/Qwen3-4B-FP8", "Qwen/Qwen3-1.7B-FP8", "Qwen/Qwen3-0.6B"],
     "mlx": ["mlx-community/Qwen3-8B-4bit", "mlx-community/Qwen3-4B-4bit", "mlx-community/Qwen3-0.6B-4bit"],
 }
 
 
-# ======================================================================= CLI (used by `vllm-tui pull` / `vllm-tui info`)
+# ======================================================================= CLI (used by `l9s pull` / `l9s info`)
 def _cli() -> None:
     import os
     import sys
@@ -1005,7 +1005,7 @@ def _cli() -> None:
         sys.exit(2)
     env = {}
     try:
-        for line in (VLLM_TUI_HOME / "env").read_text().splitlines():
+        for line in (L9S_HOME / "env").read_text().splitlines():
             if "=" in line and not line.startswith("#"):
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
@@ -1056,7 +1056,7 @@ def _cli() -> None:
     if A["presets"]:
         best = A["presets"][0]
         env_args = " ".join(f"--env {k}={shlex.quote(v)}" for k, v in best["env"].items())
-        print(f"\n# to serve with the recommended settings:\nvllm-tui serve {sys.argv[2]} --name {sys.argv[2].split('/')[-1].lower()} "
+        print(f"\n# to serve with the recommended settings:\nl9s serve {sys.argv[2]} --name {sys.argv[2].split('/')[-1].lower()} "
               f"{env_args} {flags_to_str(best['flags'])}")
 
 
