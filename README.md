@@ -4,7 +4,7 @@
 your network, and gives you a terminal UI to find, pull, serve and *watch* models: every request in flight,
 throughput, latency, memory, startup progress, events.
 
-![l9s requests view: requests in flight on an NVIDIA GB10 serving Nemotron 3 Super with vLLM](docs/img/requests.svg)
+![l9s requests view on an NVIDIA GB10: Claude Code on a MacBook using Qwen3.6 through l9s, with its tool calls, token counts and speed](docs/img/requests.svg)
 
 ```
 clients ──▶ :8000  l9s-proxy ──▶ 127.0.0.1:8001  model server
