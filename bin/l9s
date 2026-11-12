@@ -95,7 +95,10 @@ xml() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<< "$1"; }
 mlx_start_profile() {
   local name="$1" repo="$2"; shift 2
   local args="" envxml="<key>HF_TOKEN</key><string>$(xml "${HF_TOKEN:-}")</string>"
-  for a in "$PY" -m mlx_lm.server --model "$repo" --host 127.0.0.1 --port "$BACKEND_PORT"; do
+  # -W: mlx-lm warns its server only has basic security checks. Here it listens on 127.0.0.1 only and l9s-proxy
+  # enforces the API key in front of it, so the warning is noise in the server log.
+  for a in "$PY" -W "ignore:mlx_lm.server is not recommended" -m mlx_lm server \
+           --model "$repo" --host 127.0.0.1 --port "$BACKEND_PORT"; do
     args+="<string>$(xml "$a")</string>"; done
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "ENV "* ]]; then local kv="${1#ENV }"; envxml+="<key>$(xml "${kv%%=*}")</key><string>$(xml "${kv#*=}")</string>"

@@ -414,6 +414,9 @@ class LogHighlighter(Highlighter):
         if s.startswith("──"):
             text.stylize("bold cyan")
             return
+        if s.startswith("· client disconnected"):
+            text.stylize("bright_black")
+            return
         if s.startswith(("$ l9s", "==>")):
             text.stylize("cyan")
             return
@@ -1047,6 +1050,7 @@ class LLMTui(App):
         self.ip = hw.host_ip()
         self.filters: dict[str, str] = {}
         self.log_buf: collections.deque = collections.deque(maxlen=5000)
+        self._tb: list[str] | None = None
         self.req_data: dict | None = None
         self.req_ok: bool | None = None
         self.req_active_only = False
@@ -2354,7 +2358,8 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                 continue
             if st.st_ino != ino:  # l9s rotates the log each time the server starts
                 ino, pos = st.st_ino, 0
-                self.log_q.append(("reset", datetime.fromtimestamp(st.st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+                born = getattr(st, "st_birthtime", None) or st.st_ctime  # l9s starts a fresh log file per server start
+                self.log_q.append(("reset", datetime.fromtimestamp(born, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
             if st.st_size < pos:
                 pos = 0
             if st.st_size > pos:
@@ -2382,15 +2387,37 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                 self.startup.reset()
                 ts = parse_ts(line)
                 when = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else line
-                line = f"──────── container started {when} ────────"
+                line = f"──────── server started {when} ────────"
                 self.log_buf.append(line)
                 if self.log_visible(line, errors_only):
                     rl.write_line(line)
                 continue
             if kind == "line":
-                self.startup.feed(line)
-                if not show_noise and NOISE.search(line):
-                    continue
+                # Python's socketserver (mlx-lm) prints a full traceback, between two dashed rules, whenever a
+                # client disconnects mid-stream. That's a cancelled/closed request, not a server error: collapse it.
+                if line.strip() == "-" * 40 or self._tb is not None:
+                    if self._tb is None:
+                        self._tb = [line]
+                        continue
+                    self._tb.append(line)
+                    if line.strip() != "-" * 40 and len(self._tb) < 200:
+                        continue
+                    block, self._tb = self._tb, None
+                    if any(x in "\n".join(block) for x in ("BrokenPipeError", "ConnectionResetError")):
+                        lines = ["· client disconnected mid-stream (request cancelled or client closed); generation stopped"]
+                    else:
+                        lines = block
+                else:
+                    lines = [line]
+                for ln in lines:
+                    if not ln.startswith("· client disconnected"):
+                        self.startup.feed(ln)
+                    if not show_noise and NOISE.search(ln):
+                        continue
+                    self.log_buf.append(ln)
+                    if self.log_visible(ln, errors_only):
+                        rl.write_line(ln)
+                continue
             self.log_buf.append(line)
             if self.log_visible(line, errors_only):
                 rl.write_line(line)

@@ -21,7 +21,7 @@ except Exception:  # noqa: BLE001
 out["model_types"] = sorted(set(types) | set(MODEL_REMAPPING))
 out["remap"] = dict(MODEL_REMAPPING)
 
-helptext = subprocess.run([sys.executable, "-m", "mlx_lm.server", "--help"], capture_output=True, text=True).stdout
+helptext = subprocess.run([sys.executable, "-m", "mlx_lm", "server", "--help"], capture_output=True, text=True).stdout
 flags = {}
 for m in re.finditer(r"^\s+(--[a-z0-9-]+)(?:\s+(\{[^}]*\}|[A-Z_]+))?", helptext, re.M):
     arg = m.group(2) or ""
