@@ -333,6 +333,20 @@ it takes to load.
   made for the model or its base model. It's turned on only if the card names it or a known publisher made it
   (z-lab, Red Hat, NVIDIA, the EAGLE authors, …); otherwise the analysis suggests it. Measured on a GB10 with
   Qwen3.6-35B-A3B NVFP4 + `z-lab/Qwen3.6-35B-A3B-DFlash`: one stream 42 → 108 tokens/s, 8 streams 203 → 294 tokens/s.
+- **Speculative decoding scales with load (vLLM 0.33+).** The drafter guesses many tokens when one request runs and
+  fewer as the batch grows (`num_speculative_tokens_per_batch_size`), so a busy server doesn't waste work on rejected
+  guesses. GB10 + Qwen3.6-35B-A3B: 1 stream 110 tok/s, 4 streams 223 (was 177), 8 streams 315 (was 294), 32 streams
+  546 tok/s total; drafted tokens accepted 66% (was 33%). Hybrid models get 32 sequence slots (was 16).
+- **Apple silicon: a draft model.** mlx-lm gets `--draft-model` with a small sibling of the same family and quantization
+  (Qwen3-8B-4bit → Qwen3-0.6B-4bit, Gemma-3-27B → Gemma-3-1B): one conversation 97 → 160 tok/s on Qwen3-8B. mlx-lm
+  then runs requests one at a time instead of batching them (4 at once: 285 → 116 tok/s total), so a Mac shared by
+  several users should use Settings → Speculative decoding → off (`SPEC_DECODE=off`). Without a draft model mlx-lm
+  batches up to 32 requests and keeps 10 prompt caches.
+- **Reasoning follows the tool's own setting.** When a tool turns reasoning off (Claude Code with thinking disabled,
+  `reasoning_effort: none|minimal`, Codex's `minimal`), hybrid-thinking models (Qwen3, GLM, …) skip the thinking
+  phase: a short answer took 2 tokens instead of 117 on the GB10.
+- **Live tokens/s is right with speculative decoding.** One streamed chunk can carry several tokens, so the live
+  counter uses text length until the server's usage numbers arrive.
 - **Claude Code fits small models.** WebSearch is off (it runs on Anthropic's servers). With less than 100K of context,
   the scheduling / worktree / team tools are off too: Claude Code's prompt drops from ~16K to ~6K tokens, so a 40K
   model can work instead of compacting over and over.

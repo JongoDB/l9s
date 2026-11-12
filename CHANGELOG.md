@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0
+- Speculative decoding adapts to load on vLLM 0.33+: many drafted tokens for one request, fewer as the batch grows. GB10 + Qwen3.6-35B-A3B + DFlash: 4 streams 177 → 223 tok/s, 8 streams 294 → 315, 32 streams 546 tok/s total, one stream unchanged at ~110; accepted drafts 33% → 66%. Applied to drafters from model cards too.
+- Hybrid (Mamba / linear-attention) models get 32 sequence slots instead of 16.
+- Apple silicon: serving an MLX model of 3B+ adds `--draft-model` with a small sibling of the same family and quantization (Qwen3-8B → Qwen3-0.6B: one conversation 97 → 160 tok/s). mlx-lm then runs requests one at a time, so Settings has a new "Speculative decoding" switch (`SPEC_DECODE=off`) for Macs shared by several users; it also turns off vLLM drafters.
+- Reasoning follows each tool's own setting: Anthropic `thinking: disabled`, OpenAI `reasoning_effort: none|minimal` and Codex's `minimal` turn off the thinking phase of hybrid-thinking models (2 tokens instead of 117 for a short answer on the GB10), including on a Mac where the proxy translates.
+- The live tokens/s in the Requests view is right with speculative decoding (it counted chunks, which carry several tokens each), and Anthropic streams no longer freeze the live count at the start.
+
 ## 0.5.0
 - Speculative decoding by default: serving a model finds its drafter (named on the model card, or a DFlash / EAGLE drafter on the Hub from a known publisher) and adds `--speculative-config`. A card's author-local drafter path is replaced by the repo it names. Measured on a GB10 with Qwen3.6-35B-A3B NVFP4 + DFlash: 2.5x faster for one stream (42 → 108 tokens/s), 1.45x aggregate at 8 streams.
 - Prefix caching works for Claude Code: its per-request attribution line at the top of the prompt is turned off by `l9s claude` and stripped by the proxy (up to 99% of each prompt reused instead of ~78–90%).

@@ -136,7 +136,48 @@ def fetch_meta(repo: str, api, token: str | None = None) -> dict:
     meta["readme"] = text("README.md") or ""
     meta["drafters"] = find_drafters(repo, meta.get("base_models") or [], meta["readme"], api) if info is not None \
         else card_drafters(meta["readme"])
+    is_mlx = repo.lower().startswith("mlx-community/") or "mlx" in [t.lower() for t in meta.get("tags") or []]
+    meta["mlx_draft"] = find_mlx_draft(repo, (meta.get("config") or {}), api, token) \
+        if is_mlx and info is not None else None
     return meta
+
+
+SIZE_RE = re.compile(r"^(?P<fam>.+?)[-_](?P<size>\d+(?:\.\d+)?)[Bb](?![a-z])(?P<rest>.*)$")
+QUANT_RE = re.compile(r"\d+bit|bf16|fp16|mxfp4|dwq", re.I)
+
+
+def find_mlx_draft(repo: str, cfg: dict, api, token: str | None = None) -> str | None:
+    """A small model of the same family (same vocabulary, same quantization) for mlx-lm's --draft-model:
+    Qwen3-8B-4bit → Qwen3-0.6B-4bit. Only for models of 3B and up (smaller ones gain little)."""
+    org, _, name = repo.partition("/")
+    m = SIZE_RE.match(name)
+    if not m or float(m["size"]) < 3:
+        return None
+    quant = (QUANT_RE.findall(m["rest"]) or [""])[-1].lower()
+    try:
+        hits = api.list_models(author=org, search=m["fam"], limit=500)
+    except Exception:  # noqa: BLE001
+        return None
+    cands = []
+    for h in hits:
+        rid = getattr(h, "id", "")
+        c = SIZE_RE.match(rid.split("/")[-1])
+        if not c or c["fam"] != m["fam"] or rid == repo:
+            continue
+        size = float(c["size"])
+        cq = (QUANT_RE.findall(c["rest"]) or [""])[-1].lower()
+        if 0.3 <= size <= float(m["size"]) / 4 and cq == quant and not DRAFTER_RE.search(rid) \
+                and not re.search(r"vl|vision|embed|rerank|guard", c["rest"], re.I):
+            cands.append((size, len(c["rest"]), rid))
+    want = (cfg.get("text_config") or {}).get("vocab_size") or cfg.get("vocab_size")
+    for _, _, rid in sorted(cands)[:4]:
+        try:
+            dc = json.loads(_get(f"https://huggingface.co/{rid}/resolve/main/config.json", token) or "{}")
+        except json.JSONDecodeError:
+            continue
+        if not want or ((dc.get("text_config") or {}).get("vocab_size") or dc.get("vocab_size")) == want:
+            return rid
+    return None
 
 
 DRAFTER_RE = re.compile(r"dflash|eagle|speculator|[-_]draft(er)?\b", re.I)
@@ -193,6 +234,34 @@ def find_drafters(repo: str, base_models: list[str], readme: str, api) -> list[s
     return sorted(found, key=lambda r: (r not in card, r.split("/")[0].lower() not in TRUSTED_DRAFTERS,
                                         drafter_rank(r), not r.split("/")[-1].lower().startswith(names[0].lower())
                                         if names else 0))
+
+
+def spec_off() -> bool:
+    """SPEC_DECODE=off in ~/.l9s/env: no drafters (for servers shared by many users, where batching wins)."""
+    try:
+        env = (Path(_os.environ.get("L9S_HOME") or Path.home() / ".l9s") / "env").read_text()
+    except OSError:
+        return False
+    return bool(re.search(r"^SPEC_DECODE=off\s*$", env, re.M))
+
+
+def vllm_at_least(caps: dict | None, want: tuple) -> bool:
+    try:
+        return tuple(int(x) for x in re.findall(r"\d+", str((caps or {}).get("version", "")))[:2]) >= want
+    except ValueError:
+        return False
+
+
+def dynamic_schedule(spec: dict, caps: dict | None) -> dict:
+    """Many draft tokens when one request runs, fewer as the batch grows (vLLM 0.33+): on a GB10 this kept one
+    stream at 110 tok/s and raised 4 streams from 177 to 223 and 8 from 294 to 315 tok/s; acceptance 33% → 66%."""
+    n = int(spec.get("num_speculative_tokens") or 0)
+    if n < 2 or "num_speculative_tokens_per_batch_size" in spec or not vllm_at_least(caps, (0, 33)) \
+            or spec.get("method") not in ("dflash", "eagle", "eagle3", "mtp", "draft_model", "ngram"):
+        return spec
+    mid, low = max(1, round(n * 0.7)), max(1, round(n * 0.35))
+    return {**spec, "num_speculative_tokens_per_batch_size": [[1, 1, n], [2, 4, mid], [5, 12, low],
+                                                              [13, 1024, min(2, low)]]}
 
 
 def drafter_spec(repo: str, card_n: int | None = None) -> dict | None:
@@ -854,6 +923,7 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
     cmds.sort(key=lambda c: -c["score"])
     A["card_commands"] = cmds
     A["drafters"] = meta.get("drafters") or []
+    A["mlx_draft"] = meta.get("mlx_draft")
     A["readme"] = meta.get("readme", "")
     A["presets"] = build_presets_mlx(A, caps) if backend == "mlx" else build_presets(A, caps)
     A["verdict"] = "blocked" if A["blockers"] else ("warn" if A["warnings"] else "ok")
@@ -879,15 +949,17 @@ def build_presets(A: dict, caps: dict | None) -> list[dict]:
     if A["parsers"]["reasoning"]:
         computed["--reasoning-parser"] = (A["parsers"]["reasoning"], A["parsers"]["family"] + "; template has thinking")
     if A["layout"]["linear_layers"]:
-        computed["--max-num-seqs"] = ("16", "hybrid model: per-sequence state; vLLM's default 256 can fail to start")
+        computed["--max-num-seqs"] = ("32", "hybrid model: fixed state per sequence, so vLLM's default 256 can fail "
+                                            "to start; 32 measured fine on a GB10 (546 tok/s at 32 streams)")
     card_n = re.search(r"num_speculative_tokens\W{0,4}(\d+)", A.get("readme", ""))
-    usable = [d for d in A.get("drafters") or [] if drafter_spec(d)]
+    usable = [] if spec_off() else [d for d in A.get("drafters") or [] if drafter_spec(d)]
     spec = next((drafter_spec(d, int(card_n.group(1)) if card_n and d in card_drafters(A.get("readme", "")) else None)
                  for d in usable if drafter_trusted(d, A.get("readme", ""))), None)
     if not spec and usable:
         A["warnings"].append(f"a speculative-decoding drafter exists ({usable[0]}), from a publisher l9s doesn't "
                              f"know: add --speculative-config '{json.dumps(drafter_spec(usable[0]))}' to try it")
     if spec:
+        spec = dynamic_schedule(spec, caps)
         computed["--speculative-config"] = (json.dumps(spec, separators=(",", ":")),
                                             f"{spec['method']} drafter {spec['model']}: typically 1.5-2.5x faster "
                                             "generation for one user (measured 2.5x for Qwen3.6-35B on a GB10)")
@@ -921,6 +993,19 @@ def build_presets(A: dict, caps: dict | None) -> list[dict]:
         presets.append({"label": f"Model card #{i}: {c['heading'][:50] or 'line ' + str(c['line'])}", "flags": flags,
                         "env": dict(c["env"]), "notes": c["notes"]})
     for pr in presets:
+        sc = pr["flags"].get("--speculative-config")
+        if sc and sc[0]:
+            if spec_off():
+                pr["flags"].pop("--speculative-config")
+                pr["notes"].append(("drop", "--speculative-config: SPEC_DECODE=off in Settings"))
+            else:
+                try:
+                    tuned = dynamic_schedule(json.loads(sc[0]), caps)
+                    if "num_speculative_tokens_per_batch_size" in tuned:
+                        pr["flags"]["--speculative-config"] = (json.dumps(tuned, separators=(",", ":")),
+                                                               sc[1] + "; fewer drafts as the batch grows")
+                except json.JSONDecodeError:
+                    pass
         d = spec_drafter(pr["flags"])
         pr["extra_repos"] = [d] if d else []
     return presets
@@ -937,6 +1022,11 @@ def build_presets_mlx(A: dict, caps: dict | None) -> list[dict]:
             computed[flag] = (str(A["sampling"][k]), "generation_config.json (mlx-lm doesn't apply it on its own)")
     if A["remote_code"] and (not flags_ok or "--trust-remote-code" in flags_ok):
         computed["--trust-remote-code"] = (None, "config.json has auto_map (custom model code)")
+    if A.get("mlx_draft") and not spec_off() and (not flags_ok or "--draft-model" in flags_ok):
+        computed["--draft-model"] = (A["mlx_draft"], "speculative decoding with a small model of the same family: "
+                                                     "~1.6x faster for one conversation (Qwen3-8B on Apple silicon); "
+                                                     "requests then run one at a time instead of batched")
+        computed["--num-draft-tokens"] = ("3", "drafted tokens per step")
     if A["max_ctx"] and (not flags_ok or "--max-tokens" in flags_ok):
         computed["--max-tokens"] = (str(min(8192, A["max_ctx"])), "default reply length when a request doesn't set max_tokens")
     presets = [{"label": "Recommended for mlx-lm", "flags": computed, "env": {}, "notes": [], "extra_repos": []}]

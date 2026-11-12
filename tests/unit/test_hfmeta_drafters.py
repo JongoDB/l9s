@@ -34,3 +34,31 @@ def test_hub_search_ranks_trusted_dflash_first():
     assert found[0] == "z-lab/Qwen3-32B-DFlash" and "x/Qwen3-32B-AWQ" not in found
     assert hfmeta.drafter_trusted("AngelSlim/Qwen3-32B_eagle3") and not hfmeta.drafter_trusted("someone/Qwen3-32B-eagle3")
     assert hfmeta.drafter_spec("z-lab/Qwen3-32B-DFlash")["method"] == "dflash"
+
+
+def test_dynamic_schedule_needs_vllm_033():
+    spec = {"method": "dflash", "model": "z/x", "num_speculative_tokens": 11}
+    assert "num_speculative_tokens_per_batch_size" not in hfmeta.dynamic_schedule(spec, {"version": "0.32.1"})
+    sched = hfmeta.dynamic_schedule(spec, {"version": "0.33.0"})["num_speculative_tokens_per_batch_size"]
+    assert sched[0] == [1, 1, 11] and sched[-1][2] <= 2 and all(a[1] < b[0] for a, b in zip(sched, sched[1:]))
+
+
+def test_spec_decode_off_setting(tmp_path, monkeypatch):
+    monkeypatch.setenv("L9S_HOME", str(tmp_path))
+    assert not hfmeta.spec_off()
+    (tmp_path / "env").write_text("SPEC_DECODE=off\n")
+    assert hfmeta.spec_off()
+
+
+class MlxApi:
+    def list_models(self, author, search, limit):
+        ids = ["mlx-community/Qwen3-8B-4bit", "mlx-community/Qwen3-0.6B-4bit", "mlx-community/Qwen3-0.6B-8bit",
+               "mlx-community/Qwen3-1.7B-4bit", "mlx-community/Qwen3-VL-2B-4bit"]
+        return [SimpleNamespace(id=i) for i in ids if search in i]
+
+
+def test_mlx_draft_is_the_smallest_same_quant_sibling(monkeypatch):
+    monkeypatch.setattr(hfmeta, "_get", lambda url, token=None, timeout=15: '{"vocab_size": 151936}')
+    assert hfmeta.find_mlx_draft("mlx-community/Qwen3-8B-4bit", {"vocab_size": 151936}, MlxApi()) == \
+        "mlx-community/Qwen3-0.6B-4bit"
+    assert hfmeta.find_mlx_draft("mlx-community/Qwen3-0.6B-4bit", {}, MlxApi()) is None

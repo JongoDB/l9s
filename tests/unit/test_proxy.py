@@ -470,3 +470,16 @@ def test_agents_on_chat_completions_get_the_identity_note(stack):
     m = sent("opencode/latest/2.2.7/desktop")
     assert m[0]["role"] == "system" and "earlier messages" in m[0]["content"] and m[-1]["content"]
     assert not any("Note from l9s" in str(x.get("content")) for x in sent("my-app/1.0"))  # plain apps untouched
+
+
+def test_reasoning_off_reaches_the_chat_template(stack):
+    px, up = stack
+    call(px, "/v1/messages", {"model": "l9s", "max_tokens": 4, "thinking": {"type": "disabled"},
+                              "messages": [{"role": "user", "content": "hi"}]}).read()
+    assert json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"][
+        "chat_template_kwargs"] == {"enable_thinking": False}
+    call(px, "/v1/chat/completions", dict(chat_body("l9s"), reasoning_effort="minimal")).read()
+    assert json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"][
+        "chat_template_kwargs"] == {"enable_thinking": False}
+    call(px, "/v1/chat/completions", dict(chat_body("l9s"), reasoning_effort="high")).read()
+    assert "chat_template_kwargs" not in json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]

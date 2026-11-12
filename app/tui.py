@@ -1351,6 +1351,15 @@ class LLMTui(App):
                     with Horizontal(classes="frow"):
                         yield Select([("auto (like Ollama)", "auto"), ("off", "off")], value="auto",
                                      allow_blank=False, id="set-switch")
+                    yield Label("Speculative decoding", classes="section")
+                    yield Static("[dim]auto: when you serve a model, l9s adds a small draft model that guesses ahead "
+                                 "(DFlash / EAGLE on vLLM, a smaller sibling on mlx-lm). One conversation gets 1.6-2.5x "
+                                 "faster. On mlx-lm, requests then run one at a time instead of batched, so pick off for "
+                                 "a Mac shared by several users. Applies to models you serve from now on.[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Select([("auto (fastest for one conversation)", "auto"),
+                                      ("off (best for many users at once)", "off")], value="auto",
+                                     allow_blank=False, id="set-spec")
                     yield Label("Updates", classes="section")
                     yield Static("[dim]Checked daily. notify: tell you in the header and CLI · auto: also install l9s (and "
                                  "mlx-lm on a Mac) in the background, without restarting a running model · off. "
@@ -2332,6 +2341,7 @@ class LLMTui(App):
             self.query_one(sel, Input).value = env.get(k, defaults.get(k, ""))
         self.query_one("#set-logprompts", Checkbox).value = env.get("LOG_PROMPTS", "1") != "0"
         self.query_one("#set-switch", Select).value = "off" if env.get("MODEL_SWITCH") == "off" else "auto"
+        self.query_one("#set-spec", Select).value = "off" if env.get("SPEC_DECODE") == "off" else "auto"
         self.query_one("#set-update", Select).value = env.get("UPDATE_MODE", "notify") \
             if env.get("UPDATE_MODE", "notify") in ("notify", "auto", "off") else "notify"
         self.query_one("#set-hf-status", Static).update(
@@ -2343,6 +2353,7 @@ class LLMTui(App):
         v["LOG_PROMPTS"] = "1" if self.query_one("#set-logprompts", Checkbox).value else "0"
         v["UPDATE_MODE"] = str(self.query_one("#set-update", Select).value)
         v["MODEL_SWITCH"] = str(self.query_one("#set-switch", Select).value)
+        v["SPEC_DECODE"] = str(self.query_one("#set-spec", Select).value)
         return v
 
     def settings_problems(self, v: dict) -> list[str]:
@@ -2379,8 +2390,8 @@ class LLMTui(App):
             return []
         cur = load_env()
         defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0", "LOG_PROMPTS": "1",
-                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto"}
-        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH"]
+                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto", "SPEC_DECODE": "auto"}
+        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE"]
                 if v[k] != cur.get(k, defaults.get(k, ""))]
 
     def server_pending(self) -> list[str]:
@@ -2394,6 +2405,7 @@ class LLMTui(App):
     @on(Checkbox.Changed, "#set-logprompts")
     @on(Select.Changed, "#set-update")
     @on(Select.Changed, "#set-switch")
+    @on(Select.Changed, "#set-spec")
     def settings_changed(self, *_) -> None:
         v = self.settings_values()
         try:
@@ -2499,7 +2511,7 @@ class LLMTui(App):
         applied = dict(running)
         done = []
         # no restart needed: read whenever they're used
-        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH"):
+        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE"):
             applied[k] = v[k]
         proxy = [k for k in changed if k in self.PROXY_KEYS]
         if proxy:

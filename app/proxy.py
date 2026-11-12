@@ -434,6 +434,22 @@ def strip_billing_header(j: dict) -> bool:
     return False
 
 
+def wants_no_thinking(j: dict) -> bool:
+    """The client turned reasoning off in its own terms: Anthropic `thinking: disabled`, OpenAI
+    `reasoning_effort: none|minimal`, Responses `reasoning.effort: none|minimal`."""
+    if (j.get("thinking") or {}).get("type") == "disabled":
+        return True
+    eff = j.get("reasoning_effort") or (j.get("reasoning") or {}).get("effort")
+    return str(eff).lower() in ("none", "minimal")
+
+
+def thinking_off(j: dict) -> None:
+    """Hybrid-thinking models (Qwen3, GLM, DeepSeek, …) take this through the chat template; others ignore it."""
+    kw = j.get("chat_template_kwargs") or {}
+    if "enable_thinking" not in kw:
+        j["chat_template_kwargs"] = {**kw, "enable_thinking": False}
+
+
 async def settled() -> None:
     """Wait until no switch is running or queued (for requests that follow whatever is loaded)."""
     while switching or pending:
@@ -542,7 +558,7 @@ def absorb_choice_data(rec: dict, d: dict) -> None:
         gt = u.get("completion_tokens", u.get("output_tokens"))
         if pt is not None:
             rec["prompt_tokens"] = pt
-        if gt is not None:
+        if gt is not None and d.get("type") != "message_start":  # message_start's output count is just a stub
             rec["gen_tokens"] = gt
             rec["_usage_seen"] = True
         det = u.get("prompt_tokens_details") or u.get("input_tokens_details") or {}
@@ -566,13 +582,21 @@ def absorb_choice_data(rec: dict, d: dict) -> None:
             if name:
                 rec.setdefault("tool_calls", []).append(name)
         if (txt or rtxt or delta.get("tool_calls")) and rec.get("stream"):
-            rec["_chunks"] = rec.get("_chunks", 0) + 1
-            if not rec.get("_usage_seen"):
-                rec["gen_tokens"] = rec["_chunks"]  # live estimate until the usage chunk arrives
+            args = "".join((tc.get("function") or {}).get("arguments") or "" for tc in delta.get("tool_calls") or [])
+            live_estimate(rec, len(txt) + len(rtxt) + len(args))
     if d.get("error"):
         rec["error"] = str(d["error"].get("message") if isinstance(d["error"], dict) else d["error"])[:300]
     if d.get("object") == "error" or (d.get("message") and d.get("code")):
         rec["error"] = str(d.get("message"))[:300]
+
+
+def live_estimate(rec: dict, chars: int) -> None:
+    """Tokens generated so far, until the server's usage numbers arrive. One chunk is one token without speculative
+    decoding, but several with it (a DFlash step can add 5+), so text length (~4 chars/token) is counted too."""
+    rec["_chunks"] = rec.get("_chunks", 0) + 1
+    rec["_chars"] = rec.get("_chars", 0) + chars
+    if not rec.get("_usage_seen"):
+        rec["gen_tokens"] = max(rec["_chunks"], round(rec["_chars"] / 4))
 
 
 def _add_text(rec: dict, txt: str = "", reasoning: str = "", tool: str | None = None) -> None:
@@ -583,9 +607,7 @@ def _add_text(rec: dict, txt: str = "", reasoning: str = "", tool: str | None = 
     if tool:
         rec.setdefault("tool_calls", []).append(tool)
     if (txt or reasoning or tool) and rec.get("stream"):
-        rec["_chunks"] = rec.get("_chunks", 0) + 1
-        if not rec.get("_usage_seen"):
-            rec["gen_tokens"] = rec["_chunks"]  # live estimate until the final usage arrives
+        live_estimate(rec, len(txt) + len(reasoning))
 
 
 def _absorb_other(rec: dict, d: dict) -> bool:
@@ -783,8 +805,17 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                         xlate = "anthropic" if request.path == "/v1/messages" else "responses"
                         xreq = j
                         j = translate.anthropic_to_chat(j) if xlate == "anthropic" else translate.responses_to_chat(j)
+                        if wants_no_thinking(xreq):
+                            thinking_off(j)
                         body = json.dumps(j).encode()
                         upath = "/v1/chat/completions"
+                    elif request.path == "/v1/responses" and str((j.get("reasoning") or {}).get("effort")) == "minimal":
+                        # vLLM turns thinking off for "none" but not "minimal" (Codex's lowest setting)
+                        j["reasoning"] = {**j["reasoning"], "effort": "none"}
+                        body = json.dumps(j).encode()
+                    elif request.path == "/v1/chat/completions" and wants_no_thinking(j):
+                        thinking_off(j)  # (vLLM's own Anthropic endpoint maps `thinking: disabled` itself)
+                        body = json.dumps(j).encode()
                     if BACKEND == "mlx" and "model" in j:
                         # mlx-lm loads whatever `model` names; map the profile name to the loaded repo
                         name, repo = active_model()
