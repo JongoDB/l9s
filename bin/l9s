@@ -47,6 +47,9 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
   use <profile>                          switch to a saved profile
   profiles                               list saved profiles (* = active)
   optimize [<profile>|--all] [-y]        give saved profiles the fastest settings l9s knows (drafters, MTP, …)
+  keys [add <name>|revoke <name>|usage]  API keys for other people, with limits and usage (l9s keys --help)
+  expose [caddy <host>|cloudflare|tailscale|off]
+                                         serve over the internet with HTTPS (Let's Encrypt / Cloudflare / Tailscale)
   ls | rm <org/repo>                     downloaded models / delete one
   status | logs [-f] | test              health, server log, test request
   stop | start | restart                 control the model server
@@ -63,7 +66,7 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
   uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
                                          remove l9s (downloaded models stay unless --remove-models)
 
-deployment: $BACKEND   endpoint: http://$(host_ip):$PORT/v1
+deployment: $BACKEND   endpoint: $(endpoint)/v1
 EOF
 }
 
@@ -159,6 +162,9 @@ if pins:
 PY
 }
 
+# the URL people elsewhere use: PUBLIC_URL (e.g. https://llm.example.com behind Caddy / a tunnel) or the LAN address
+endpoint() { if [[ -n "${PUBLIC_URL:-}" ]]; then echo "${PUBLIC_URL%/}"; else echo "http://$(host_ip):$PORT"; fi; }
+
 run_profile() {
   local name="$1" file="$PROFILES/$1"
   [[ -f "$file" ]] || die "no profile '$name' (see: l9s profiles)"
@@ -181,7 +187,7 @@ wait_ready() {
   echo -n "==> waiting for the model server (first load of a model can take a few minutes)"
   for _ in $(seq 1 720); do
     if curl -sf -H "Authorization: Bearer $API_KEY" "localhost:$BACKEND_PORT/v1/models" >/dev/null 2>&1; then
-      echo; echo "==> ready: $(active_profile) on http://$(host_ip):$PORT/v1"; return 0
+      echo; echo "==> ready: $(active_profile) on $(endpoint)/v1"; return 0
     fi
     if ! backend_running; then
       echo; backend_logs --tail 40; die "model server exited"
@@ -243,6 +249,8 @@ case "$cmd" in
     HF_TOKEN="${HF_TOKEN:-}" "$HF" download "$@" ${extra[@]+"${extra[@]}"} ;;
   info) [[ $# -eq 1 ]] || die "usage: l9s info <org/repo>"; "$PY" "$APP/hfmeta.py" report "$1" ;;
   optimize) "$PY" "$APP/hfmeta.py" optimize "$@" ;;
+  keys) exec "$PY" "$APP/keys.py" "$@" ;;
+  expose) exec "$PY" "$APP/expose.py" "$@" ;;
   quickstart)
     repo="${1:-}"
     if [[ -z "$repo" ]]; then

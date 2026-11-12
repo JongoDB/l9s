@@ -515,3 +515,66 @@ def test_codex_catalog_lists_every_model_in_codex_format(stack):
         assert m["truncation_policy"]["mode"] in ("tokens", "bytes")
         assert {e["effort"] for e in m["supported_reasoning_levels"]} <= {"minimal", "low", "medium", "high"}
         assert "Codex CLI" in m["base_instructions"]
+
+
+# ---------------------------------------------------------------- access: keys, limits, reverse proxies
+def keys_cli(*args):
+    out = subprocess.run([sys.executable, str(APP / "keys.py"), *args, "--json"], capture_output=True, text=True,
+                         env=dict(os.environ, L9S_HOME=str(HOMEDIR)))
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout) if out.stdout.strip().startswith(("{", "[")) else out.stdout
+
+
+def as_user(px, key, path, body=None, headers=None):
+    h = {"Content-Type": "application/json", "Authorization": f"Bearer {key}", **(headers or {})}
+    req = urllib.request.Request(f"http://127.0.0.1:{px}{path}", json.dumps(body).encode() if body else None, h)
+    return urllib.request.urlopen(req, timeout=20)
+
+
+def test_user_keys_see_and_use_only_what_they_may(stack):
+    px, up = stack
+    bob = keys_cli("add", "bob")["key"]
+    ids = [m["id"] for m in json.load(as_user(px, bob, "/v1/models"))["data"]]
+    assert ids == ["l9s", "mymodel"]  # no switching: the follow id and the loaded model only
+    assert json.load(as_user(px, bob, "/v1/chat/completions", chat_body("l9s")))["choices"]
+    with pytest.raises(urllib.error.HTTPError) as e:
+        as_user(px, bob, "/v1/chat/completions", chat_body("other"))
+    assert e.value.code == 403 and "server owner" in json.load(e.value)["error"]["message"]
+    assert active_name() == "mymodel"
+    # the model server only ever sees the owner's key
+    assert json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last_auth"] == f"Bearer {KEY}"
+    rec = admin(px, "/_l9s/requests")["recent"][-1]
+    assert rec["user"] == "bob"
+    keys_cli("revoke", "bob")
+    with pytest.raises(urllib.error.HTTPError) as e:
+        as_user(px, bob, "/v1/models")
+    assert e.value.code == 401
+
+
+def test_rate_and_concurrency_limits(stack):
+    px, _ = stack
+    k = keys_cli("add", "carol", "--rpm", "2")["key"]
+    as_user(px, k, "/v1/models").read()
+    as_user(px, k, "/v1/models").read()
+    with pytest.raises(urllib.error.HTTPError) as e:
+        as_user(px, k, "/v1/models")
+    assert e.value.code == 429 and int(e.value.headers["Retry-After"]) > 0
+
+
+def test_reverse_proxied_requests_are_not_local(stack):
+    px, _ = stack
+    fwd = {"X-Forwarded-For": "203.0.113.9"}
+    req = urllib.request.Request(f"http://127.0.0.1:{px}/_l9s/requests", headers=fwd)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 403  # Caddy on this machine must not expose the admin API
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{px}/metrics", headers=fwd))
+    assert e.value.code == 404  # only the APIs are public
+    for _ in range(10):
+        with pytest.raises(urllib.error.HTTPError):
+            as_user(px, "sk-wrong", "/v1/models", headers=fwd)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        as_user(px, KEY, "/v1/models", headers=fwd)
+    assert e.value.code == 429  # that address is blocked for a while, even with a good key
+    assert json.load(call(px, "/v1/models"))["data"]  # others (here: local) are unaffected

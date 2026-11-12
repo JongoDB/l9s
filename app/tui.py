@@ -9,6 +9,7 @@ import collections
 import json
 import secrets
 import os
+import sys
 import re
 import shlex
 import shutil
@@ -675,6 +676,63 @@ class Confirm(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class KeyDialog(ModalScreen[dict | None]):
+    """New API key: who it's for and what it may do."""
+    DEFAULT_CSS = """
+    KeyDialog { align: center middle; }
+    #box { width: 90; height: auto; max-height: 90%; border: thick $primary; padding: 1 2; background: $surface; }
+    #box Input { width: 1fr; }
+    #box .row { height: auto; }
+    #box .lbl { width: 26; padding-top: 1; }
+    #btns { dock: bottom; height: 2; align-horizontal: right; padding-top: 1; background: $surface; }
+    #btns Button { margin-left: 2; }
+    #kd-err { color: $error; height: auto; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="box"):
+            yield Static("[b]New API key[/b]\n[dim]Each person (or app) gets their own key: you see who uses what, can "
+                         "limit it, and can revoke it without affecting anyone else. The key is shown once.[/dim]")
+            with Horizontal(classes="row"):
+                yield Label("Name (who it's for)", classes="lbl")
+                yield Input(placeholder="alice, ci-bot, …", id="kd-name")
+            yield Checkbox("May switch models (loads another model for everyone; leave off for most people)",
+                           False, id="kd-switch")
+            with Horizontal(classes="row"):
+                yield Label("Requests per minute", classes="lbl")
+                yield Input(placeholder="no limit", id="kd-rpm", restrict=r"[0-9]*")
+            with Horizontal(classes="row"):
+                yield Label("Requests at once", classes="lbl")
+                yield Input(placeholder="no limit (an agent often runs 1-4)", id="kd-conc", restrict=r"[0-9]*")
+            with Horizontal(classes="row"):
+                yield Label("Only these models", classes="lbl")
+                yield Input(placeholder="all (or comma-separated profile names)", id="kd-models")
+            yield Static("", id="kd-err")
+            with Horizontal(id="btns"):
+                yield Button("Cancel", id="no")
+                yield Button("Create key", id="yes", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#kd-name", Input).focus()
+
+    @on(Button.Pressed)
+    def pressed(self, ev: Button.Pressed) -> None:
+        if ev.button.id != "yes":
+            self.dismiss(None)
+            return
+        name = self.query_one("#kd-name", Input).value.strip()
+        if not re.match(r"^[A-Za-z0-9][\w.@-]{0,63}$", name):
+            self.query_one("#kd-err", Static).update("name: letters, digits and . _ @ - (no spaces)")
+            return
+        num = lambda i: int(self.query_one(i, Input).value or 0) or None  # noqa: E731
+        models = [m.strip() for m in self.query_one("#kd-models", Input).value.split(",") if m.strip()]
+        self.dismiss({"name": name, "switch": self.query_one("#kd-switch", Checkbox).value,
+                      "rpm": num("#kd-rpm"), "concurrent": num("#kd-conc"), "models": models or None})
+
+    def key_escape(self) -> None:
+        self.dismiss(None)
+
+
 class Choice(ModalScreen[str]):
     """A question with several answers (buttons); esc picks the last one."""
     DEFAULT_CSS = """
@@ -878,7 +936,8 @@ def fmt_s(x: float | None, digits: int = 1) -> str:
 
 
 def describe_request(r: dict) -> str:
-    rows = [("id", r.get("id")), ("state", r.get("state")), ("client", r.get("client")), ("user agent", r.get("ua")),
+    rows = [("id", r.get("id")), ("state", r.get("state")), ("client", r.get("client")),
+            ("key", r.get("user") or "admin"), ("user agent", r.get("ua")),
             ("endpoint", f"{r.get('method')} {r.get('path')}"), ("model", r.get("model")), ("stream", r.get("stream")),
             ("started", datetime.fromtimestamp(r["start"]).strftime("%Y-%m-%d %H:%M:%S")),
             ("time to first token", fmt_s(r.get("ttft"))), ("latency (non-stream)", fmt_s(r.get("latency"))),
@@ -994,7 +1053,7 @@ opens a drop-down.
 
 
 # ================================================================ app
-TABS = ["server", "connect", "requests", "local", "hub", "downloads", "events", "settings"]
+TABS = ["server", "connect", "requests", "local", "hub", "downloads", "events", "settings", "keys"]
 
 # k9s-style skin. Same color names as k9s' default skin, except gold replaces k9s' orange (orange renders as
 # red on many terminals, and red is reserved for failures here).
@@ -1145,6 +1204,10 @@ class LLMTui(App):
     .frow Static { width: 1fr; padding: 0 1 0 2; }
     .hint { color: $text-muted; padding: 1 0; }
     #cx-head { height: auto; padding: 0 1; border: solid #87CEFA; }
+    #ky-head { height: auto; padding: 0 1; border: solid #87CEFA; }
+    #ky-table { height: 1fr; border: solid #87CEFA; }
+    #ky-btns { height: 3; }
+    #ky-btns Button { margin-right: 2; }
     #cx-body { height: 1fr; }
     #cx-tools { width: 3fr; border: solid #87CEFA; }
     #cx-detail { width: 2fr; border: solid #87CEFA; padding: 0 1; }
@@ -1174,6 +1237,7 @@ class LLMTui(App):
         Binding("s", "serve", "Serve"),
         Binding("e", "edit_profile", "Edit"),
         Binding("o", "optimize", "Optimize"),
+        Binding("n", "key_add", "New key"),
         Binding("x", "delete", "Delete"),
         Binding("i", "info", "Info"),
         Binding("c", "connect", "Connect", show=False),
@@ -1186,7 +1250,7 @@ class LLMTui(App):
         Binding("down", "vnav_down", "Down", show=False, priority=True),
     ]
     # which tabs each contextual action applies to (others are always available)
-    ACTION_TABS = {"pull": {"hub"}, "serve": {"hub", "local"}, "edit_profile": {"local"}, "optimize": {"local"}, "info": {"hub", "local"},
+    ACTION_TABS = {"pull": {"hub"}, "serve": {"hub", "local"}, "edit_profile": {"local"}, "optimize": {"local"}, "key_add": {"keys"}, "info": {"hub", "local"},
                    "delete": {"local", "downloads"}, "copy_row": {"hub", "local", "downloads", "requests", "events"},
                    "describe": {"requests", "events"}, "kill": {"requests"}, "toggle_active": {"requests"},
                    "follow": {"server"}, "save_log": {"server"}, "save_settings": {"settings"},
@@ -1330,6 +1394,18 @@ class LLMTui(App):
                     with Horizontal(classes="frow"):
                         yield Input(id="set-port", restrict=r"[0-9]*")
                         yield Static("", id="set-port-info")
+                    yield Label("Access from other places", classes="section")
+                    yield Static("[dim]Public URL: the address people use when this server is reachable from the "
+                                 "internet, e.g. https://llm.example.com through Caddy, a Cloudflare Tunnel or Tailscale "
+                                 "Funnel (see docs/USAGE.md › Serving people elsewhere). l9s shows and hands out this URL "
+                                 "instead of the LAN address. Listen on: \"this machine only\" when a tunnel or reverse "
+                                 "proxy on this machine is the way in. Give each person their own key in Keys (9).[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Input(id="set-public", placeholder="https://llm.example.com (optional)")
+                    with Horizontal(classes="frow"):
+                        yield Select([("all networks (LAN + anything forwarded to it)", "0.0.0.0"),
+                                      ("this machine only (behind a tunnel / reverse proxy)", "127.0.0.1")],
+                                     value="0.0.0.0", allow_blank=False, id="set-bind")
                     with Vertical(id="vllm-settings"):
                         yield Label("Memory for vLLM (GPU_MEM)", classes="section")
                         yield Static("[dim]Fraction of the unified memory vLLM may use for weights + KV cache. Higher = more "
@@ -1390,6 +1466,14 @@ class LLMTui(App):
                             yield Button("Copy for another machine", id="cx-copy")
                         with VerticalScroll(id="cx-scroll"):
                             yield Static("", id="cx-info")
+            with TabPane("9 Keys", id="keys"):
+                yield Static("loading…", id="ky-head")
+                yield KTable(id="ky-table", cursor_type="row", zebra_stripes=False)
+                with Horizontal(id="ky-btns"):
+                    yield Button("Add key", id="ky-add", variant="primary")
+                    yield Button("Revoke", id="ky-revoke", variant="warning")
+                    yield Button("Enable", id="ky-enable")
+                    yield Button("Delete", id="ky-delete", variant="error")
         with Horizontal(id="crumbs"):
             for t in TABS:
                 yield Label(f"<{t}>", id=f"crumb-{t}", classes="crumb")
@@ -1494,7 +1578,7 @@ class LLMTui(App):
         d = self.query_one("#dls", DataTable)
         for k in ("repo", "progress", "size", "status", "then"):
             d.add_column(k, key=k)
-        self.query_one("#reqs", DataTable).add_columns("", "id", "started", "client", "model", "api", "in tok",
+        self.query_one("#reqs", DataTable).add_columns("", "id", "started", "client (key · address)", "model", "api", "in tok",
                                                        "out tok", "TTFT", "tok/s", "time", "result")
         self.query_one("#clients", DataTable).add_columns("client", "requests", "in flight", "in tok", "out tok",
                                                           "errors", "last seen", "user agent")
@@ -1507,6 +1591,9 @@ class LLMTui(App):
             cx.add_column(label, key=key)
         self.query_one("#cx-tools").border_title = "Coding agents & editors"
         self.query_one("#cx-head").border_title = "Connect"
+        self.query_one("#ky-head").border_title = "Keys"
+        self.query_one("#ky-table").border_title = "API keys"
+        self.query_one("#ky-table", DataTable).add_columns("name", "key", "access", "today", "last used", "status")
         self.query_one("#cx-detail").border_title = "Details"
         self.set_interval(1, self.poll_requests)
         self.set_interval(3, self.poll_events)
@@ -1517,6 +1604,7 @@ class LLMTui(App):
         self.set_interval(2, self.poll_status)
         self.set_interval(2, self.poll_downloads)
         self.set_interval(10, self.refresh_local)
+        self.set_interval(10, lambda: self.query_one(TabbedContent).active == "keys" and self.refresh_keys())
         self.set_interval(0.25, self.drain_log)
         self.follow_logs()
         if self.caps is None:
@@ -1723,6 +1811,9 @@ class LLMTui(App):
             lg.focus()
             if lg.auto_scroll:
                 self.call_after_refresh(lambda: lg.scroll_end(animate=False))
+        elif pid == "keys":
+            self.refresh_keys()
+            self.query_one("#ky-table", DataTable).focus()
         elif pid == "settings":
             if not self.settings_dirty():
                 self.load_settings_form()
@@ -2109,7 +2200,8 @@ class LLMTui(App):
             if r.get("tool_calls"):
                 result = f"tools: {','.join(r['tool_calls'][:3])} " + result
             took = r.get("elapsed") if r.get("state") == "running" else r.get("duration")
-            cells = (r.get("id"), time.strftime("%H:%M:%S", time.localtime(r["start"])), r.get("client"), r.get("model") or "-",
+            who = r.get("client") if r.get("user") in (None, "admin") else f"{r['user']} · {r.get('client')}"
+            cells = (r.get("id"), time.strftime("%H:%M:%S", time.localtime(r["start"])), who, r.get("model") or "-",
                      api, r.get("prompt_tokens") or "-", r.get("gen_tokens") or "-", fmt_s(r.get("ttft")),
                      f"{r['tok_s']:.1f}" if r.get("tok_s") else "-", fmt_s(took), result or r.get("state"))
             if not match(f, *cells, r.get("ua"), r.get("prompt_preview")):
@@ -2209,7 +2301,7 @@ class LLMTui(App):
             return
         self.cx_info, self.cx_rows = info, {r["id"]: r for r in rows}
         mode = load_env().get("MODEL_SWITCH", "auto")
-        head = (f"This machine: [{K9['gold']}]{info['base']}/v1[/]   other machines: [{K9['gold']}]{info['lan_base']}/v1[/]   "
+        head = (f"This machine: [{K9['gold']}]{info['base']}/v1[/]   other machines: [{K9['gold']}]{info.get('public_base') or info['lan_base']}/v1[/]   "
                 f"[dim]{len(info['models'])} models ("
                 + clk("tab('local')", "load times in Local") + ") · API key and model switching ("
                 + (f"{mode}" if mode != "auto" else "auto: another model loads on first use") + ") in "
@@ -2362,9 +2454,88 @@ class LLMTui(App):
                                    "run `l9s connect --server <this-host>`, which also keeps it up to date):"
                                    "\n\n```\n" + snip + "\n```"))
 
+    # ------------------------------------------------------------ keys
+    def refresh_keys(self) -> None:
+        import keys as ks
+        d, use = ks.load(), ks.summarize(ks.load_usage(), 1)
+        env = load_env()
+        base = env.get("PUBLIC_URL") or f"http://{self.ip}:{self.port}"
+        self.query_one("#ky-head", Static).update(
+            f"People elsewhere use [b]{base}/v1[/b]" + ("" if env.get("PUBLIC_URL") else
+                                                       "  [dim](LAN address; set a public URL in Settings to serve "
+                                                       "people over the internet)[/dim]")
+            + f"\n[dim]Your own key (Settings › API key) is the admin key: every model, switching, no limits. "
+            "Keys here are for other people and apps: stored as hashes, shown once, revoked instantly. "
+            + clk("key_add", "n new key") + " · usage counts per day[/dim]")
+        t = self.query_one("#ky-table", DataTable)
+        row = t.cursor_row
+        t.clear()
+        for n, x in sorted(d.items()):
+            u = use.get(n, {})
+            t.add_row(n, x.get("prefix", "?") + "…", ks.describe(x),
+                      f"{u.get('requests', 0)} req · {u.get('in', 0):,} in · {u.get('out', 0):,} out",
+                      ks._ago(u.get("last")),
+                      Text("revoked", style="red") if x.get("disabled") else Text("active", style="green"), key=n)
+        if not d:
+            t.add_row(Text("no keys yet: press Add key to give someone access", style="dim"), "", "", "", "", "",
+                      key="-")
+        if t.row_count:
+            t.move_cursor(row=min(max(row, 0), t.row_count - 1))
+
+    def ky_selected(self) -> str | None:
+        t = self.query_one("#ky-table", DataTable)
+        if not t.row_count:
+            return None
+        k = t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+        return None if k == "-" else k
+
+    @on(Button.Pressed, "#ky-add")
+    def action_key_add(self) -> None:
+        def cb(res):
+            if not res:
+                return
+            import keys as ks
+            try:
+                key = ks.add(res["name"], res["switch"], res["rpm"], res["concurrent"], res["models"])
+            except ValueError as e:
+                self.notify(str(e), severity="error")
+                return
+            share = ks.share_text(res["name"], key)
+            self.copy_to_clipboard(share)
+            self.refresh_keys()
+            self.push_screen(TextModal(f"Key for {res['name']}",
+                                       "[b]Shown only now[/b] (l9s keeps only a hash). Copied to the clipboard; send "
+                                       "it to them privately:\n\n```\n" + share + "\n```"))
+        self.push_screen(KeyDialog(), cb)
+
+    @on(Button.Pressed, "#ky-revoke")
+    @on(Button.Pressed, "#ky-enable")
+    @on(Button.Pressed, "#ky-delete")
+    def ky_change(self, ev: Button.Pressed) -> None:
+        name = self.ky_selected()
+        if not name:
+            return
+        what = ev.button.id.split("-")[1]
+
+        def go(ok=True):
+            if not ok:
+                return
+            subprocess.run([sys.executable, str(Path(__file__).with_name("keys.py")), what, name],
+                           capture_output=True, env={**os.environ, "L9S_HOME": str(LLM_HOME)})
+            self.refresh_keys()
+            self.notify(f"{name}: " + {"revoke": "revoked: its requests now get 401",
+                                        "enable": "enabled again", "delete": "deleted"}[what])
+        if what == "enable":
+            go()
+        else:
+            self.push_screen(Confirm(f"{'Revoke' if what == 'revoke' else 'Delete'} the key for [b]{name}[/b]? "
+                                     "Requests with it fail at once" + (" (you can enable it again)." if what == "revoke"
+                                                                         else "; its usage history goes too."),
+                                     what.capitalize()), go)
+
     # ------------------------------------------------------------ settings
     SETTING_KEYS = {"HF_TOKEN": "#set-hf", "API_KEY": "#set-key", "GPU_MEM": "#set-mem", "PORT": "#set-port",
-                    "IMAGE": "#set-image"}
+                    "IMAGE": "#set-image", "PUBLIC_URL": "#set-public"}
 
     def load_settings_form(self) -> None:
         self._settings_loaded = True
@@ -2376,6 +2547,7 @@ class LLMTui(App):
         self.query_one("#set-logprompts", Checkbox).value = env.get("LOG_PROMPTS", "1") != "0"
         self.query_one("#set-switch", Select).value = "off" if env.get("MODEL_SWITCH") == "off" else "auto"
         self.query_one("#set-spec", Select).value = "off" if env.get("SPEC_DECODE") == "off" else "auto"
+        self.query_one("#set-bind", Select).value = "127.0.0.1" if env.get("BIND") == "127.0.0.1" else "0.0.0.0"
         self.query_one("#set-update", Select).value = env.get("UPDATE_MODE", "notify") \
             if env.get("UPDATE_MODE", "notify") in ("notify", "auto", "off") else "notify"
         self.query_one("#set-hf-status", Static).update(
@@ -2388,6 +2560,8 @@ class LLMTui(App):
         v["UPDATE_MODE"] = str(self.query_one("#set-update", Select).value)
         v["MODEL_SWITCH"] = str(self.query_one("#set-switch", Select).value)
         v["SPEC_DECODE"] = str(self.query_one("#set-spec", Select).value)
+        v["BIND"] = str(self.query_one("#set-bind", Select).value)
+        v["PUBLIC_URL"] = v["PUBLIC_URL"].rstrip("/")
         return v
 
     def settings_problems(self, v: dict) -> list[str]:
@@ -2406,10 +2580,12 @@ class LLMTui(App):
             probs.append("Hugging Face tokens start with hf_")
         if ":" not in v["IMAGE"]:
             probs.append("image needs a tag, e.g. vllm/vllm-openai:v0.33.0")
+        if v["PUBLIC_URL"] and not re.match(r"^https?://[^\s/]+(:\d+)?(/\S*)?$", v["PUBLIC_URL"]):
+            probs.append("public URL must look like https://llm.example.com")
         return probs
 
     # What each setting needs before it is in effect. Everything else is read when used (HF token, update mode).
-    PROXY_KEYS = ("PORT", "API_KEY", "LOG_PROMPTS")  # the request proxy reads these at start: restarted on Save
+    PROXY_KEYS = ("PORT", "API_KEY", "LOG_PROMPTS", "BIND")  # the request proxy reads these at start: restarted on Save
 
     def server_keys(self) -> tuple:
         """Settings the model server reads at start (need a server restart)."""
@@ -2424,8 +2600,8 @@ class LLMTui(App):
             return []
         cur = load_env()
         defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0", "LOG_PROMPTS": "1",
-                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto", "SPEC_DECODE": "auto"}
-        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE"]
+                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto", "SPEC_DECODE": "auto", "BIND": "0.0.0.0"}
+        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "BIND"]
                 if v[k] != cur.get(k, defaults.get(k, ""))]
 
     def server_pending(self) -> list[str]:
@@ -2440,6 +2616,7 @@ class LLMTui(App):
     @on(Select.Changed, "#set-update")
     @on(Select.Changed, "#set-switch")
     @on(Select.Changed, "#set-spec")
+    @on(Select.Changed, "#set-bind")
     def settings_changed(self, *_) -> None:
         v = self.settings_values()
         try:
@@ -2450,9 +2627,14 @@ class LLMTui(App):
         except ValueError:
             self.query_one("#set-mem-info", Static).update("")
         self.query_one("#set-port-info", Static).update(
-            f"endpoint would be http://{self.ip}:{v['PORT'] or '?'}/v1")
+            f"endpoint would be {v['PUBLIC_URL'] or f'http://{self.ip}:' + (v['PORT'] or '?')}/v1"
+            + (f"  (LAN: http://{self.ip}:{v['PORT'] or '?'}/v1)" if v["PUBLIC_URL"] else ""))
         dirty, probs, pending = self.settings_dirty(), self.settings_problems(v), self.server_pending()
         lines = [f"[{K9['orangered']}]✗ {p}[/]" for p in probs]
+        if v["PUBLIC_URL"].startswith("http://") and not re.match(
+                r"^http://(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", v["PUBLIC_URL"]):
+            lines.append(f"[{K9['orangered']}]! the public URL is plain HTTP: keys and prompts would cross the internet "
+                         "unencrypted. Use `l9s expose` (Let's Encrypt via Caddy, Cloudflare Tunnel or Tailscale)[/]")
         if dirty:
             lines.append(f"[{K9['gold']}]● unsaved changes: {', '.join(dirty)}[/]")
         if pending:
@@ -2545,7 +2727,7 @@ class LLMTui(App):
         applied = dict(running)
         done = []
         # no restart needed: read whenever they're used
-        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE"):
+        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "PUBLIC_URL"):
             applied[k] = v[k]
         proxy = [k for k in changed if k in self.PROXY_KEYS]
         if proxy:

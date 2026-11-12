@@ -189,6 +189,26 @@ proxy translates them to mlx-lm (tool calls included). Your tools on another mac
 <ssh-host>` there (with l9s installed), or copy the snippet from the Connect view. Configs that list models are
 updated automatically when you add or remove profiles; `l9s connect <tool> --remove` takes l9s back out.
 
+## Share it: one server, many people
+
+```bash
+l9s expose caddy llm.example.com    # HTTPS with a Let's Encrypt certificate (auto-renewed) via Caddy
+l9s expose cloudflare               # or: a Cloudflare Tunnel (nothing opened on your router)
+l9s expose tailscale                # or: Tailscale Funnel (https://<machine>.<tailnet>.ts.net)
+l9s keys add alice --concurrent 2   # a key per person; shown once, stored as a hash
+l9s keys usage                      # who used how much
+```
+
+l9s itself speaks plain HTTP, so it never goes on the internet directly: `l9s expose` puts an HTTPS front end with
+a real certificate in front of it and sets the public URL that l9s shows and hands out. Each person gets their own
+key, which you can rate-limit (requests per minute, requests at once), restrict to certain models, and revoke
+instantly. By default other people's keys use whatever model is loaded and can't switch it (only you, or keys you
+allow, can make the server load another model). vLLM batches everyone's requests together, so a GB10 serves one
+person at ~110 tokens/s and 32 at once at ~550 tokens/s in total. The **Keys** view (9) shows each key's usage
+today; the Requests view shows who sent what. Someone with l9s installed connects with
+`l9s connect --server https://llm.example.com --key <their key>`, and every `l9s claude` / `l9s connect <tool>`
+then uses your server.
+
 ## CLI
 
 | Command | |

@@ -224,10 +224,10 @@ def host_ip() -> str:
             ip = _run(["ipconfig", "getifaddr", iface])
             if ip:
                 return ip
-        for ip in re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", _run(["ifconfig"])):
-            if not ip.startswith("127."):
-                return ip
-        return "localhost"
+        ips = [ip for ip in re.findall(r"inet (\d+\.\d+\.\d+\.\d+)", _run(["ifconfig"]))
+               if not ip.startswith(("127.", "169.254.", "192.0.0."))]  # loopback, link-local, NAT64/hotspot
+        private = [ip for ip in ips if re.match(r"^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", ip)]
+        return (private or ips or ["localhost"])[0]
     return (_run(["hostname", "-I"]).split() or ["localhost"])[0]
 
 

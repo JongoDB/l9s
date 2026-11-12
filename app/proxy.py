@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -26,6 +27,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+import keys as keystore
 import translate
 
 HOME = Path.home()
@@ -58,6 +60,15 @@ UPSTREAM = f"http://127.0.0.1:{VLLM_PORT}"
 LOG_PROMPTS = ENV.get("LOG_PROMPTS", "1") != "0"
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers",
        "transfer-encoding", "upgrade", "host", "content-length"}
+BIND = ENV.get("BIND", "0.0.0.0")
+# reverse proxies on other machines whose X-Forwarded-For we trust (one on this machine is always trusted)
+TRUST_PROXY = {x.strip() for x in ENV.get("TRUST_PROXY", "").split(",") if x.strip()}
+LOOPBACK = {"127.0.0.1", "::1"}
+FWD_HEADERS = ("X-Forwarded-For", "Forwarded", "X-Real-IP", "CF-Connecting-IP")
+# what other machines may reach: the APIs. vLLM's other routes (metrics, tokenizer, admin endpoints) stay local.
+PUBLIC_PREFIXES = ("/v1/", "/codex/models", "/health", "/ping")
+KEYS = keystore.Store()
+ADMIN = {"name": "admin", "switch": True, "admin": True}
 QUIET = {("GET", "/metrics"), ("GET", "/health"), ("GET", "/v1/models"), ("GET", "/ping"), ("GET", "/version"),
          ("GET", "/load")}
 
@@ -749,6 +760,8 @@ def finish(rec: dict, state: str) -> None:
     active.pop(rec["id"], None)
     if state == "done":
         record_speed(rec)
+    if state in ("done", "error", "cancelled") and rec.get("user") and rec.get("user") != "admin":
+        count_usage(rec)
     pub = public(rec)
     recent.append(pub)
     _append(REQ_LOG, pub)
@@ -759,20 +772,152 @@ def finish(rec: dict, state: str) -> None:
                   "error")
 
 
+# ------------------------------------------------------------------ access
+def is_local(request: web.Request) -> bool:
+    """A process on this machine, not a reverse proxy relaying someone from outside."""
+    return request.remote in LOOPBACK and not any(h in request.headers for h in FWD_HEADERS)
+
+
+def client_ip(request: web.Request) -> str:
+    if request.remote in LOOPBACK or request.remote in TRUST_PROXY:
+        for h in ("CF-Connecting-IP", "X-Real-IP"):
+            if request.headers.get(h):
+                return request.headers[h].strip()
+        xff = request.headers.get("X-Forwarded-For")
+        if xff:
+            return xff.split(",")[0].strip()
+    return request.remote or "?"
+
+
+def principal(given: str) -> dict | None:
+    """Who is asking: the owner's admin key (API_KEY), a key from `l9s keys`, or nobody."""
+    if not API_KEY:
+        return ADMIN  # no key configured: open server (only sensible on a trusted network)
+    if given and hmac.compare_digest(given, API_KEY):
+        return ADMIN
+    return KEYS.lookup(given)
+
+
+_fails: dict = {}  # ip -> [timestamps of failed auth]
+_blocked: dict = {}  # ip -> until
+_rate: dict = {}  # key name -> deque of request times
+FAIL_LIMIT, FAIL_WINDOW, BLOCK_FOR = 10, 300, 600
+
+
+def auth_failed(ip: str) -> None:
+    now = time.time()
+    xs = [t for t in _fails.get(ip, []) if now - t < FAIL_WINDOW] + [now]
+    _fails[ip] = xs
+    if len(xs) >= FAIL_LIMIT:
+        _blocked[ip] = now + BLOCK_FOR
+        _fails.pop(ip, None)
+        event("access", f"{ip} blocked for {BLOCK_FOR // 60} min after {FAIL_LIMIT} wrong API keys", "warn")
+
+
+def api_error(status: int, message: str, typ: str, **headers) -> web.Response:
+    return web.json_response({"error": {"message": message, "type": typ, "code": status}}, status=status,
+                             headers={k.replace("_", "-"): str(v) for k, v in headers.items()})
+
+
+def over_limit(who: dict) -> web.Response | None:
+    """Per-key fairness: requests per minute, and requests at once."""
+    if who.get("admin"):
+        return None
+    name, now = who["name"], time.time()
+    if who.get("rpm"):
+        q = _rate.setdefault(name, collections.deque())
+        while q and now - q[0] > 60:
+            q.popleft()
+        if len(q) >= who["rpm"]:
+            return api_error(429, f"rate limit: your key allows {who['rpm']} requests per minute", "rate_limit_exceeded",
+                       Retry_After=max(1, int(61 - (now - q[0]))))
+        q.append(now)
+    if who.get("concurrent"):
+        mine = [r for r in active.values() if r.get("user") == name]
+        if len(mine) >= who["concurrent"]:
+            return api_error(429, f"your key allows {who['concurrent']} request(s) at once; one is still running",
+                       "rate_limit_exceeded", Retry_After=2)
+    return None
+
+
+def allowed_models(who: dict) -> set | None:
+    """Model names this key may use (None: any). Keys without switching only get the loaded model."""
+    if who.get("admin"):
+        return None
+    ok = set(who.get("models") or []) or None
+    if not who.get("switch"):
+        act = active_model()[0]
+        ok = {act} if ok is None or act in ok else set()
+    return ok
+
+
+def filter_models(data: list[dict], who: dict) -> list[dict]:
+    ok = allowed_models(who)
+    if ok is None:
+        return data
+    return [m for m in data if m["id"] in ok or (m.get("follows") and m["follows"] in ok)]
+
+
+_usage: dict = {}
+_usage_dirty = [False]
+
+
+def count_usage(rec: dict) -> None:
+    name = rec.get("user")
+    if not name:
+        return
+    if not _usage:
+        _usage.update(keystore.load_usage())
+    day = _usage.setdefault(name, {}).setdefault(keystore.today(), {"requests": 0, "in": 0, "out": 0})
+    day["requests"] += 1
+    day["in"] += rec.get("prompt_tokens") or 0
+    day["out"] += rec.get("gen_tokens") or 0
+    _usage[name]["_last"] = time.time()
+    _usage_dirty[0] = True
+
+
+async def flush_usage() -> None:
+    while True:
+        await asyncio.sleep(10)
+        if _usage_dirty[0]:
+            _usage_dirty[0] = False
+            try:
+                keystore.USAGE.parent.mkdir(parents=True, exist_ok=True)
+                keystore.USAGE.write_text(json.dumps(_usage))
+            except OSError:
+                pass
+
+
 # ------------------------------------------------------------------ proxy
 async def proxy(request: web.Request) -> web.StreamResponse:
     if request.path.startswith("/_l9s/"):
         return await admin(request)
+    local = is_local(request)
+    ip = client_ip(request)
+    if not local and not request.path.startswith(PUBLIC_PREFIXES):
+        return web.json_response({"error": {"message": "not found", "code": 404}}, status=404)
+    if _blocked.get(ip, 0) > time.time():
+        return api_error(429, "too many wrong API keys from your address; try again later", "rate_limit_exceeded",
+                   Retry_After=int(_blocked[ip] - time.time()))
     # the key may come as `Authorization: Bearer` (OpenAI) or `x-api-key` (Anthropic clients)
     given = request.headers.get("Authorization", "")
     given = given[7:] if given.startswith("Bearer ") else request.headers.get("x-api-key", "")
-    if request.path.startswith(("/v1/", "/codex/")) and API_KEY and given != API_KEY:
-        return web.json_response({"error": {"message": "Invalid or missing API key", "type": "invalid_request_error",
-                                            "code": 401}}, status=401)
+    who = ADMIN
+    if request.path.startswith(("/v1/", "/codex/")):
+        who = principal(given)
+        if who is None:
+            auth_failed(ip)
+            return api_error(401, "Invalid or missing API key", "invalid_request_error")
+        limited = over_limit(who)
+        if limited is not None:
+            return limited
     if request.method == "GET" and request.path == "/v1/models":
-        return web.json_response(models_list())
+        ml = models_list()
+        return web.json_response({**ml, "data": filter_models(ml["data"], who)})
     if request.method == "GET" and request.path == "/codex/models":
-        return web.json_response(codex_catalog())
+        cat = codex_catalog()
+        ok = {m["id"] for m in filter_models(models_list()["data"], who)}
+        return web.json_response({"models": [m for m in cat["models"] if m["slug"] in ok]})
     body = await request.read()
     record = (request.method, request.path) not in QUIET and not request.path.startswith("/_")
     rec = None
@@ -787,7 +932,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
     pre = None  # a streaming response already started while a model loaded
     inject_usage = False
     if record:
-        rec = {"id": uuid.uuid4().hex[:8], "start": time.time(), "client": request.remote,
+        rec = {"id": uuid.uuid4().hex[:8], "start": time.time(), "client": ip, "user": who["name"],
                "method": request.method, "path": request.path, "state": "running",
                "ua": request.headers.get("User-Agent", "")[:80], "_task": asyncio.current_task()}
         if body and "json" in request.headers.get("Content-Type", ""):
@@ -796,6 +941,18 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 if isinstance(j, dict):
                     inspect_request(rec, j)
                     follow = j.get("model") == FOLLOW and request.path.startswith("/v1/")
+                    ok = allowed_models(who)
+                    if j.get("model") and request.path.startswith("/v1/") and ok is not None:
+                        want = active_model()[0] if follow else (resolve(j["model"]) or (j["model"],))[0]
+                        if want not in ok:
+                            act = active_model()[0]
+                            msg = (f"your key can't use `{j['model']}`. " + (
+                                f"It can use: {', '.join(sorted(ok))} (or `{FOLLOW}`)." if ok else
+                                f"The server has `{act}` loaded, which your key isn't allowed to use."
+                            ) + ("" if who.get("switch") else " Switching models is up to the server owner."))
+                            rec["status"], rec["error"] = 403, msg[:300]
+                            finish(rec, "error")
+                            return api_error(403, msg, "permission_error")
                     if j.get("model") and not follow and request.path.startswith("/v1/") and resolve(j["model"]):
                         note_pin(rec, resolve(j["model"])[0])
                     if follow and (switching or pending):
@@ -906,9 +1063,9 @@ async def proxy(request: web.Request) -> web.StreamResponse:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 pass
         active[rec["id"]] = rec
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP}
-    if given and "Authorization" not in request.headers:
-        headers["Authorization"] = f"Bearer {given}"
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP | {"authorization", "x-api-key"}}
+    if API_KEY:  # users' keys are checked here; the model server only knows the owner's key
+        headers["Authorization"] = f"Bearer {API_KEY}"
     sess: aiohttp.ClientSession = request.app["session"]
     state = "error"
     try:
@@ -1023,7 +1180,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
 
 # ------------------------------------------------------------------ admin API (localhost only)
 async def admin(request: web.Request) -> web.Response:
-    if request.remote not in ("127.0.0.1", "::1"):
+    if not is_local(request):  # (via a reverse proxy on this machine counts as remote)
         return web.json_response({"error": "admin API is localhost-only"}, status=403)
     path = request.path
     if path == "/_l9s/health":
@@ -1116,7 +1273,7 @@ async def on_startup(app: web.Application) -> None:
                                            connector=aiohttp.TCPConnector(limit=0))
     _load_history()
     event("proxy", f"request proxy started on :{PORT} → {BACKEND} server {UPSTREAM}")
-    app["tasks"] = [asyncio.create_task(watch_ready(app))]
+    app["tasks"] = [asyncio.create_task(watch_ready(app)), asyncio.create_task(flush_usage())]
     if BACKEND == "vllm":
         app["tasks"].append(asyncio.create_task(watch_docker()))
 
@@ -1132,7 +1289,9 @@ def main() -> None:
     app.router.add_route("*", "/{tail:.*}", proxy)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
-    web.run_app(app, host="0.0.0.0", port=PORT, access_log=None, print=None)
+    # plain HTTP on purpose: HTTPS for the internet comes from a front end (`l9s expose`: Caddy + Let's Encrypt,
+    # Cloudflare Tunnel or Tailscale Funnel), so local tools and the TUI keep using http://127.0.0.1
+    web.run_app(app, host=BIND, port=PORT, access_log=None, print=None)
 
 
 if __name__ == "__main__":

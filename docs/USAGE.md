@@ -359,6 +359,59 @@ it takes to load.
   the scheduling / worktree / team tools are off too: Claude Code's prompt drops from ~16K to ~6K tokens, so a 40K
   model can work instead of compacting over and over.
 
+## Serving people elsewhere
+
+### HTTPS: `l9s expose`
+
+l9s speaks plain HTTP. Forwarding a router port straight to it would send API keys and prompts across the internet
+unencrypted, so `l9s expose` sets up a front end that terminates HTTPS with a real certificate and relays to l9s on
+`127.0.0.1`:
+
+| | certificate | your network | notes |
+|---|---|---|---|
+| `l9s expose caddy llm.example.com [--email you@x]` | Let's Encrypt, renewed by Caddy | DNS A/AAAA record → your public IP; router forwards **80 and 443** (not l9s's port) | installs Caddy from its official package; your other Caddy sites are kept |
+| `l9s expose cloudflare` | Cloudflare's | nothing to open | free quick tunnel at a random `https://….trycloudflare.com` (changes when the tunnel restarts) |
+| `l9s expose cloudflare --name l9s --host llm.example.com` | Cloudflare's | nothing to open | your domain on Cloudflare; `cloudflared tunnel login` once |
+| `l9s expose tailscale` | Let's Encrypt via Tailscale | nothing to open | `https://<machine>.<tailnet>.ts.net`; Funnel must be allowed for the tailnet |
+
+`l9s expose` shows the public URL and checks it's reachable with a valid certificate; `l9s expose off` undoes it.
+Setting the public URL by hand (Settings › Access, `PUBLIC_URL`) works with any other reverse proxy; requests it
+relays from this machine count as remote (the admin API and non-API routes stay closed to them), and
+`TRUST_PROXY=<ip>` trusts `X-Forwarded-For` from a proxy on another machine.
+
+Long generations stream through all of these. Cloudflare closes a request that sends nothing for 100 seconds,
+which only matters for very long prompts on a cold cache.
+
+### Keys
+
+```bash
+l9s keys add alice [--switch] [--rpm 30] [--concurrent 2] [--models qwen3.6-35b-a3b,l9s]
+l9s keys                       # list, with today's usage
+l9s keys set alice --concurrent 4 | --no-switch | --models all
+l9s keys revoke alice          # 401 from the next request on; `enable` undoes it; `delete` removes it
+l9s keys usage [--days 30]
+```
+
+- The key in `~/.l9s/env` (`API_KEY`) is the owner's admin key: every model, switching, no limits.
+- Other keys use the loaded model (and `l9s`, the follow id) and **can't make the server switch models** unless
+  added with `--switch`, so one person can't unload the model everyone else is using. `/v1/models` (and Codex's
+  catalog) only list what a key may use.
+- `--rpm` caps requests per minute, `--concurrent` requests in flight; over the limit the answer is 429 with
+  `Retry-After`, which coding agents retry on.
+- Keys are stored as SHA-256 hashes in `~/.l9s/keys.json` and shown once; the proxy forwards requests to the
+  model server with the owner's key, so the model server never sees anyone else's.
+- An address that sends 10 wrong keys in 5 minutes is blocked for 10 minutes.
+- Usage (requests, input and output tokens per key per day) is in `~/.l9s/cache/usage.json`, the Keys view and
+  `l9s keys usage`; the Requests view shows each request's key.
+
+### Capacity
+
+vLLM batches every request in flight into each step on the GPU, so more people mostly cost per-person speed, not
+errors. GB10 + Qwen3.6-35B-A3B (DFlash): 1 stream 110 tok/s, 8 streams 315 tok/s total, 32 streams 546 tok/s total
+(`--max-num-seqs 32`; requests beyond that wait in vLLM's queue). A coding agent usually has 1-4 requests in flight;
+`--concurrent` keeps one person's agents from taking every slot. On a Mac with a draft model, mlx-lm runs requests
+one at a time: set Settings › Speculative decoding to off for a Mac shared by several people.
+
 ## Upgrading the server
 
 mlx: `l9s update` (mlx-lm comes with each l9s release, pinned and CI-tested). vllm:

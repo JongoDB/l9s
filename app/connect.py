@@ -6,6 +6,9 @@
   l9s connect <tool> --remove      take l9s back out of the tool's config
   l9s connect --server <ssh-host>  use the l9s server on another machine for every later connect / launch
                                    (--server local switches back to this machine)
+  l9s connect --server <URL> --key <key>
+                                   use an l9s server you only have a URL and an API key for (from its owner's
+                                   `l9s keys add`), e.g. https://llm.example.com
   l9s run <tool> [args]            launch a tool against l9s without touching its normal setup
                                    (also: l9s claude, l9s codex, … for the tools that support it)
 
@@ -23,6 +26,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +63,7 @@ def state() -> dict:
 def save_state(st: dict) -> None:
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(st, indent=2) + "\n")
+    os.chmod(STATE, 0o600)  # may hold API keys for remote servers
 
 
 def local_info() -> dict:
@@ -83,8 +89,31 @@ def local_info() -> dict:
         models.sort(key=lambda m: not m["loaded"])
     # tools on this machine use loopback (works offline, survives a new LAN address); other machines get the LAN URL
     local = os.environ.get("L9S_CONNECT_HOST") or "127.0.0.1"
+    public = env.get("PUBLIC_URL", "").rstrip("/")
     return {"base": f"http://{local}:{port}", "lan_base": f"http://{ip}:{port}", "key": key,
-            "backend": env.get("BACKEND", "vllm"), "models": models, "host": ip}
+            "backend": env.get("BACKEND", "vllm"), "models": models, "host": ip,
+            **({"public_base": public} if public else {})}
+
+
+def url_info(url: str, key: str) -> dict:
+    """An l9s server known only by URL + API key (it may be on the internet behind HTTPS)."""
+    url = url.rstrip("/")
+    if url.endswith("/v1"):
+        url = url[:-3]
+    try:
+        req = urllib.request.Request(f"{url}/v1/models", headers={"Authorization": f"Bearer {key}"})
+        data = json.load(urllib.request.urlopen(req, timeout=15)).get("data", [])
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"{url} answered {e.code}: " + ("the API key isn't valid there" if e.code == 401 else
+                                                          e.reason))
+    except Exception as e:  # noqa: BLE001
+        raise SystemExit(f"couldn't reach {url}: {e}")
+    models = [{"id": m["id"], "loaded": bool(m.get("loaded")), "repo": m.get("root", ""),
+               "context_window": m.get("context_window"), "max_output_tokens": m.get("max_output_tokens"),
+               "display_name": m.get("display_name", m["id"]), "load_seconds": m.get("load_seconds"),
+               **({"follows": m["follows"]} if m.get("follows") else {})} for m in data]
+    return {"base": url, "lan_base": url, "public_base": url, "key": key, "backend": "remote", "models": models,
+            "host": urllib.parse.urlparse(url).hostname, "server": url}
 
 
 def server_info(server: str | None = None) -> dict:
@@ -93,12 +122,18 @@ def server_info(server: str | None = None) -> dict:
         info = local_info()
         info["server"] = "local"
         return info
+    if server.startswith(("http://", "https://")):
+        key = (state().get("keys") or {}).get(server.rstrip("/"))
+        if not key:
+            raise SystemExit(f"no API key saved for {server}: l9s connect --server {server} --key <key>")
+        return url_info(server, key)
     out = subprocess.run(["ssh", "-o", "BatchMode=yes", server, "l9s", "connect", "--info-json"],
                          capture_output=True, text=True, timeout=30)
     if out.returncode != 0:
         raise SystemExit(f"couldn't reach l9s on {server}: {(out.stderr or out.stdout).strip()[:300]}")
     info = json.loads(out.stdout)
-    info["base"] = info.get("lan_base", info["base"])  # a remote server is reached over the network
+    # a remote server is reached over the network: its public URL if it has one, else its LAN address
+    info["base"] = info.get("public_base") or info.get("lan_base", info["base"])
     info["server"] = server
     return info
 
@@ -448,7 +483,7 @@ def status_rows(info: dict) -> list[dict]:
 
 
 def for_other_machine(info: dict) -> dict:
-    return dict(info, base=info.get("lan_base", info["base"]))
+    return dict(info, base=info.get("public_base") or info.get("lan_base", info["base"]))
 
 
 def snippet(t: Tool, info: dict) -> str:
@@ -493,7 +528,11 @@ def main(argv: list[str]) -> None:
         return
     if argv[0] == "--server":
         st = state()
-        st["server"] = argv[1] if len(argv) > 1 else "local"
+        st["server"] = (argv[1] if len(argv) > 1 else "local").rstrip("/")
+        if st["server"].endswith("/v1"):
+            st["server"] = st["server"][:-3]
+        if "--key" in argv:
+            st.setdefault("keys", {})[st["server"]] = argv[argv.index("--key") + 1]
         save_state(st)
         info = server_info()
         print(f"l9s connect now targets {info['base']} ({st['server']}); models: "

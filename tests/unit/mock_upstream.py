@@ -11,6 +11,7 @@ STATE = {"last": None, "disconnects": 0, "models_seen": []}
 async def chat(request):
     body = await request.json()
     STATE["last"] = body
+    STATE["last_auth"] = request.headers.get("Authorization")
     STATE["models_seen"].append(body.get("model"))
     n = int(body.get("max_tokens") or 5)
     if body.get("tools"):  # answer with a tool call to the first tool

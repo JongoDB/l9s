@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+- Serve people elsewhere over HTTPS: `l9s expose caddy <host>` (Caddy with a Let's Encrypt certificate, renewed automatically), `l9s expose cloudflare` (Cloudflare Tunnel, quick or on your domain; nothing opened on your router) or `l9s expose tailscale` (Funnel). `l9s expose` shows the public URL and checks its certificate; `l9s expose off` undoes it.
+- Public URL setting (Settings › Access, `PUBLIC_URL`): shown and handed out instead of the LAN address (header, Connect, `l9s keys add`, configs for other machines). Settings warns if it's plain HTTP. "Listen on: this machine only" (`BIND=127.0.0.1`) for servers reached only through a tunnel.
+- API keys per person: `l9s keys add <name>` and the new Keys view (9). Keys are stored as hashes and shown once; each can have a requests-per-minute and a requests-at-once limit, a model allowlist and permission to switch models (off by default, so one person can't unload everyone's model). Revoking works on the next request. Usage per key per day, and the Requests view shows each request's key. The model server only ever sees the owner's key.
+- Safe to expose: from other machines only the APIs answer (vLLM's metrics, tokenizer and admin routes stay local); requests relayed by a reverse proxy on this machine count as remote, so the admin API isn't exposed through it; an address sending 10 wrong keys in 5 minutes is blocked for 10 minutes.
+- `l9s connect --server https://host --key <key>`: use an l9s server you only have a URL and a key for.
+- Fixed: on a Mac whose default interface can't be read, the LAN address fell back to a non-LAN address (e.g. 192.0.0.2); private LAN ranges are now preferred.
+
 ## 0.7.0
 - Codex: `/model` lists your l9s models. l9s serves Codex's own model catalog format at `/codex/models` (the follow id, then every model, with load times and context sizes; thinking off = minimal, on = medium), using Codex's generic agent instructions (Apache-2.0, see NOTICE). Checked with Codex 0.167.2: `codex debug models` shows exactly the l9s models, and a session runs tool calls through l9s.
 - Built-in MTP layers are used for speculative decoding when no drafter is known, but only if the checkpoint really has the `mtp.*` weights (some quantizations keep the config entry and drop the weights, and vLLM would fail to start). Measured on a GB10 with Nemotron-3-Super NVFP4: one conversation 16.6 → 31 tok/s, 4 at once 43 → 63 tok/s total; NVIDIA's separate MTPv2 drafter does the same (30.7 / 67).
