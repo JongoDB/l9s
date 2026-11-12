@@ -38,6 +38,7 @@ from textual.widgets._data_table import Column
 import hfmeta
 import hw
 import updater
+from rich.markup import escape as rich_escape
 
 HOME = Path.home()
 L9S_HOME = Path(os.environ.get("L9S_HOME", HOME / ".l9s"))
@@ -1395,11 +1396,29 @@ class LLMTui(App):
                         yield Input(id="set-port", restrict=r"[0-9]*")
                         yield Static("", id="set-port-info")
                     yield Label("Access from other places", classes="section")
-                    yield Static("[dim]Public URL: the address people use when this server is reachable from the "
-                                 "internet, e.g. https://llm.example.com through Caddy, a Cloudflare Tunnel or Tailscale "
-                                 "Funnel (see docs/USAGE.md › Serving people elsewhere). l9s shows and hands out this URL "
-                                 "instead of the LAN address. Listen on: \"this machine only\" when a tunnel or reverse "
-                                 "proxy on this machine is the way in. Give each person their own key in Keys (9).[/dim]")
+                    yield Static("[dim]To serve people over the internet, put an HTTPS front end in front of l9s (l9s "
+                                 "itself is plain HTTP: never forward a router port straight to it). Pick one and press "
+                                 "Set up HTTPS: it installs what's needed, gets the certificate and fills in the public "
+                                 "URL. Runs right away (no Save needed). Then give each person their own key in "
+                                 + clk("tab('keys')", "Keys (9)") + ".[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Select([("Caddy + Let's Encrypt (your domain; forward ports 80 + 443)", "caddy"),
+                                      ("Cloudflare quick tunnel (no domain, nothing to open; address changes)",
+                                       "cloudflare-quick"),
+                                      ("Cloudflare Tunnel on your domain (nothing to open)", "cloudflare"),
+                                      ("Tailscale Funnel (https://<machine>.<tailnet>.ts.net)", "tailscale")],
+                                     value="caddy", allow_blank=False, id="set-expose-mode")
+                    with Horizontal(classes="frow", id="set-expose-hostrow"):
+                        yield Input(id="set-expose-host", placeholder="host name, e.g. llm.example.com")
+                        yield Input(id="set-expose-email", placeholder="email for Let's Encrypt notices (optional)")
+                    with Horizontal(classes="frow"):
+                        yield Button("Set up HTTPS", id="set-expose-go", variant="primary")
+                        yield Button("Check", id="set-expose-check")
+                        yield Button("Turn off", id="set-expose-off", variant="error")
+                    yield Static("", id="set-expose-info")
+                    yield Static("[dim]Public URL (filled in by Set up HTTPS; set it by hand for any other reverse "
+                                 "proxy) and where l9s listens: \"this machine only\" when a tunnel or proxy on this "
+                                 "machine is the only way in.[/dim]")
                     with Horizontal(classes="frow"):
                         yield Input(id="set-public", placeholder="https://llm.example.com (optional)")
                     with Horizontal(classes="frow"):
@@ -2548,6 +2567,12 @@ class LLMTui(App):
         self.query_one("#set-switch", Select).value = "off" if env.get("MODEL_SWITCH") == "off" else "auto"
         self.query_one("#set-spec", Select).value = "off" if env.get("SPEC_DECODE") == "off" else "auto"
         self.query_one("#set-bind", Select).value = "127.0.0.1" if env.get("BIND") == "127.0.0.1" else "0.0.0.0"
+        if env.get("EXPOSE") in ("caddy", "cloudflare-quick", "cloudflare", "tailscale"):
+            self.query_one("#set-expose-mode", Select).value = env["EXPOSE"]
+        if env.get("EXPOSE") in ("caddy", "cloudflare") and env.get("PUBLIC_URL", "").startswith("https://"):
+            self.query_one("#set-expose-host", Input).value = env["PUBLIC_URL"][8:]
+        self.expose_mode_changed()
+        self.query_one("#set-expose-info", Static).update(self.expose_status_line())
         self.query_one("#set-update", Select).value = env.get("UPDATE_MODE", "notify") \
             if env.get("UPDATE_MODE", "notify") in ("notify", "auto", "off") else "notify"
         self.query_one("#set-hf-status", Static).update(
@@ -2776,6 +2801,89 @@ class LLMTui(App):
             else:
                 self.run_llm(["use", act], f"{act} restarted with the new settings")
         self.push_screen(Confirm(msg, "Restart now", cancel="Later", danger=False), cb)
+
+    # ------------------------------------------------------------ access: HTTPS front end (l9s expose)
+    @on(Select.Changed, "#set-expose-mode")
+    def expose_mode_changed(self, *_) -> None:
+        mode = str(self.query_one("#set-expose-mode", Select).value)
+        self.query_one("#set-expose-hostrow").display = mode in ("caddy", "cloudflare")
+        self.query_one("#set-expose-email").display = mode == "caddy"
+        hints = {"caddy": "Needs: a DNS A/AAAA record for the host pointing at your public IP, and ports 80 and 443 on "
+                          "your router forwarded to this machine. Caddy renews the certificate on its own.",
+                 "cloudflare-quick": "No account or domain: you get a random https://….trycloudflare.com address. It "
+                                     "changes when the tunnel restarts (Check picks up the new one).",
+                 "cloudflare": "Your domain must be on Cloudflare, and `cloudflared tunnel login` must have been run "
+                               "once in a terminal (it opens a browser).",
+                 "tailscale": "Needs Tailscale installed and signed in on this machine, and Funnel allowed for your "
+                              "tailnet in the Tailscale admin console."}
+        self.query_one("#set-expose-info", Static).update(f"[dim]{hints.get(mode, '')}[/dim]")
+
+    def expose_status_line(self) -> str:
+        env = load_env()
+        if not env.get("PUBLIC_URL"):
+            return "[dim]now: not exposed (this machine and your LAN only)[/dim]"
+        return (f"now: [b]{env['PUBLIC_URL']}/v1[/b] via {env.get('EXPOSE') or 'your own front end'}")
+
+    @on(Button.Pressed, "#set-expose-go")
+    def expose_go(self) -> None:
+        mode = str(self.query_one("#set-expose-mode", Select).value)
+        host = self.query_one("#set-expose-host", Input).value.strip()
+        email = self.query_one("#set-expose-email", Input).value.strip()
+        if mode in ("caddy", "cloudflare") and not re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", host, re.I):
+            self.notify("enter the host name first, e.g. llm.example.com", severity="warning")
+            return
+        args = {"caddy": ["caddy", host] + (["--email", email] if email else []),
+                "cloudflare-quick": ["cloudflare"], "cloudflare": ["cloudflare", "--name", "l9s", "--host", host],
+                "tailscale": ["tailscale"]}[mode]
+        what = {"caddy": f"https://{host} with a Let's Encrypt certificate (Caddy)",
+                "cloudflare-quick": "a Cloudflare quick tunnel", "cloudflare": f"https://{host} via Cloudflare Tunnel",
+                "tailscale": "Tailscale Funnel"}[mode]
+
+        def cb(ok):
+            if ok:
+                self._run_expose(args)
+        self.push_screen(Confirm(f"Put this server on the internet at {what}?\n\nAnyone who reaches it still needs an "
+                                 "API key: yours, or one you give them in Keys. The request proxy restarts briefly "
+                                 "(running requests are cut off).", "Set up HTTPS", danger=False), cb)
+
+    @on(Button.Pressed, "#set-expose-check")
+    def expose_check(self) -> None:
+        self._run_expose([])
+
+    @on(Button.Pressed, "#set-expose-off")
+    def expose_off(self) -> None:
+        def cb(ok):
+            if ok:
+                self._run_expose(["off"])
+        self.push_screen(Confirm("Stop serving over the internet? The front end stops and the public URL is cleared; "
+                                 "your LAN keeps working.", "Turn off"), cb)
+
+    @work(thread=True, exclusive=True, group="expose")
+    def _run_expose(self, args: list[str]) -> None:
+        info = self.query_one("#set-expose-info", Static)
+        lines = [f"[dim]$ l9s expose {' '.join(args)}[/dim]"]
+        self.call_from_thread(info.update, "\n".join(lines + ["[dim]working…[/dim]"]))
+        p = subprocess.Popen([LLM_BIN, "expose", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             stdin=subprocess.DEVNULL, errors="replace")
+        for line in p.stdout:
+            if line.strip() and "Usage:" not in line:
+                lines.append(rich_escape(line.rstrip()))
+                self.call_from_thread(info.update, "\n".join(lines[-14:]))
+        rc = p.wait()
+        if rc != 0 and any("password is required" in l or "terminal is required" in l for l in lines):
+            lines.append("[yellow]this needs sudo with a password: run it in a terminal instead: "
+                         f"l9s expose {' '.join(args)}[/yellow]")
+        lines.append(self.expose_status_line())
+        self.call_from_thread(info.update, "\n".join(lines[-15:]))
+
+        def sync():  # the public URL changed underneath the form: show it, without counting it as an unsaved edit
+            env = load_env()
+            self.query_one("#set-public", Input).value = env.get("PUBLIC_URL", "")
+            if hasattr(self, "_applied_env"):
+                self._applied_env.update({"PUBLIC_URL": env.get("PUBLIC_URL", "")})
+            self.settings_changed()
+            self.refresh_keys()
+        self.call_from_thread(sync)
 
     @on(Button.Pressed, "#set-update-check")
     def settings_check_updates(self) -> None:

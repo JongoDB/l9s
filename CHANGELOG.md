@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.8.1
+- Settings › Access sets up HTTPS too: pick Caddy + Let's Encrypt, a Cloudflare quick tunnel, a Cloudflare Tunnel on your domain or Tailscale Funnel, enter the host name if it needs one, and press Set up HTTPS (shows each step and the certificate result, and fills in the public URL). Check and Turn off sit next to it; the section links to Keys (9).
+
 ## 0.8.0
 - Serve people elsewhere over HTTPS: `l9s expose caddy <host>` (Caddy with a Let's Encrypt certificate, renewed automatically), `l9s expose cloudflare` (Cloudflare Tunnel, quick or on your domain; nothing opened on your router) or `l9s expose tailscale` (Funnel). `l9s expose` shows the public URL and checks its certificate; `l9s expose off` undoes it.
 - Public URL setting (Settings › Access, `PUBLIC_URL`): shown and handed out instead of the LAN address (header, Connect, `l9s keys add`, configs for other machines). Settings warns if it's plain HTTP. "Listen on: this machine only" (`BIND=127.0.0.1`) for servers reached only through a tunnel.

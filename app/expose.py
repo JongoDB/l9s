@@ -69,7 +69,8 @@ def set_env(**kv: str) -> None:
 
 def run(cmd: list[str], sudo: bool = False, check: bool = True, **kw) -> subprocess.CompletedProcess:
     if sudo and os.geteuid() != 0 and not IS_MAC:
-        cmd = ["sudo"] + cmd
+        # from the TUI there's no terminal to type a password in: fail fast instead of hanging
+        cmd = ["sudo"] + ([] if sys.stdin.isatty() else ["-n"]) + cmd
     r = subprocess.run(cmd, capture_output=True, text=True, **kw)
     if check and r.returncode != 0:
         raise SystemExit(f"$ {' '.join(cmd)}\n{(r.stderr or r.stdout).strip()[-800:]}")
@@ -119,8 +120,9 @@ def install_caddy() -> None:
         run(cmd, sudo=True)
     key = "https://dl.cloudsmith.io/public/caddy/stable/gpg.key"
     lst = "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt"
-    run(["bash", "-c", f"curl -1sLf '{key}' | sudo gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg"
-                       f" && curl -1sLf '{lst}' | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null"])
+    S = "sudo" if sys.stdin.isatty() else "sudo -n"
+    run(["bash", "-c", f"curl -1sLf '{key}' | {S} gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg"
+                       f" && curl -1sLf '{lst}' | {S} tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null"])
     run(["apt-get", "update"], sudo=True)
     run(["apt-get", "install", "-y", "caddy"], sudo=True)
 
@@ -326,8 +328,9 @@ def status() -> None:
     e = env()
     url, mode = e.get("PUBLIC_URL"), e.get("EXPOSE", "")
     if not url:
-        print("not exposed: l9s is reachable on this machine and your LAN only.\n")
-        print(__doc__)
+        print("not exposed: l9s is reachable on this machine and your LAN only.")
+        if sys.stdout.isatty():
+            print("\n" + __doc__)
         return
     if mode == "cloudflare-quick":
         new = quick_tunnel_url(wait=0)
