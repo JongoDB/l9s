@@ -125,7 +125,7 @@ def profiles() -> list[tuple[str, str]]:
 
 
 HF_HUB = Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME") or HOME / ".cache/huggingface") / "hub")
-DRAFTER = re.compile(r"eagle|drafter|[-_]draft\b|speculator|[-_]mtp\b", re.I)
+DRAFTER = re.compile(r"eagle|drafter|[-_]draft\b|speculator|[-_]mtp(v?\d+)?\b|dflash", re.I)
 _hw = None
 _catalog: tuple[float, list] = (0.0, [])
 

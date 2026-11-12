@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.1
+- Model list: speculative-decoding heads downloaded alongside a model (e.g. `…-MTPv2`) are no longer offered as models.
+
 ## 0.3.0
 - **Coding agents and editors:** `l9s connect` and the new Connect view (`8` / `c`) set up Claude Code, Codex, OpenCode, Crush, Grok Build, Qwen Code, Goose, Aider, Factory Droid, Kilo Code, Continue and Zed, with step-by-step values for Cline, Copilot and JetBrains, and an explanation for tools that can't reach a LAN server (Cursor, Amp, Gemini CLI, Windsurf). Changes are additions under an `l9s` name, shown before writing, with a one-time backup; `--remove` takes them out; model lists are refreshed when profiles change.
 - `l9s claude`, `l9s codex`, `l9s run <tool>`: launch a coding agent on l9s for that session only.
