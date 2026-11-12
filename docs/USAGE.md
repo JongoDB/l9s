@@ -54,6 +54,8 @@ k9s-style keys:
 | `f` / `ctrl+s` | log: pause/resume following / save the full server log to `~/.l9s/logs/` |
 | `y` | copy the highlighted id / repo / profile |
 | `c` / `i` / `?` | connection details / model analysis / help |
+| `←` / `→` | previous / next view (in a text box they move the cursor; in dialogs they move between buttons) |
+| `↑` / `↓` | move through a table, and past its first / last row into the next one in the view (Requests ↔ Clients, Profiles ↔ Models, Hub search ↔ results); in Settings, between fields |
 
 Everything that does something is clickable: the key hints in the header (views and actions), the breadcrumbs at the
 bottom, the Model / Endpoint / Status / Server fields, and the inline hints in panels. Clicking a table row selects it.

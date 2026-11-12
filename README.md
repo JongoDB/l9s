@@ -58,6 +58,7 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
   - **Local / Hub / Downloads / Settings:** profiles, Hugging Face search with fit estimates, background downloads,
     HF token (with check), API key, memory budget, port, server version (with release check)
   - `:` command bar · `/` filter (search, in the Hub) · `d` describe · `ctrl+k` cancel · `y` copy · `?` help
+  - **arrow keys** everywhere: `←`/`→` switch views, `↑`/`↓` move through tables and on into the next table or field
   - **mouse-friendly:** every key hint in the header, the breadcrumbs, the header fields and the inline hints are
     clickable; table rows select on click
 

@@ -31,6 +31,7 @@ from textual.theme import Theme
 from textual.widgets import (Button, Checkbox, DataTable, Footer, Header, Input, Label, Markdown,
                              Log, OptionList, Select, Sparkline, Static, TabbedContent, TabPane)
 from textual.widgets.option_list import Option
+from textual.widgets._data_table import Column
 
 import hfmeta
 import hw
@@ -839,6 +840,11 @@ HELP_MD = """
 
 `F1`–`F7` work even while typing in a text box. `Esc` leaves the search box or clears a filter.
 
+**Arrow keys:** `←` / `→` previous / next view (in a text box they move the cursor; in dialogs they move between
+buttons). `↑` / `↓` move through a table, and past its first or last row into the next table of the view
+(Requests ↔ Clients, Profiles ↔ Models, Hub search ↔ results). In Settings `↑` / `↓` move between fields; `enter`
+opens a drop-down.
+
 ### k9s-style navigation
 | key | action |
 |---|---|
@@ -920,6 +926,46 @@ LOGO = r"""
 | |___  \__, |\__ \
 |_____|   /_/ |___/
 """.strip("\n")
+
+
+_col_render_width = Column.get_render_width
+
+
+def _spread_render_width(self: Column, table) -> int:
+    return _col_render_width(self, table) + (table.extra_width(self.key) if isinstance(table, KTable) else 0)
+
+
+Column.get_render_width = _spread_render_width
+
+
+class KTable(DataTable):
+    """DataTable whose spare width is shared out between the columns, so they read as columns
+    spread across the view instead of sentences packed against the left edge."""
+
+    _spread: tuple = ((), {})
+
+    def extra_width(self, key) -> int:
+        cols = list(self.columns.values())
+        avail = self.content_region.width - 1  # keep room for the vertical scrollbar so it can't oscillate
+        sig = (avail, self.cell_padding, tuple((c.key, c.content_width if c.auto_width else c.width) for c in cols))
+        if self._spread[0] != sig:
+            natural = sum(2 * self.cell_padding + w for _, w in sig[2])
+            # tiny unlabeled status columns (icons) keep their width
+            grow = [c.key for c in cols if str(c.label).strip() or c.content_width > 2]
+            spare = avail - natural
+            extra = {}
+            if spare > 0 and grow:
+                each, rest = divmod(spare, len(grow))
+                extra = {k: each for k in grow}
+                extra[grow[-1]] += rest
+            self._spread = (sig, extra)
+        return self._spread[1].get(key, 0)
+
+    def on_resize(self, _event) -> None:
+        self._spread = ((), {})
+        self._clear_caches()
+        self._require_update_dimensions = True
+        self.refresh()
 
 
 def clk(action: str, text: str, style: str = "") -> str:
@@ -1031,6 +1077,10 @@ class LLMTui(App):
         Binding("r", "refresh", "Refresh"),
         Binding("question_mark", "help", "Help", key_display="?"),
         Binding("U", "update", "Update", key_display="U"),
+        Binding("left", "view_prev", "Views", key_display="←/→", priority=True),
+        Binding("right", "view_next", "Next view", show=False, priority=True),
+        Binding("up", "vnav_up", "Up", show=False, priority=True),
+        Binding("down", "vnav_down", "Down", show=False, priority=True),
     ]
     # which tabs each contextual action applies to (others are always available)
     ACTION_TABS = {"pull": {"hub"}, "serve": {"hub", "local"}, "edit_profile": {"local"}, "info": {"hub", "local"},
@@ -1119,13 +1169,13 @@ class LLMTui(App):
                 yield Log(id="srvlog", max_lines=5000, highlight=True)
             with TabPane("2 Requests", id="requests"):
                 yield Static("", id="req-summary")
-                yield DataTable(id="reqs", cursor_type="row", zebra_stripes=False)
-                yield DataTable(id="clients", cursor_type="row", zebra_stripes=False)
+                yield KTable(id="reqs", cursor_type="row", zebra_stripes=False)
+                yield KTable(id="clients", cursor_type="row", zebra_stripes=False)
             with TabPane("3 Local", id="local"):
                 yield Label("", id="local-hdr1", classes="section")
-                yield DataTable(id="profiles", cursor_type="row", zebra_stripes=False)
+                yield KTable(id="profiles", cursor_type="row", zebra_stripes=False)
                 yield Label("", id="local-hdr2", classes="section")
-                yield DataTable(id="models", cursor_type="row", zebra_stripes=False)
+                yield KTable(id="models", cursor_type="row", zebra_stripes=False)
             with TabPane("4 Hub", id="hub"):
                 with Horizontal(id="hub-bar"):
                     yield Input(placeholder="/ to search Hugging Face · enter searches · esc back to results "
@@ -1136,7 +1186,7 @@ class LLMTui(App):
                                  value="downloads", allow_blank=False, id="hub-sort")
                     yield Checkbox("compatible only", True, id="hub-compat")
                 with Horizontal(id="hub-body"):
-                    yield DataTable(id="hub-results", cursor_type="row", zebra_stripes=False)
+                    yield KTable(id="hub-results", cursor_type="row", zebra_stripes=False)
                     with Vertical(id="hub-detail"):
                         with Horizontal(id="hub-btns"):
                             yield Button("Pull (p)", id="b-pull", variant="primary")
@@ -1149,9 +1199,9 @@ class LLMTui(App):
             with TabPane("5 Downloads", id="downloads"):
                 yield Label("Downloads   [dim]run in the background and keep going if you quit · enter show log · "
                             + clk("delete", "x cancel / clear") + "[/dim]", classes="section")
-                yield DataTable(id="dls", cursor_type="row", zebra_stripes=False)
+                yield KTable(id="dls", cursor_type="row", zebra_stripes=False)
             with TabPane("6 Events", id="events"):
-                yield DataTable(id="events-t", cursor_type="row", zebra_stripes=False)
+                yield KTable(id="events-t", cursor_type="row", zebra_stripes=False)
             with TabPane("7 Settings", id="settings"):
                 with VerticalScroll(id="settings-form"):
                     yield Static(f"Server settings, stored in [b]{LLM_HOME / 'env'}[/b] (readable only by you). "
@@ -1466,7 +1516,12 @@ class LLMTui(App):
 
     # ------------------------------------------------------------ navigation / contextual keys
     def action_tab(self, tab: str) -> None:
-        self.query_one(TabbedContent).active = tab
+        tc = self.query_one(TabbedContent)
+        if tc.active == tab:
+            return
+        # drop focus first: a focused widget left in the old pane makes TabbedContent switch straight back to it
+        self.set_focus(None)
+        tc.active = tab
 
     def goto_tab(self, tab: str) -> None:
         """Switch tab after any closing modal has restored focus (which would otherwise pull the
@@ -1490,6 +1545,7 @@ class LLMTui(App):
                 self.call_after_refresh(lambda: lg.scroll_end(animate=False))
         elif pid == "settings":
             self.load_settings_form()
+            self.query_one("#settings-form").focus()
         elif pid == "requests":
             self.query_one("#reqs", DataTable).focus()
             self._last_req_poll = 0
@@ -1500,7 +1556,67 @@ class LLMTui(App):
         self.refresh_bindings()
         self.render_chrome()
 
+    # up/down past the end of a table moves to the next table (or search box) in the same view
+    ARROW_STACKS = {"requests": ["reqs", "clients"], "local": ["profiles", "models"], "hub": ["hub-q", "hub-results"]}
+
+    def _modal(self) -> bool:
+        return isinstance(self.screen, ModalScreen)
+
+    def _arrow_neighbour(self, d: int):
+        f = self.focused
+        try:
+            tab = self.query_one(TabbedContent).active
+        except Exception:
+            return None
+        if tab == "settings":
+            return "field" if not isinstance(f, OptionList) else None
+        stack = self.ARROW_STACKS.get(tab)
+        if not stack or f is None or f.id not in stack:
+            return None
+        i = stack.index(f.id) + d
+        if not 0 <= i < len(stack):
+            return None
+        if isinstance(f, DataTable):
+            at_edge = f.row_count == 0 or (f.cursor_row >= f.row_count - 1 if d > 0 else f.cursor_row <= 0)
+            if not at_edge:
+                return None
+        nxt = self.query_one(f"#{stack[i]}")
+        return nxt if nxt.display else None
+
+    def action_view(self, d: int) -> None:
+        if self._modal():
+            self.screen.focus_next() if d > 0 else self.screen.focus_previous()
+            return
+        cur = self.query_one(TabbedContent).active
+        self.action_tab(TABS[(TABS.index(cur) + d) % len(TABS)])
+
+    def action_view_prev(self) -> None:
+        self.action_view(-1)
+
+    def action_view_next(self) -> None:
+        self.action_view(1)
+
+    def action_vnav_up(self) -> None:
+        self.action_vnav(-1)
+
+    def action_vnav_down(self) -> None:
+        self.action_vnav(1)
+
+    def action_vnav(self, d: int) -> None:
+        tgt = self._arrow_neighbour(d)
+        if tgt == "field":
+            self.screen.focus_next() if d > 0 else self.screen.focus_previous()
+        elif tgt is not None:
+            tgt.focus()
+
     def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action in ("view_prev", "view_next"):
+            f = self.focused
+            if self._modal():  # ←/→ move between a dialog's buttons; text fields keep their cursor keys
+                return isinstance(f, Button)
+            return not isinstance(f, (Input, OptionList))
+        if action in ("vnav_up", "vnav_down"):
+            return not self._modal() and self._arrow_neighbour(-1 if action == "vnav_up" else 1) is not None
         if action == "update":
             return self.update_available()
         tabs = self.ACTION_TABS.get(action)
