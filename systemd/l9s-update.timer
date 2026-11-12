@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily l9s update check
+
+[Timer]
+OnCalendar=*-*-* 04:17:00
+RandomizedDelaySec=1h
+Persistent=true
+OnBootSec=10min
+
+[Install]
+WantedBy=timers.target

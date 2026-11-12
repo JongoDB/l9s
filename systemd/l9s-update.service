@@ -1,0 +1,10 @@
+[Unit]
+Description=l9s: check for (and, with UPDATE_MODE=auto, install) updates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Environment=L9S_HOME=@L9S_HOME@
+ExecStart=@L9S_HOME@/bin/l9s update --scheduled

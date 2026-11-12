@@ -7,11 +7,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 # options: --model <org/repo>  serve this model when done
 #          --no-model          don't serve a starter model
-MODEL="" NO_MODEL=0
+MODEL="" NO_MODEL=0 UPDATE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model) MODEL="${2:?--model needs an org/repo}"; shift 2 ;;
     --no-model) NO_MODEL=1; shift ;;
+    --update) UPDATE=1; NO_MODEL=1; shift ;;   # used by `l9s update`: also upgrade l9s' Python libraries
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -21,6 +22,19 @@ OS="$(uname -s)"
 UV="$HOME/.local/bin/uv"
 
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+# (re)load a launchd agent. `launchctl bootout` returns before the old job is gone; bootstrapping too early fails
+# with "Bootstrap failed: 5: Input/output error". Wait for it to disappear, then retry.
+launchd_load() {
+  local label="$1" plist="$2" i
+  launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+  for i in $(seq 1 50); do launchctl print "gui/$UID/$label" >/dev/null 2>&1 || break; sleep 0.2; done
+  launchctl enable "gui/$UID/$label" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8; do
+    launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null && return 0
+    sleep 1
+  done
+  die "couldn't start $label with launchctl; try: launchctl bootstrap gui/$UID $plist"
+}
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 if [[ "$OS" == "Darwin" ]]; then
@@ -37,10 +51,11 @@ say "uv + Hugging Face CLI"
 # ---------------------------------------------------------------- code + Python environment
 say "l9s -> $L9S_HOME"
 mkdir -p "$L9S_HOME/app" "$L9S_HOME/bin" "$L9S_HOME/profiles" "$L9S_HOME/cache" "$L9S_HOME/logs"
-cp app/*.py "$L9S_HOME/app/"
+cp app/*.py VERSION "$L9S_HOME/app/"
 install -m 755 bin/l9s "$L9S_HOME/bin/l9s"
 [[ -d "$L9S_HOME/app/.venv" ]] || "$UV" venv -q --python 3.12 "$L9S_HOME/app/.venv"
-"$UV" pip install -q --python "$L9S_HOME/app/.venv/bin/python" -r requirements.txt
+PIP_UP=(); [[ $UPDATE -eq 1 ]] && PIP_UP=(--upgrade)
+"$UV" pip install -q ${PIP_UP[@]+"${PIP_UP[@]}"} --python "$L9S_HOME/app/.venv/bin/python" -r requirements.txt
 if [[ "$OS" == "Darwin" ]]; then
   say "mlx-lm (Apple's MLX inference server)"
   "$UV" pip install -q --upgrade --python "$L9S_HOME/app/.venv/bin/python" mlx-lm
@@ -67,6 +82,7 @@ if [[ ! -f "$L9S_HOME/env" ]]; then
     echo "PORT=8000"
     echo "BACKEND_PORT=8001"
     echo "LOG_PROMPTS=1"
+    echo "UPDATE_MODE=notify"   # notify | auto | off  (daily check; see: l9s update --help)
     if [[ "$BACKEND" == "vllm" ]]; then
       echo "IMAGE=$IMAGE"; echo "GPU_ARGS=\"$GPU_ARGS\""; echo "GPU_MEM=0.85"; echo "CONTAINER=l9s-vllm"
     fi
@@ -94,14 +110,38 @@ if [[ "$OS" == "Darwin" ]]; then
   <key>StandardErrorPath</key><string>$L9S_HOME/logs/proxy.log</string>
 </dict></plist>
 EOF
-  launchctl bootout "gui/$UID/dev.l9s.proxy" 2>/dev/null || true
-  launchctl bootstrap "gui/$UID" "$PL"
+  launchd_load dev.l9s.proxy "$PL"
 else
   sed -e "s|@USER@|$USER|" -e "s|@HOME@|$HOME|g" -e "s|@L9S_HOME@|$L9S_HOME|g" systemd/l9s-proxy.service \
     | sudo tee /etc/systemd/system/l9s-proxy.service >/dev/null
   sudo systemctl daemon-reload
   sudo systemctl enable l9s-proxy >/dev/null 2>&1
   sudo systemctl restart l9s-proxy
+fi
+
+# ---------------------------------------------------------------- daily update check
+say "daily update check (UPDATE_MODE in $L9S_HOME/env: notify | auto | off)"
+if [[ "$OS" == "Darwin" ]]; then
+  UPL="$HOME/Library/LaunchAgents/dev.l9s.update.plist"
+  cat > "$UPL" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.l9s.update</string>
+  <key>ProgramArguments</key><array><string>$L9S_HOME/bin/l9s</string><string>update</string><string>--scheduled</string></array>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>4</integer><key>Minute</key><integer>17</integer></dict>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$L9S_HOME/logs/update.log</string>
+  <key>StandardErrorPath</key><string>$L9S_HOME/logs/update.log</string>
+</dict></plist>
+EOF
+  launchd_load dev.l9s.update "$UPL"
+else
+  sed -e "s|@USER@|$USER|" -e "s|@L9S_HOME@|$L9S_HOME|g" systemd/l9s-update.service \
+    | sudo tee /etc/systemd/system/l9s-update.service >/dev/null
+  sudo install -m 644 systemd/l9s-update.timer /etc/systemd/system/l9s-update.timer
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now l9s-update.timer >/dev/null 2>&1
 fi
 
 # ---------------------------------------------------------------- model server prerequisites

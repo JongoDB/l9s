@@ -54,6 +54,7 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
   hw                                     detected hardware and deployment
   key                                    print the API key
   tui                                    open the terminal UI
+  update [--check] [-y]                  check for / install a newer l9s (and mlx-lm on a Mac)
   uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
                                          remove l9s (downloaded models stay unless --remove-models)
 
@@ -148,6 +149,7 @@ run_profile() {
   if [[ "$BACKEND" == "mlx" ]]; then mlx_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}
   else vllm_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}; fi
   ln -sfn "$file" "$L9S_HOME/active"
+  rm -f "$L9S_HOME/cache/restart-pending"
   wait_ready
 }
 
@@ -197,6 +199,15 @@ proxy_ctl() {
 }
 
 cmd="${1:-tui}"; shift || true
+
+# one-line notice when the cached daily check found an update (no network here)
+UPCACHE="$L9S_HOME/cache/update.json"
+case "$cmd" in
+  tui|ui|update|key|help|-h|--help|uninstall) ;;
+  *) if [[ -t 2 && -f "$UPCACHE" ]] && grep -q '"update": true' "$UPCACHE" 2>/dev/null; then
+       echo "l9s: an update is available (run: l9s update)" >&2
+     fi ;;
+esac
 case "$cmd" in
   pull)
     [[ $# -ge 1 ]] || die "usage: l9s pull <org/repo>"
@@ -259,6 +270,7 @@ case "$cmd" in
     wait_ready ;;
   restart)
     need_key
+    rm -f "$L9S_HOME/cache/restart-pending"
     if [[ "$BACKEND" == "mlx" ]]; then launchctl kickstart -k "gui/$UID/$LABEL"; else docker restart "$CONTAINER" >/dev/null; fi
     wait_ready ;;
   test)
@@ -275,7 +287,59 @@ case "$cmd" in
     sed -i '/^IMAGE=/d' "$L9S_HOME/env"; echo "IMAGE=$1" >> "$L9S_HOME/env"; IMAGE="$1"
     a="$(active_profile)"; [[ -n "$a" ]] && run_profile "$a" ;;
   proxy) proxy_ctl "${1:-status}" ;;
-  tui|ui) exec "$PY" "$APP/tui.py" "$@" ;;
+  tui|ui)
+    # exit code 75 = the TUI updated l9s and asks to be relaunched on the new version
+    while :; do
+      rc=0; "$PY" "$APP/tui.py" "$@" || rc=$?
+      [[ $rc -eq 75 ]] || exit $rc
+    done ;;
+  update)
+    check=0 yes=0 scheduled=0
+    for a in "$@"; do
+      case "$a" in
+        --check) check=1 ;; -y|--yes) yes=1 ;; --scheduled) scheduled=1 ;;
+        -h|--help) echo "usage: l9s update [--check] [-y]   (UPDATE_MODE=$UPDATE_MODE in $L9S_HOME/env: notify | auto | off)"; exit 0 ;;
+        *) die "usage: l9s update [--check] [-y]" ;;
+      esac
+    done
+    if [[ $scheduled -eq 1 ]]; then
+      echo "== $(date '+%F %T') scheduled check (UPDATE_MODE=${UPDATE_MODE:-notify})"
+      case "${UPDATE_MODE:-notify}" in
+        off) exit 0 ;;
+        notify) "$PY" "$APP/updater.py" check --force; exit 0 ;;
+        auto) yes=1 ;;
+      esac
+    fi
+    rc=0; "$PY" "$APP/updater.py" check --force || rc=$?
+    [[ $check -eq 1 ]] && exit 0
+    if [[ $rc -ne 10 ]]; then echo "==> nothing to update"; exit 0; fi
+    l9s_up="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(int(bool((d.get("l9s") or {}).get("update"))), int(bool((d.get("server") or {}).get("update") and (d.get("server") or {}).get("auto"))))' "$UPCACHE")"
+    read -r want_l9s want_srv <<< "$l9s_up"
+    if [[ $want_l9s -eq 0 && $want_srv -eq 0 ]]; then
+      echo "==> nothing l9s installs automatically (see the vLLM note above)"; exit 0
+    fi
+    if [[ $yes -eq 0 ]]; then
+      [[ -r /dev/tty ]] || die "no terminal to confirm on; re-run with -y"
+      read -r -p "Update now? [y/N] " ans < /dev/tty
+      [[ "$ans" == [yY]* ]] || { echo "cancelled"; exit 1; }
+    fi
+    mlx_before=""; [[ "$BACKEND" == "mlx" ]] && mlx_before="$("$PY" -c 'from importlib.metadata import version; print(version("mlx-lm"))' 2>/dev/null || true)"
+    echo "==> updating l9s"
+    curl -fsSL "https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh" | bash -s -- --update || die "update failed (your install is unchanged where the step failed; see above)"
+    if [[ "$BACKEND" == "mlx" ]]; then
+      mlx_after="$("$PY" -c 'from importlib.metadata import version; print(version("mlx-lm"))' 2>/dev/null || true)"
+      if [[ -n "$mlx_before" && "$mlx_before" != "$mlx_after" ]] && mlx_running; then
+        if [[ $scheduled -eq 1 ]]; then
+          mkdir -p "$L9S_HOME/cache"; echo "mlx-lm $mlx_before -> $mlx_after" > "$L9S_HOME/cache/restart-pending"
+          echo "==> mlx-lm updated ($mlx_before -> $mlx_after); restart the server to use it (l9s restart)"
+        else
+          echo "==> mlx-lm updated ($mlx_before -> $mlx_after): restarting the model server"
+          "$L9S_HOME/bin/l9s" restart
+        fi
+      fi
+    fi
+    "$PY" "$APP/updater.py" check --force --quiet || true
+    echo "==> l9s is now $(cat "$APP/VERSION")" ;;
   uninstall)
     yes=0 keep=0 rmmodels=0 rmimage=0
     while [[ $# -gt 0 ]]; do

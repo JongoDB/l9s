@@ -100,6 +100,12 @@ updates l9s and keeps your settings, profiles and history (no starter model if y
 and `sudo` for the `l9s` symlink and the proxy service.
 **macOS (mlx) needs:** an Apple Silicon Mac; nothing else (no Docker, no sudo).
 
+**Updates:** l9s checks once a day (and when the TUI opens). When a newer version is out, the TUI header shows
+**↑ … available**: press `U` (or click it) to update and l9s restarts itself on the new version. From a shell,
+`l9s update` does the same (`--check` only reports). In Settings → Updates you can switch to **auto** (installs
+updates in the background without restarting a running model) or **off**. vLLM itself is never upgraded
+automatically; when a newer release exists you're told the exact `l9s upgrade …` command.
+
 **Uninstall:** `l9s uninstall` removes the model server, the proxy service, the command and `~/.l9s`.
 Downloaded models stay in the Hugging Face cache unless you add `--remove-models`; `--keep-config` keeps your
 settings, profiles and history; `--remove-image` also deletes the vLLM Docker image.
@@ -141,6 +147,7 @@ On a remote box, run the TUI over SSH: `ssh -t <host> l9s`.
 | `l9s proxy status\|restart\|logs` | the request proxy |
 | `l9s upgrade <image:tag>` | (vllm) switch vLLM version |
 | `l9s hw` · `l9s key` | detected hardware / API key |
+| `l9s update [--check] [-y]` | check for / install a newer l9s (and mlx-lm on a Mac) |
 | `l9s uninstall [-y] [--keep-config] [--remove-models] [--remove-image]` | remove l9s |
 
 Full reference: [docs/USAGE.md](docs/USAGE.md).
@@ -162,6 +169,7 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 | `app/tui.py` | terminal UI ([Textual](https://github.com/Textualize/textual)) |
 | `app/hfmeta.py` | model analysis: Hub metadata, memory and KV math, card command extraction and sanitizing, presets |
 | `app/hw.py` | hardware detection: vendor, GPUs, unified vs dedicated memory, Docker GPU flags, live GPU stats |
+| `app/updater.py` | update checks: l9s (GitHub), mlx-lm (PyPI), vLLM releases (Docker Hub); cached daily |
 | `app/proxy.py` | request-tracking reverse proxy ([aiohttp](https://github.com/aio-libs/aiohttp)), API key for mlx, event recorder |
 | `app/vllm_caps.py` / `app/mlx_caps.py` | ask the installed server which flags, architectures, parsers and quant methods it supports |
 | `tests/` | end-to-end tests that drive the real TUI and proxy against a live server (some switch models: run them on a box you can interrupt) |

@@ -34,6 +34,7 @@ from textual.widgets.option_list import Option
 
 import hfmeta
 import hw
+import updater
 
 HOME = Path.home()
 L9S_HOME = Path(os.environ.get("L9S_HOME", HOME / ".l9s"))
@@ -690,7 +691,8 @@ COMMANDS = [
     ("settings", "HF token, API key, memory, port, image"), ("serve <profile>", "switch the server to a profile"),
     ("stop", "stop the server"), ("start", "start the server"), ("restart", "restart the server"),
     ("test", "send a test request"), ("pull <org/repo>", "download a model"), ("info <org/repo>", "full model analysis"),
-    ("search <text>", "search Hugging Face"), ("connect", "connection details"), ("help", "keys and concepts"),
+    ("search <text>", "search Hugging Face"), ("connect", "connection details"), ("update", "update l9s"),
+    ("help", "keys and concepts"),
     ("quit", "exit (server keeps running)"),
 ]
 
@@ -1028,6 +1030,7 @@ class LLMTui(App):
         Binding("c", "connect", "Connect"),
         Binding("r", "refresh", "Refresh"),
         Binding("question_mark", "help", "Help", key_display="?"),
+        Binding("U", "update", "Update", key_display="U"),
     ]
     # which tabs each contextual action applies to (others are always available)
     ACTION_TABS = {"pull": {"hub"}, "serve": {"hub", "local"}, "edit_profile": {"local"}, "info": {"hub", "local"},
@@ -1188,6 +1191,15 @@ class LLMTui(App):
                             yield Input(id="set-image")
                             yield Button("Check releases", id="set-image-check")
                         yield Static("", id="set-image-info")
+                    yield Label("Updates", classes="section")
+                    yield Static("[dim]Checked daily. notify: tell you in the header and CLI · auto: also install l9s (and "
+                                 "mlx-lm on a Mac) in the background, without restarting a running model · off. "
+                                 "vLLM is never upgraded automatically.[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Select([("notify", "notify"), ("auto", "auto"), ("off", "off")], value="notify",
+                                     allow_blank=False, id="set-update")
+                        yield Button("Check now", id="set-update-check")
+                    yield Static("", id="set-update-info")
                     yield Label("Request log", classes="section")
                     yield Checkbox("Record short prompt/response previews (first ~400 chars) for the Requests view",
                                    True, id="set-logprompts")
@@ -1261,8 +1273,9 @@ class LLMTui(App):
             lab("Endpoint:") + clk("connect", val(self.endpoint)),
             lab("Status:") + clk("tab('server')", val(f"● {badge}", color)) + (f" {val('in flight ' + str(px['active']))}" if px and px.get("active") else ""),
             lab("Server:") + clk("tab('settings')", val(s.get("image") or self.server_name())),
-            lab("GPU:") + val(f"{(sum(util) / len(util)) if util else 0:.0f}%"),
-            lab("MEM:") + val(f"{s.get('mem_used', 0) / 1e9:.0f}/{self.mem_total / 1e9:.0f} GB"),
+            lab("GPU/MEM:") + val(f"{(sum(util) / len(util)) if util else 0:.0f}% · "
+                                  f"{s.get('mem_used', 0) / 1e9:.0f}/{self.mem_total / 1e9:.0f} GB"),
+            lab("l9s:") + self.version_markup(),
         ]
         self.query_one("#hdr-info", Static).update("\n".join(lines))
 
@@ -1313,6 +1326,89 @@ class LLMTui(App):
         self.follow_logs()
         if self.caps is None:
             self.probe_caps()
+        self.update_info = updater.cached(max_age=10 ** 9)
+        self.check_updates()
+        self.set_interval(6 * 3600, self.check_updates)
+
+    # ------------------------------------------------------------ updates
+    def update_available(self) -> bool:
+        d = getattr(self, "update_info", None) or {}
+        return bool((d.get("l9s") or {}).get("update") or
+                    ((d.get("server") or {}).get("update") and (d.get("server") or {}).get("auto")))
+
+    def version_markup(self) -> str:
+        cur = updater.installed_version()
+        d = getattr(self, "update_info", None) or {}
+        pending = L9S_HOME / "cache" / "restart-pending"
+        if pending.exists():
+            return (f"[{K9['gold']}]{cur}[/] " + clk("restart", f"[b {K9['sky']}]restart pending: "
+                                                   f"{pending.read_text().strip()}[/]"))
+        bits = []
+        if (d.get("l9s") or {}).get("update"):
+            bits.append(f"l9s {d['l9s']['latest']}")
+        srv = d.get("server") or {}
+        if srv.get("update") and srv.get("auto"):
+            bits.append(f"{srv['name']} {srv['latest']}")
+        if bits:
+            return f"[{K9['gold']}]{cur}[/] " + clk("update", f"[b {K9['greenyellow']}]↑ {', '.join(bits)} available (U)[/]")
+        note = f" [{K9['gray']}]{srv['name']} {srv['latest']} out[/]" if srv.get("update") else ""
+        return f"[{K9['gold']}]{cur}[/]" + note
+
+    @work(thread=True, exclusive=True, group="updates")
+    def check_updates(self) -> None:
+        if load_env().get("UPDATE_MODE", "notify") == "off":
+            return
+        try:
+            info = updater.cached() or updater.check()
+        except Exception:  # noqa: BLE001
+            return
+        was = self.update_available()
+        self.update_info = info
+        if self.update_available() and not was:
+            lines = updater.summary(info)
+            self.call_from_thread(self.notify, "\n".join(lines[:4]) + "\npress U (or click it in the header) to update",
+                                  title="l9s update available", timeout=12)
+        self.call_from_thread(self.render_info)
+        self.call_from_thread(self.render_chrome)
+
+    def action_update(self) -> None:
+        if self.busy():
+            return
+        info = getattr(self, "update_info", None) or {}
+        lines = updater.summary(info) if info else ["(checking…)"]
+        srv = info.get("server") or {}
+        restart = srv.get("update") and srv.get("auto") and self.state.get("status") == "running"
+        msg = ("[b]Update l9s?[/b]\n\n" + "\n".join(lines[:14])
+               + ("\n\n[yellow]The model server restarts to use the new mlx-lm; the endpoint is down for a moment.[/yellow]"
+                  if restart else "")
+               + "\n\nl9s restarts itself afterwards. Your settings, profiles, history and models are kept.")
+
+        def cb(ok):
+            if ok:
+                self.goto_tab("server")
+                self._run_update()
+        self.push_screen(Confirm(msg, "Update", danger=False), cb)
+
+    @work(thread=True, group="llm")
+    def _run_update(self) -> None:
+        self.call_from_thread(self.slog, "$ l9s update -y")
+        p = subprocess.Popen([LLM_BIN, "update", "-y"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             errors="replace")
+        for line in p.stdout:
+            self.call_from_thread(self.slog, line.rstrip())
+        rc = p.wait()
+        if rc != 0:
+            self.call_from_thread(self.notify, "update failed: see the server log", severity="error", timeout=15)
+            return
+        self.update_info = updater.cached(max_age=10 ** 9)
+
+        def ask():
+            def cb(ok):
+                if ok:
+                    self.exit(return_code=75)  # the `l9s` launcher relaunches the TUI on the new version
+            self.push_screen(Confirm(f"Updated to l9s {updater.installed_version()}. Restart the TUI now to use it?",
+                                     "Restart l9s", danger=False), cb)
+        self.call_from_thread(ask)
 
     @work(thread=True, exclusive=True, group="caps")
     def probe_caps(self) -> None:
@@ -1405,6 +1501,8 @@ class LLMTui(App):
         self.render_chrome()
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
+        if action == "update":
+            return self.update_available()
         tabs = self.ACTION_TABS.get(action)
         if tabs is None:
             return True
@@ -1526,6 +1624,8 @@ class LLMTui(App):
             q = self.query_one("#hub-q", Input)
             q.value = arg
             self.hub_search()
+        elif word == "update":
+            self.action_update()
         elif word == "connect":
             self.action_connect()
         elif word == "help":
@@ -1825,6 +1925,8 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         for k, sel in self.SETTING_KEYS.items():
             self.query_one(sel, Input).value = env.get(k, defaults.get(k, ""))
         self.query_one("#set-logprompts", Checkbox).value = env.get("LOG_PROMPTS", "1") != "0"
+        self.query_one("#set-update", Select).value = env.get("UPDATE_MODE", "notify") \
+            if env.get("UPDATE_MODE", "notify") in ("notify", "auto", "off") else "notify"
         self.query_one("#set-hf-status", Static).update(
             "[dim]no token set[/dim]" if not env.get("HF_TOKEN") else "[dim]token set; press Test token to verify[/dim]")
         self.settings_changed()
@@ -1832,6 +1934,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
     def settings_values(self) -> dict:
         v = {k: self.query_one(sel, Input).value.strip() for k, sel in self.SETTING_KEYS.items()}
         v["LOG_PROMPTS"] = "1" if self.query_one("#set-logprompts", Checkbox).value else "0"
+        v["UPDATE_MODE"] = str(self.query_one("#set-update", Select).value)
         return v
 
     def settings_problems(self, v: dict) -> list[str]:
@@ -1854,6 +1957,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
 
     @on(Input.Changed, "#settings-form Input")
     @on(Checkbox.Changed, "#set-logprompts")
+    @on(Select.Changed, "#set-update")
     def settings_changed(self, *_) -> None:
         v = self.settings_values()
         try:
@@ -1866,7 +1970,8 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         self.query_one("#set-port-info", Static).update(
             f"endpoint would be http://{self.ip}:{v['PORT'] or '?'}/v1")
         cur = load_env()
-        changed = [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS"] if v[k] != cur.get(k, v[k] if k not in cur else "")]
+        changed = [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE"]
+                   if v[k] != cur.get(k, v[k] if k not in cur else "")]
         probs = self.settings_problems(v)
         lines = []
         if probs:
@@ -1975,6 +2080,23 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             else:
                 self.run_llm(["use", act], f"{act} restarted with the new settings")
         self.push_screen(Confirm(msg, "Apply"), cb)
+
+    @on(Button.Pressed, "#set-update-check")
+    def settings_check_updates(self) -> None:
+        self._settings_check_updates()
+
+    @work(thread=True, exclusive=True, group="updates")
+    def _settings_check_updates(self) -> None:
+        info_w = self.query_one("#set-update-info", Static)
+        self.call_from_thread(info_w.update, "[dim]checking GitHub / PyPI / Docker Hub…[/dim]")
+        try:
+            self.update_info = updater.check()
+            lines = updater.summary(self.update_info)
+        except Exception as e:  # noqa: BLE001
+            lines = [f"couldn't check: {e}"]
+        self.call_from_thread(info_w.update, "\n".join(lines))
+        self.call_from_thread(self.render_info)
+        self.call_from_thread(self.render_chrome)
 
     @on(Button.Pressed, "#set-revert")
     def settings_revert(self) -> None:
@@ -2480,6 +2602,9 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             self.notify("server isn't ready yet", severity="warning")
             return
         self.run_llm(["test"], "test request succeeded")
+
+    def action_restart(self) -> None:
+        self.b_restart()
 
     @on(Button.Pressed, "#b-restart")
     def b_restart(self) -> None:

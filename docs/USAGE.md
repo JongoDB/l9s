@@ -114,6 +114,16 @@ l9s uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
 
 Re-running the one-liner updates l9s in place (code in `~/.l9s/src`).
 
+### Updates
+- A daily job (systemd `l9s-update.timer` on Linux, launchd `dev.l9s.update` on macOS) checks for a newer l9s, a newer
+  mlx-lm (Mac) and newer vLLM releases (Linux), and caches the result in `~/.l9s/cache/update.json`.
+- `UPDATE_MODE` in `~/.l9s/env` (or Settings → Updates): `notify` (default) shows it in the TUI header and as a one-line
+  notice on CLI commands; `auto` also installs l9s + mlx-lm updates in the background (a running model isn't
+  restarted: the header shows "restart pending" until you restart it); `off` disables checks.
+- `l9s update` checks and installs (asks first; `-y` skips the question; `--check` only reports). On a Mac, if mlx-lm
+  changed, the model server is restarted. In the TUI: `U`, `:update`, or click the header notice.
+- vLLM is never upgraded automatically: switch with `l9s upgrade vllm/vllm-openai:<tag>` (or Settings).
+
 ## Everyday commands
 
 ```bash
