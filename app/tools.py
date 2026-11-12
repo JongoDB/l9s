@@ -14,6 +14,7 @@ import shlex
 from pathlib import Path
 
 from connect import HOME, IS_MAC, MARK, TOOLS, Change, Plan, Tool, default_model, has_comments, toml_str
+from connect import active_model as connect_active
 
 XDG = HOME / ".config"
 TAG = "(l9s)"  # every model entry l9s writes carries this, so refresh / remove can find its own entries
@@ -69,25 +70,57 @@ def comment_fallback(plan: Plan, path: Path, snippet: str, where: str) -> Plan:
 
 
 # ------------------------------------------------------------------ Claude Code
+def _secs(s) -> str:
+    return f"{s:.0f}s" if s < 90 else f"{s / 60:.0f} min"
+
+
+def claude_picker(info: dict) -> dict:
+    """Claude Code's /model list, replaced by l9s's models (its built-in Opus/Sonnet/Haiku rows would be
+    misleading here: every row is a model on your server)."""
+    loaded = connect_active(info)
+    rows = []
+    for m in models(info):
+        k = f"{ctx(m) // 1024}K context" if m.get("context_window") else ""
+        if m.get("follows"):
+            rows.append({"model": m["id"], "label": f"{m['id']} (follow l9s)",
+                         "description": f"Whatever l9s has loaded, now {loaded}. Switch models in l9s and this "
+                                        f"session follows. {k}".strip()})
+        elif m["id"] == loaded:
+            rows.append({"model": m["id"], "label": m["id"], "description": f"Loaded now · {k} · pinned: if "
+                                                                           "l9s switches away, it loads this back"})
+        else:
+            t = f"~{_secs(m['load_seconds'])}" if m.get("load_seconds") else "may take minutes"
+            rows.append({"model": m["id"], "label": m["id"],
+                         "description": f"Not loaded: picking it switches the server for every client ({t}) · {k}"})
+    return {"modelPicker": {"replaceBuiltInOptions": True, "options": rows}}
+
+
 def claude(info: dict) -> Plan:
     m = cur(info)
     mid = m["id"]
+    name = f"{mid} (l9s)"
     env = {"ANTHROPIC_BASE_URL": info["base"], "ANTHROPIC_AUTH_TOKEN": info["key"], "ANTHROPIC_API_KEY": "",
-           "ANTHROPIC_MODEL": mid, "ANTHROPIC_DEFAULT_OPUS_MODEL": mid, "ANTHROPIC_DEFAULT_SONNET_MODEL": mid,
-           "ANTHROPIC_DEFAULT_HAIKU_MODEL": mid, "CLAUDE_CODE_SUBAGENT_MODEL": mid,
+           "ANTHROPIC_MODEL": mid, "CLAUDE_CODE_SUBAGENT_MODEL": mid,
            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(out(m)),
            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(ctx(m)),  # its real window, so Claude Code compacts in time
-           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-           "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"}
-    return Plan(env=env, argv=["claude"],
-                snippet="\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items()) + "\nclaude",
+           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"}
+    # background tasks (titles, summaries) run on the Haiku tier etc.: keep every tier on the same model, so they
+    # never ask the server to switch
+    for tier in ("OPUS", "SONNET", "HAIKU", "FABLE"):
+        env[f"ANTHROPIC_DEFAULT_{tier}_MODEL"] = mid
+        env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_NAME"] = name
+        env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_DESCRIPTION"] = "your l9s server"
+    settings = json.dumps(claude_picker(info), separators=(",", ":"))
+    return Plan(env=env, argv=["claude", "--settings", settings],
+                snippet="\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
+                        + f"\nclaude --settings {shlex.quote(settings)}",
                 use="l9s claude    (follows the model you load in l9s; pin one: l9s claude -m <model>)",
                 notes=["Nothing is written: your normal `claude` keeps using your Anthropic account.",
                        ("Follows l9s: switch models in l9s and the session uses the new one on its next message. "
                         f"Context is set to {ctx(m)} tokens, the smallest of your models, so it fits any of them.")
                        if follows(info) else f"Pinned to {mid}: if another model is loaded, its requests switch back.",
-                       "/model lists every l9s model (read live from the server). Picking one that isn't loaded "
-                       "loads it: the next reply waits for that (see Connect for how long each took).",
+                       "/model lists only your l9s models (the Claude ones are hidden). Picking one that isn't "
+                       "loaded loads it: the next reply waits for that (see Connect for how long each took).",
                        "Background and sub-agent tasks use the same l9s model."])
 
 

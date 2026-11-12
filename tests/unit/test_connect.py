@@ -147,3 +147,17 @@ def test_config_tools_list_the_follow_id_first(cx):
     connect.apply(connect.tool("qwen"), FOLLOW)
     entries = json.loads((home / ".qwen/settings.json").read_text())["modelProviders"]["openai"]
     assert [e["id"] for e in entries][0] == "l9s" and "whatever l9s has loaded" in entries[0]["name"]
+
+
+def test_claude_model_picker_lists_only_l9s_models(cx):
+    connect, _ = cx
+    p = connect.tool("claude").plan(FOLLOW)
+    assert p.argv[:2] == ["claude", "--settings"]
+    picker = json.loads(p.argv[2])["modelPicker"]
+    assert picker["replaceBuiltInOptions"] is True
+    rows = picker["options"]
+    assert [r["model"] for r in rows] == ["l9s", "nemotron-3-super", "qwen3.6-35b"]
+    assert "follow" in rows[0]["label"] and "now nemotron-3-super" in rows[0]["description"]
+    assert rows[1]["description"].startswith("Loaded now") and "~2 min" in rows[2]["description"]
+    assert p.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "l9s" and p.env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "l9s"
+    assert p.env["ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"] == "l9s (l9s)"

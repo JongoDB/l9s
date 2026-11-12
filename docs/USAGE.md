@@ -218,6 +218,7 @@ PORT=8000                    # public endpoint (l9s-proxy)
 BACKEND_PORT=8001            # model server, localhost only
 LOG_PROMPTS=1                # keep short prompt/response previews in the request log
 MODEL_SWITCH=auto            # auto: a request for another model loads it (like Ollama) · off: it gets an error
+IDENTITY_NOTE=1              # Anthropic-API requests (Claude Code) get one line telling the model which model it really is
 UPDATE_MODE=notify           # notify | auto | off
 # vllm only
 IMAGE=vllm/vllm-openai:v0.33.0
@@ -269,7 +270,7 @@ Configs that list models are rewritten when profiles change (`l9s serve`, `l9s u
 
 | Tool | Writes | Launch |
 |---|---|---|
-| Claude Code | nothing (env for the session: base URL, key, model for every tier, the model's real context window) | `l9s claude` |
+| Claude Code | nothing (env for the session: base URL, key, model for every tier, context window; `--settings` replaces the `/model` list with your l9s models) | `l9s claude` |
 | Codex CLI | `~/.codex/config.toml` (marked `l9s` provider block) + `~/.codex/l9s.config.toml` (profile) | `l9s codex`, `codex --profile l9s` |
 | OpenCode | `~/.config/opencode/opencode.json` → `provider.l9s` | `opencode`, then /models |
 | Crush | `~/.config/crush/crushrc` (marked block) | `crush` |
@@ -313,6 +314,12 @@ it as the first entry.
 A client that names a specific model is remembered for 15 minutes (`GET /_l9s/pins`): switching away from it in
 the TUI shows who will switch it back on their next request (e.g. "OpenCode on 192.168.1.20 used qwen3-8b 2 min
 ago"), and `l9s use` prints the same.
+
+**Claude Code knows what it's talking to.** Claude Code's system prompt tells the model it is Claude. On
+`/v1/messages` the proxy appends one line saying which model is really answering (e.g. Qwen3-8B-4bit, served by l9s),
+so the model doesn't claim to be Claude. Turn it off with `IDENTITY_NOTE=0`. `l9s claude` also replaces Claude
+Code's `/model` list with your l9s models: `l9s (follow l9s)`, then each model with whether it's loaded and how long
+it takes to load.
 
 ## Upgrading the server
 

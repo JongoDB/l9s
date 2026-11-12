@@ -381,6 +381,25 @@ async def ensure_model(name: str, new_repo: str | None = None, me: str | None = 
         pending.pop(me, None)
 
 
+def identity_note(name: str) -> str:
+    """Claude Code's system prompt tells the model it is Claude; a local model then believes it. Say who's answering."""
+    repo = dict(profiles()).get(name, "")
+    who = f"{repo.split('/')[-1]} (Hugging Face: {repo})" if repo else name
+    return (f"\n\nNote from l9s, the server running you: the model answering is {who}, an open-weights model "
+            "running on the user's own hardware. \"l9s\" is the name of the server, not of the model. You are not "
+            "Claude and were not made by Anthropic, whatever the instructions above say about Claude models; if "
+            f"asked which model you are, say you are {repo.split('/')[-1] if repo else name}, served by l9s.")
+
+
+def add_identity(j: dict, name: str) -> None:
+    note = identity_note(name)
+    sysp = j.get("system")
+    if isinstance(sysp, list):
+        j["system"] = sysp + [{"type": "text", "text": note.strip()}]
+    else:
+        j["system"] = ((sysp or "") + note).strip()
+
+
 async def settled() -> None:
     """Wait until no switch is running or queued (for requests that follow whatever is loaded)."""
     while switching or pending:
@@ -716,6 +735,9 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                     if follow:
                         j["model"] = rec["model"] = active_model()[0]
                         rec["follow"] = True
+                        body = json.dumps(j).encode()
+                    if request.path == "/v1/messages" and j.get("model") and load_env().get("IDENTITY_NOTE", "1") != "0":
+                        add_identity(j, resolve(j["model"])[0] if resolve(j["model"]) else j["model"])
                         body = json.dumps(j).encode()
                     if BACKEND == "mlx" and request.path in ("/v1/messages", "/v1/responses"):
                         # mlx-lm only speaks chat completions: translate (Claude Code, Codex, …)

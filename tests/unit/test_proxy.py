@@ -436,3 +436,13 @@ def test_pins_report_clients_that_named_a_model(stack):
     pins = admin(px, "/_l9s/pins?away_from=other")["pins"]
     assert pins and pins[0]["model"] == "mymodel" and pins[0]["ago"] <= 2
     assert not [p for p in admin(px, "/_l9s/pins?away_from=mymodel")["pins"] if p["model"] == "mymodel"]
+
+
+def test_anthropic_requests_are_told_which_model_answers(stack):
+    px, up = stack
+    call(px, "/v1/messages", {"model": "l9s", "max_tokens": 4, "system": "You are Claude, made by Anthropic.",
+                              "messages": [{"role": "user", "content": "who are you"}]}).read()
+    sent = json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]
+    system = sent["messages"][0]["content"]
+    assert system.startswith("You are Claude") and "model answering is model (Hugging Face: org/model)" in system
+    assert "not Claude" in system

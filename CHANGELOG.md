@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+- `l9s claude`: `/model` lists your l9s models instead of Claude's lineup (no more "Custom Opus/Sonnet/Haiku model" rows or a Fable row). Each row says whether the model is loaded and how long it takes to load. Every tier, background tasks included, stays on the session's model.
+- Claude Code requests get one line telling the model which model it really is, so it no longer claims to be Claude (`IDENTITY_NOTE=0` turns this off).
+- Dropped `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY`: Claude Code only uses it with its own gateway login and only lists Claude model ids.
+
 ## 0.4.0
 - New model id `l9s`: "whatever l9s has loaded". It's first in `/v1/models`, never triggers a switch, and waits for a running or queued switch then goes to the new model. Its context and output limits are the smallest across your models, so it fits any of them.
 - `l9s claude`, `l9s codex` and `l9s run <tool>` start on `l9s`: switch models in the TUI and open sessions use the new one on their next message, instead of switching the server back. Pin a model with `-m <model>`. Tools whose config lists models get `l9s` as the first entry.
