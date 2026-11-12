@@ -103,8 +103,10 @@ def test_api_key_enforced(stack):
 def test_models_lists_profiles_and_downloads(stack):
     px, _ = stack
     data = json.load(call(px, "/v1/models"))["data"]
-    assert [m["id"] for m in data] == ["mymodel", "other", "dl-model"]  # active first; partial downloads skipped
-    assert [m["loaded"] for m in data] == [True, False, False]
+    # the follow id, then the active one; partial downloads skipped
+    assert [m["id"] for m in data] == ["l9s", "mymodel", "other", "dl-model"]
+    assert [m["loaded"] for m in data] == [True, True, False, False]
+    assert data[0]["follows"] == "mymodel" and "follows the loaded model" in data[0]["display_name"]
 
 
 def test_profile_name_mapped_to_repo_and_usage_recorded(stack):
@@ -385,3 +387,52 @@ def test_client_that_gives_up_while_queued_does_not_switch(stack):
     assert active_name() == "mymodel"  # nobody wants `other` any more: no switch happened
     ev = [e["detail"] for e in admin(px, "/_l9s/events")["events"] if e["kind"] == "switch"]
     assert "disconnected" in ev[-1] and "dropped" in ev[-1]
+
+
+def test_follow_id_goes_to_whatever_is_loaded_and_never_switches(stack):
+    px, up = stack
+    env_set(MODEL_SWITCH="auto")
+    r = json.load(call(px, "/v1/chat/completions", chat_body("l9s")))
+    assert r["choices"]
+    assert json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]["model"] == "org/model"
+    rec = admin(px, "/_l9s/requests")["recent"][-1]
+    assert rec["model"] == "mymodel" and rec["follow"] is True
+    # someone switches to `other` (as the TUI / `l9s use` would): the follow client moves with it
+    os.symlink(HOMEDIR / "profiles" / "other", HOMEDIR / "active.tmp")
+    os.replace(HOMEDIR / "active.tmp", HOMEDIR / "active")
+    try:
+        json.load(call(px, "/v1/chat/completions", chat_body("l9s")))
+        assert json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]["model"] == "org/other"
+        assert active_name() == "other"  # no switch back
+    finally:
+        os.symlink(HOMEDIR / "profiles" / "mymodel", HOMEDIR / "active.tmp")
+        os.replace(HOMEDIR / "active.tmp", HOMEDIR / "active")
+
+
+def test_follow_request_waits_for_a_queued_switch_then_follows_it(stack):
+    import threading
+    px, up = stack
+    env_set(MODEL_SWITCH="auto")
+    a = threading.Thread(target=lambda: list(call(px, "/v1/chat/completions", chat_body("mymodel", stream=True,
+                                                                                        max_tokens=60))))
+    a.start()
+    time.sleep(0.3)
+    b = threading.Thread(target=lambda: call(px, "/v1/chat/completions", chat_body("other")).read())
+    b.start()
+    time.sleep(0.3)
+    lines = list(call(px, "/v1/chat/completions", chat_body("l9s", stream=True)))  # queued behind B's switch
+    a.join(30)
+    b.join(30)
+    assert any(ln.startswith(b": l9s is loading other") for ln in lines)
+    assert json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]["model"] == "org/other"
+    assert active_name() == "other"
+    json.load(call(px, "/v1/chat/completions", chat_body("mymodel")))  # put it back
+    assert active_name() == "mymodel"
+
+
+def test_pins_report_clients_that_named_a_model(stack):
+    px, _ = stack
+    json.load(call(px, "/v1/chat/completions", chat_body("mymodel")))
+    pins = admin(px, "/_l9s/pins?away_from=other")["pins"]
+    assert pins and pins[0]["model"] == "mymodel" and pins[0]["ago"] <= 2
+    assert not [p for p in admin(px, "/_l9s/pins?away_from=mymodel")["pins"] if p["model"] == "mymodel"]

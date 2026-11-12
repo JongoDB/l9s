@@ -303,6 +303,17 @@ large model can take several minutes, so two tools asking for different models w
 and forth. Set `MODEL_SWITCH=off` (Settings → Model switching) to refuse such requests with a message saying which
 model is loaded.
 
+**`l9s`: follow whatever is loaded.** The first entry in `/v1/models` is `l9s` (`"follows": "<loaded model>"`). A
+request for it goes to the loaded model and never switches; if a switch is running or queued, it waits for it and
+then goes to the new model. Its `context_window` / `max_output_tokens` are the smallest across your models (ignoring
+ones under 32K, too small for a coding agent), so a client configured once never overflows a model it follows to.
+`l9s claude` / `l9s codex` / `l9s run <tool>` use it unless you pass `-m <model>`; tools whose config lists models get
+it as the first entry.
+
+A client that names a specific model is remembered for 15 minutes (`GET /_l9s/pins`): switching away from it in
+the TUI shows who will switch it back on their next request (e.g. "OpenCode on 192.168.1.20 used qwen3-8b 2 min
+ago"), and `l9s use` prints the same.
+
 ## Upgrading the server
 
 mlx: `l9s update` (mlx-lm comes with each l9s release, pinned and CI-tested). vllm:

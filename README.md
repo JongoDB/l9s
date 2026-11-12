@@ -149,7 +149,7 @@ On a remote box, run the TUI over SSH: `ssh -t <host> l9s`.
 ## Use it with your coding agent
 
 ```bash
-l9s claude                    # Claude Code on your local model (your normal `claude` is untouched)
+l9s claude                    # Claude Code on whatever l9s has loaded, following your switches (normal `claude` is untouched)
 l9s codex                     # Codex CLI
 l9s connect opencode          # add l9s to OpenCode's config (shows the change, backs up the file, asks first)
 l9s connect                   # every supported tool: installed? connected? how
@@ -176,6 +176,13 @@ and every client waits. You always know what you're in for: model pickers show "
 ~3 min", the TUI header shows `LOADING → model (1 min of ~3 min, asked by 192.168.1.20)` with a notification, and
 streaming clients get keep-alives so they don't time out. Turn it off in Settings (Model switching) to get an error
 instead.
+
+**Follow what's loaded, or pin a model.** The first model in every list is `l9s`: it means "whatever l9s has loaded"
+and never triggers a switch. `l9s claude`, `l9s codex` and the other launchers start on it, so when you switch
+models in the TUI an open session just uses the new one on its next message. (Its context limit is the smallest of
+your models, so it fits whichever is loaded.) Pick a specific model (`l9s claude -m <model>`, or by name in a
+picker) and that session asks for it by name: if you switch away, its next request switches back. Before you
+switch, the TUI and `l9s use` tell you which clients would do that.
 
 Claude Code and Codex speak the Anthropic and OpenAI Responses APIs: vLLM serves them natively, and on a Mac the
 proxy translates them to mlx-lm (tool calls included). Your tools on another machine: `l9s connect <tool> --server

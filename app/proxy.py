@@ -9,7 +9,7 @@
   so token counts are exact without changing what clients receive.
 * Cancelling a request (from the TUI) closes the upstream connection, which makes the server abort the generation.
 * Watches the container (docker events + readiness polling) and writes a persistent event timeline.
-* Admin API (localhost only): GET /_l9s/requests, GET /_l9s/events, POST /_l9s/requests/<id>/cancel, GET /_l9s/health
+* Admin API (localhost only): GET /_l9s/requests, GET /_l9s/events, GET /_l9s/pins, POST /_l9s/requests/<id>/cancel, GET /_l9s/health
 """
 from __future__ import annotations
 
@@ -271,6 +271,36 @@ def limits(name: str, repo: str) -> dict:
     return {"context_window": ctx, "max_output_tokens": out}
 
 
+FOLLOW = "l9s"  # model id meaning "whatever is loaded": never triggers a switch, follows the ones you make
+MIN_AGENT_CTX = 32768  # models with less context can't run a coding agent; ignored for the follow entry's limit
+pins: dict = {}  # (client, user agent) -> {"model", "at", "client", "ua"}: who last asked for a model by name
+
+
+def follow_limits(entries: list[dict]) -> dict:
+    """Limits for the follow id: the smallest across the models it could become, so a tool configured once never
+    overflows whichever model is loaded later."""
+    ok = [e for e in entries if (e.get("context_window") or 0) >= MIN_AGENT_CTX] or entries
+    ctxs = [e["context_window"] for e in ok if e.get("context_window")]
+    outs = [e["max_output_tokens"] for e in ok if e.get("max_output_tokens")]
+    return {"context_window": min(ctxs) if ctxs else None, "max_output_tokens": min(outs) if outs else None}
+
+
+def note_pin(rec: dict, model: str) -> None:
+    """Remember clients that ask for a specific model: a manual switch away from it will be undone by them."""
+    key = (rec.get("client"), rec.get("ua", "")[:40])
+    pins[key] = {"model": model, "at": time.time(), "client": rec.get("client"), "ua": rec.get("ua", "")}
+    for k in [k for k, v in pins.items() if time.time() - v["at"] > 3600]:
+        pins.pop(k, None)
+
+
+def pinned_clients(away_from: str | None = None, within: float = 900) -> list[dict]:
+    """Clients that named a model in the last `within` seconds (other than `away_from`'s replacement)."""
+    now = time.time()
+    return sorted(({**v, "ago": round(now - v["at"])} for v in pins.values()
+                   if now - v["at"] <= within and (away_from is None or v["model"] != away_from)),
+                  key=lambda v: v["ago"])
+
+
 def models_list() -> dict:
     """/v1/models: every saved profile plus every downloaded model that fits, so tools that list models see all
     of them. One is loaded; asking for another loads it (like Ollama), unless MODEL_SWITCH=off."""
@@ -292,6 +322,13 @@ def models_list() -> dict:
         return e
     data = [entry(n, r, n == act) for n, r in profiles()]
     data += [entry(n, r, False, True) for n, r in downloaded()]
+    if act:
+        lim = follow_limits(data)
+        fol = {"id": FOLLOW, "object": "model", "created": now, "owned_by": "l9s", "root": act, "loaded": True,
+               "follows": act, "display_name": f"{FOLLOW} (follows the loaded model, now {act})", **lim}
+        if lim["context_window"]:
+            fol["max_model_len"] = lim["context_window"]
+        data.insert(0, fol)
     return {"object": "list", "data": data}
 
 
@@ -304,6 +341,8 @@ SWITCH_WAIT = 900  # seconds a request waits for other requests to drain before 
 def resolve(model: str) -> tuple[str, str | None] | None:
     """(profile name, repo-if-it-needs-a-new-profile) for a model id clients may send, else None."""
     profs = dict(profiles())
+    if model == FOLLOW:
+        return None  # never switches
     if model in profs:
         return model, None
     for name, rp in profs.items():
@@ -340,6 +379,12 @@ async def ensure_model(name: str, new_repo: str | None = None, me: str | None = 
         return await _switch(name, new_repo, me)
     finally:
         pending.pop(me, None)
+
+
+async def settled() -> None:
+    """Wait until no switch is running or queued (for requests that follow whatever is loaded)."""
+    while switching or pending:
+        await asyncio.sleep(0.5)
 
 
 async def _switch(name: str, new_repo: str | None, me: str | None) -> dict | None:
@@ -607,11 +652,19 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 j = json.loads(body)
                 if isinstance(j, dict):
                     inspect_request(rec, j)
-                    if j.get("model") and request.path.startswith("/v1/") and needs_switch(j["model"]):
-                        name, new_repo = resolve(j["model"])
+                    follow = j.get("model") == FOLLOW and request.path.startswith("/v1/")
+                    if j.get("model") and not follow and request.path.startswith("/v1/") and resolve(j["model"]):
+                        note_pin(rec, resolve(j["model"])[0])
+                    if follow and (switching or pending):
+                        # a switch is running or queued: it goes first, then this follows to whatever loaded
+                        name, new_repo = switching.get("to") or next(iter(pending.values())), None
+                    if (follow and (switching or pending)) or (
+                            j.get("model") and not follow and request.path.startswith("/v1/") and needs_switch(j["model"])):
+                        if not follow:
+                            name, new_repo = resolve(j["model"])
                         rec["_waiting"] = True
                         active[rec["id"]] = rec
-                        task = asyncio.ensure_future(ensure_model(name, new_repo, rec["id"]))
+                        task = asyncio.ensure_future(settled() if follow else ensure_model(name, new_repo, rec["id"]))
                         if j.get("stream"):
                             # streaming clients: answer now and send SSE comments while the model loads, so they
                             # don't time out (a vLLM load can take minutes)
@@ -635,7 +688,9 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                             if gone:
                                 # the client gave up while queued: drop its switch, unless it's already under way
                                 # (stopping a half-done switch would leave no model loaded)
-                                if switching.get("to") != name:
+                                if follow:
+                                    task.cancel()
+                                elif switching.get("to") != name:
                                     task.cancel()
                                     event("switch", f"a client waiting for {name} disconnected: its switch was "
                                                     f"dropped", profile=name)
@@ -655,9 +710,13 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                                 await pre.write_eof()
                                 return pre
                             return web.json_response({"error": err["error"]}, status=err["status"])
-                        if j["model"] != name:  # sent as a repo id: the profile name is what the server knows
+                        if not follow and j["model"] != name:  # sent as a repo id: the server knows the profile name
                             j["model"] = name
                             body = json.dumps(j).encode()
+                    if follow:
+                        j["model"] = rec["model"] = active_model()[0]
+                        rec["follow"] = True
+                        body = json.dumps(j).encode()
                     if BACKEND == "mlx" and request.path in ("/v1/messages", "/v1/responses"):
                         # mlx-lm only speaks chat completions: translate (Claude Code, Codex, …)
                         xlate = "anthropic" if request.path == "/v1/messages" else "responses"
@@ -805,6 +864,9 @@ async def admin(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "uptime": time.time() - started_at, "upstream": UPSTREAM,
                                   "active": len(active), "switching": dict(switching) or None,
                                   "waiting": len([r for r in active.values() if r.get("_waiting")])})
+    if path == "/_l9s/pins":  # clients that asked for a model by name recently (they'd undo a manual switch)
+        return web.json_response({"pins": pinned_clients(request.query.get("away_from") or None,
+                                                         float(request.query.get("within", "900")))})
     if path == "/_l9s/requests":
         limit = int(request.query.get("limit", "500"))
         return web.json_response({"now": time.time(), "active": [public(r) for r in active.values()],

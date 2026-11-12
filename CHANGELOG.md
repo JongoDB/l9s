@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+- New model id `l9s`: "whatever l9s has loaded". It's first in `/v1/models`, never triggers a switch, and waits for a running or queued switch then goes to the new model. Its context and output limits are the smallest across your models, so it fits any of them.
+- `l9s claude`, `l9s codex` and `l9s run <tool>` start on `l9s`: switch models in the TUI and open sessions use the new one on their next message, instead of switching the server back. Pin a model with `-m <model>`. Tools whose config lists models get `l9s` as the first entry.
+- Switching models in the TUI (or with `l9s use`) warns about clients that recently asked for another model by name, since their next request switches the server back (`GET /_l9s/pins`).
+
 ## 0.3.4
 - Model switching is first come, first served: once a request is waiting to switch models, later requests queue behind it instead of keeping the old model busy (which could hold a switch off for up to 15 minutes).
 - A client that disconnects while queued no longer triggers a switch (unless that switch is already under way).

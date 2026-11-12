@@ -13,7 +13,7 @@ import json
 import shlex
 from pathlib import Path
 
-from connect import HOME, IS_MAC, MARK, TOOLS, Change, Plan, Tool, active_model, has_comments, toml_str
+from connect import HOME, IS_MAC, MARK, TOOLS, Change, Plan, Tool, default_model, has_comments, toml_str
 
 XDG = HOME / ".config"
 TAG = "(l9s)"  # every model entry l9s writes carries this, so refresh / remove can find its own entries
@@ -35,9 +35,18 @@ def out(m: dict) -> int:
     return int(m.get("max_output_tokens") or min(16384, ctx(m) // 4))
 
 
+def active_model(info: dict) -> str:
+    """The model id a launched tool starts on (see connect.default_model)."""
+    return default_model(info)
+
+
 def cur(info: dict) -> dict:
     a = active_model(info)
     return next((m for m in models(info) if m["id"] == a), {"id": a})
+
+
+def follows(info: dict) -> bool:
+    return bool(cur(info).get("follows"))
 
 
 def v1(info: dict) -> str:
@@ -45,6 +54,8 @@ def v1(info: dict) -> str:
 
 
 def label(m: dict) -> str:
+    if m.get("follows"):
+        return f"{m['id']}: whatever l9s has loaded {TAG}"
     return f"{m['id']} {TAG}"
 
 
@@ -70,8 +81,11 @@ def claude(info: dict) -> Plan:
            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"}
     return Plan(env=env, argv=["claude"],
                 snippet="\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items()) + "\nclaude",
-                use="l9s claude    (start on another model: l9s claude -m <model>; or pick one with /model)",
+                use="l9s claude    (follows the model you load in l9s; pin one: l9s claude -m <model>)",
                 notes=["Nothing is written: your normal `claude` keeps using your Anthropic account.",
+                       ("Follows l9s: switch models in l9s and the session uses the new one on its next message. "
+                        f"Context is set to {ctx(m)} tokens, the smallest of your models, so it fits any of them.")
+                       if follows(info) else f"Pinned to {mid}: if another model is loaded, its requests switch back.",
                        "/model lists every l9s model (read live from the server). Picking one that isn't loaded "
                        "loads it: the next reply waits for that (see Connect for how long each took).",
                        "Background and sub-agent tasks use the same l9s model."])

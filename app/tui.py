@@ -15,6 +15,7 @@ import shutil
 import signal
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,6 +151,30 @@ def est_bytes(params: float | None, fmt: str, repo: str = "") -> float | None:
 
 def human_secs(s: float) -> str:
     return f"{s:.0f}s" if s < 90 else f"{s / 60:.0f} min"
+
+
+UA_TOOLS = (("claude-cli", "Claude Code"), ("claude-code", "Claude Code"), ("codex", "Codex"), ("opencode", "OpenCode"),
+            ("crush", "Crush"), ("goose", "Goose"), ("aider", "Aider"), ("litellm", "Aider"), ("qwen", "Qwen Code"),
+            ("grok", "Grok"), ("factory", "Droid"), ("droid", "Droid"), ("zed", "Zed"), ("continue", "Continue"),
+            ("cline", "Cline"), ("kilo", "Kilo Code"), ("curl", "curl"), ("python", "a Python client"),
+            ("openai/", "an OpenAI SDK client"), ("anthropic/", "an Anthropic SDK client"))
+
+
+def tool_name(ua: str) -> str:
+    """A friendly name for a client's user agent ('' if unknown)."""
+    low = (ua or "").lower()
+    return next((name for key, name in UA_TOOLS if key in low), "")
+
+
+def proxy_load_times() -> dict:
+    try:
+        return json.loads((LLM_HOME / "cache" / "load-times.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def age_s(secs: float) -> str:
+    return f"{secs:.0f}s" if secs < 90 else f"{secs / 60:.0f} min"
 
 
 def short_repo(repo: str, n: int = 38) -> str:
@@ -1321,7 +1346,8 @@ class LLMTui(App):
                     yield Static("[dim]auto: a request that names another model (any profile, or a downloaded model "
                                  "that fits) loads it, like Ollama: running requests finish first, then the model "
                                  "switches; streaming clients are kept waiting with keep-alives. Each model's last load time "
-                                 "is in Local. off: such requests get an error saying which model is loaded.[/dim]")
+                                 "is in Local. off: such requests get an error saying which model is loaded. The model id `l9s` "
+                                 "always means whatever is loaded and never switches (l9s claude / l9s run use it).[/dim]")
                     with Horizontal(classes="frow"):
                         yield Select([("auto (like Ollama)", "auto"), ("off", "off")], value="auto",
                                      allow_blank=False, id="set-switch")
@@ -1837,7 +1863,7 @@ class LLMTui(App):
                         self.serving = arg
                         self.goto_tab("server")
                         self.run_llm(["use", arg], f"{arg} is ready")
-                self.push_screen(Confirm(f"Switch the server to [b]{arg}[/b]?\n{self.replace_warning()}", "Switch",
+                self.push_screen(Confirm(f"Switch the server to [b]{arg}[/b]?\n{self.replace_warning(arg)}", "Switch",
                                          danger=False), cb)
         elif word in ("stop", "restart"):
             self.goto_tab("server")
@@ -3082,11 +3108,34 @@ class LLMTui(App):
     def b_clear(self) -> None:
         self.query_one("#srvlog", Log).clear()
 
-    def replace_warning(self) -> str:
+    def replace_warning(self, target: str | None = None) -> str:
         cur = active_profile()
+        out = ""
         if cur and self.state.get("status") == "running":
-            return f"[yellow]This replaces the running model [b]{cur}[/b]; the endpoint is down while the new one loads.[/yellow]"
-        return ""
+            out = f"[yellow]This replaces the running model [b]{cur}[/b]; the endpoint is down while the new one loads.[/yellow]"
+        return out + self.pin_warning(target)
+
+    def pin_warning(self, target: str | None) -> str:
+        """Clients that asked for another model by name recently will switch it back on their next request."""
+        if load_env().get("MODEL_SWITCH", "auto") == "off":
+            return ""
+        try:
+            q = f"?away_from={urllib.parse.quote(target)}" if target else ""
+            pins = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/pins{q}", timeout=1))["pins"]
+        except Exception:  # noqa: BLE001
+            return ""
+        if not pins:
+            return ""
+        lines = []
+        for p in pins[:3]:
+            who = tool_name(p.get("ua", "")) or "a client"
+            est = proxy_load_times().get(p["model"])
+            lines.append(f"  • {who} on {p.get('client')} used [b]{p['model']}[/b] {age_s(p['ago'])} ago"
+                         + (f" (loading it back takes ~{human_secs(est)})" if est else ""))
+        return ("\n\n[b yellow]Heads up:[/b yellow] these clients asked for a specific model. Their next request "
+                "switches the server back:\n" + "\n".join(lines) +
+                "\n[dim]Sessions started with `l9s claude` / `l9s run` follow whatever is loaded (model `l9s`) and "
+                "won't do this. Set MODEL_SWITCH=off in Settings to stop clients switching models.[/dim]")
 
     def start_serve(self, repo: str, name: str, flags: str, env: list[str] | None = None) -> None:
         if self.busy():
@@ -3184,7 +3233,7 @@ class LLMTui(App):
                 self.goto_tab("server")
                 self.run_llm(["use", name], f"{name} is ready")
         self.push_screen(Confirm(f"Switch the server to [b]{name}[/b] ({profile_repo(name)})?\n"
-                                 f"{self.replace_warning()}", "Switch", danger=False), cb)
+                                 f"{self.replace_warning(name)}", "Switch", danger=False), cb)
 
     @on(DataTable.RowSelected, "#models")
     def model_selected(self, ev: DataTable.RowSelected) -> None:
@@ -3205,7 +3254,7 @@ class LLMTui(App):
         if A and not A["loadable"]:
             self.call_from_thread(self.notify, f"{repo} is {A['format']}: vLLM can't load it", severity="error")
             return
-        extra = self.replace_warning()
+        extra = self.replace_warning(name)
         if pull_first:
             extra = (f"[cyan]Downloads {hfmeta.fmt_bytes(A['plan']['download_bytes']) if A else '?'} first; serving starts "
                      "automatically when it finishes (keep the TUI open).[/cyan]\n" + extra)

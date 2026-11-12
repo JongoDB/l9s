@@ -123,3 +123,27 @@ def test_codex_model_profile_and_launch(cx):
     import tomllib
     cfg = tomllib.loads((home / ".codex/config.toml").read_text())
     assert cfg["model_providers"]["l9s"]["wire_api"] == "responses"
+
+
+FOLLOW = dict(INFO, models=[{"id": "l9s", "loaded": True, "follows": "nemotron-3-super", "repo": "nvidia/x",
+                             "context_window": 131072, "max_output_tokens": 16384}] + INFO["models"])
+
+
+def test_launchers_follow_the_loaded_model_by_default(cx):
+    connect, _ = cx
+    assert connect.active_model(FOLLOW) == "nemotron-3-super"
+    env = connect.tool("claude").plan(FOLLOW).env
+    assert env["ANTHROPIC_MODEL"] == "l9s" and env["CLAUDE_CODE_SUBAGENT_MODEL"] == "l9s"
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"  # the smallest window: fits any model it follows
+    assert connect.tool("goose").plan(FOLLOW).argv[-1] == "l9s"
+    pinned = connect.tool("claude").plan(dict(FOLLOW, pin="qwen3.6-35b")).env
+    assert pinned["ANTHROPIC_MODEL"] == "qwen3.6-35b" and pinned["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "131072"
+    # an older server without the follow id: the loaded model, as before
+    assert connect.tool("claude").plan(INFO).env["ANTHROPIC_MODEL"] == "nemotron-3-super"
+
+
+def test_config_tools_list_the_follow_id_first(cx):
+    connect, home = cx
+    connect.apply(connect.tool("qwen"), FOLLOW)
+    entries = json.loads((home / ".qwen/settings.json").read_text())["modelProviders"]["openai"]
+    assert [e["id"] for e in entries][0] == "l9s" and "whatever l9s has loaded" in entries[0]["name"]

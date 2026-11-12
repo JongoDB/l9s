@@ -73,7 +73,8 @@ def local_info() -> dict:
         req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/models", headers={"Authorization": f"Bearer {key}"})
         models = [{"id": m["id"], "loaded": bool(m.get("loaded")), "repo": m.get("root", ""),
                    "context_window": m.get("context_window"), "max_output_tokens": m.get("max_output_tokens"),
-                   "display_name": m.get("display_name", m["id"]), "load_seconds": m.get("load_seconds")}
+                   "display_name": m.get("display_name", m["id"]), "load_seconds": m.get("load_seconds"),
+                   **({"follows": m["follows"]} if m.get("follows") else {})}
                   for m in json.load(urllib.request.urlopen(req, timeout=5)).get("data", [])]
     except Exception:  # noqa: BLE001  proxy down: fall back to the saved profiles
         act = os.path.basename(os.readlink(L9S_HOME / "active")) if (L9S_HOME / "active").is_symlink() else ""
@@ -103,7 +104,19 @@ def server_info(server: str | None = None) -> dict:
 
 
 def active_model(info: dict) -> str:
-    return next((m["id"] for m in info["models"] if m["loaded"]), info["models"][0]["id"] if info["models"] else "")
+    """The model actually loaded (not the `l9s` follow id)."""
+    real = [m for m in info["models"] if not m.get("follows")]
+    return next((m["id"] for m in real if m["loaded"]), real[0]["id"] if real else "")
+
+
+def follow_id(info: dict) -> str | None:
+    """The id that follows whatever l9s has loaded (servers older than 0.4 don't have one)."""
+    return next((m["id"] for m in info["models"] if m.get("follows")), None)
+
+
+def default_model(info: dict) -> str:
+    """What a launched tool asks for: the model given with -m, else the follow id, else the loaded model."""
+    return info.get("pin") or follow_id(info) or active_model(info)
 
 
 # ------------------------------------------------------------------ config file helpers
@@ -395,8 +408,7 @@ def run(t: Tool, args: list[str], model: str | None = None) -> None:
     if not ok:
         raise SystemExit(why)
     if model:
-        info = dict(info, models=sorted(info["models"], key=lambda m: m["id"] != model))
-        info["models"] = [dict(m, loaded=m["id"] == model) for m in info["models"]]
+        info = dict(info, pin=model)
     p = t.plan(info)
     if not p.argv:
         raise SystemExit(f"{t.name} can't be launched by l9s; connect it instead: l9s connect {t.id}")
@@ -405,8 +417,8 @@ def run(t: Tool, args: list[str], model: str | None = None) -> None:
     import tools
     extra = tools.MODEL_ARGS.get(t.id, lambda i, m: [])(info, model)
     if model:
-        loaded = next((m for m in server_info()["models"] if m["loaded"]), {})
-        if loaded.get("id") != model:
+        loaded = {"id": active_model(info)}
+        if model != follow_id(info) and loaded.get("id") != model:
             secs = next((m.get("load_seconds") for m in info["models"] if m["id"] == model), None)
             print(f"l9s: {model} isn't loaded ({loaded.get('id') or 'nothing'} is). Your first request loads it"
                   + (f": last time that took ~{secs // 60 if secs >= 90 else secs}{' min' if secs >= 90 else 's'}."

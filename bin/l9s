@@ -142,6 +142,22 @@ launchd_load() {
 mlx_running() { launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -q "state = running"; }
 
 # ------------------------------------------------------------------ common
+# clients that recently asked for another model by name will switch the server back on their next request
+pin_warning() {
+  [[ "${MODEL_SWITCH:-auto}" == off ]] && return 0
+  "$PY" - "$1" "$PORT" 2>/dev/null <<'PY' || true
+import json, sys, urllib.parse, urllib.request
+url = f"http://127.0.0.1:{sys.argv[2]}/_l9s/pins?away_from={urllib.parse.quote(sys.argv[1])}"
+pins = json.load(urllib.request.urlopen(url, timeout=1)).get("pins", [])
+for p in pins[:3]:
+    ago = f"{p['ago']}s" if p["ago"] < 90 else f"{p['ago'] // 60} min"
+    ua = (p.get("ua") or "?").split(" ")[0]
+    print(f"note: {p.get('client')} ({ua}) asked for {p['model']} {ago} ago: its next request switches the server back.")
+if pins:
+    print("      (sessions started with `l9s claude` / `l9s run` follow whatever is loaded and don't do this)")
+PY
+}
+
 run_profile() {
   local name="$1" file="$PROFILES/$1"
   [[ -f "$file" ]] || die "no profile '$name' (see: l9s profiles)"
@@ -247,7 +263,7 @@ case "$cmd" in
     { echo "$repo"; for e in ${envs[@]+"${envs[@]}"}; do echo "ENV $e"; done; for a in "$@"; do echo "$a"; done; } > "$PROFILES/$name"
     echo "==> saved profile '$name'"
     run_profile "$name" ;;
-  use) [[ $# -eq 1 ]] || die "usage: l9s use <profile>"; run_profile "$1" ;;
+  use) [[ $# -eq 1 ]] || die "usage: l9s use <profile>"; [[ -t 1 ]] && pin_warning "$1"; run_profile "$1" ;;
   profiles)
     act="$(active_profile)"
     for f in "$PROFILES"/*; do [[ -f "$f" ]] || continue
