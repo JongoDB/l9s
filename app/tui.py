@@ -954,6 +954,7 @@ opens a drop-down.
 | `enter` | Local · profiles | switch the server to this profile (asks first) |
 | `enter` / `s` | Local · models | serve this model (opens serve dialog) |
 | `e` | Local · profiles | edit a profile's flags and re-serve |
+| `o` | Local · profiles | give a profile the fastest settings l9s knows (drafter, MTP, adaptive drafting) |
 | `x` | Local / Downloads | delete profile / delete weights / cancel or clear download |
 | `p` / `s` | Hub | pull / pull then serve the highlighted model |
 | `enter` | Downloads | show the download's log |
@@ -1172,6 +1173,7 @@ class LLMTui(App):
         Binding("p", "pull", "Pull"),
         Binding("s", "serve", "Serve"),
         Binding("e", "edit_profile", "Edit"),
+        Binding("o", "optimize", "Optimize"),
         Binding("x", "delete", "Delete"),
         Binding("i", "info", "Info"),
         Binding("c", "connect", "Connect", show=False),
@@ -1184,7 +1186,7 @@ class LLMTui(App):
         Binding("down", "vnav_down", "Down", show=False, priority=True),
     ]
     # which tabs each contextual action applies to (others are always available)
-    ACTION_TABS = {"pull": {"hub"}, "serve": {"hub", "local"}, "edit_profile": {"local"}, "info": {"hub", "local"},
+    ACTION_TABS = {"pull": {"hub"}, "serve": {"hub", "local"}, "edit_profile": {"local"}, "optimize": {"local"}, "info": {"hub", "local"},
                    "delete": {"local", "downloads"}, "copy_row": {"hub", "local", "downloads", "requests", "events"},
                    "describe": {"requests", "events"}, "kill": {"requests"}, "toggle_active": {"requests"},
                    "follow": {"server"}, "save_log": {"server"}, "save_settings": {"settings"},
@@ -1482,7 +1484,7 @@ class LLMTui(App):
         self.query_one("#st-totals").border_title = "Since server start"
         self.query_one("#st-sys").border_title = "System"
         self.query_one("#srvlog").border_title = "Server log"
-        self.query_one("#profiles", DataTable).add_columns("", "profile (model name)", "repo", "load time", "flags")
+        self.query_one("#profiles", DataTable).add_columns("", "profile (model name)", "repo", "load time", "speed", "flags")
         self.query_one("#models", DataTable).add_columns("", "repo", "size", "used by profiles", "last used")
         h = self.query_one("#hub-results", DataTable)
         for label, key in (("", "local"), ("repo", "repo"), ("downloads", "dl"), ("likes", "likes"),
@@ -1521,7 +1523,39 @@ class LLMTui(App):
             self.probe_caps()
         self.update_info = updater.cached(max_age=10 ** 9)
         self.check_updates()
+        self.set_timer(20, self.check_optimizable)
         self.set_interval(6 * 3600, self.check_updates)
+
+    @work(thread=True, exclusive=True, group="optimize-check")
+    def check_optimizable(self) -> None:
+        """After an update l9s may know faster settings than your saved profiles have: check once per l9s version
+        (or when profiles change) and say so. Nothing changes until you press o on a profile."""
+        marker = LLM_HOME / "cache" / "optimize-check.json"
+        sig = updater.installed_version() + ":" + ",".join(
+            f"{p.name}:{p.stat().st_mtime:.0f}" for p in sorted(PROFILES.glob("*")))
+        try:
+            prev = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError):
+            prev = {}
+        if prev.get("sig") == sig:
+            todo = prev.get("todo", [])
+        else:
+            try:
+                out = subprocess.run([LLM_BIN, "optimize", "--all", "--json"], capture_output=True, text=True,
+                                     timeout=600)
+                todo = [r["profile"] for r in json.loads(out.stdout) if r["changes"]]
+            except Exception:  # noqa: BLE001  offline etc.: try again next start
+                return
+            try:
+                marker.write_text(json.dumps({"sig": sig, "todo": todo}))
+            except OSError:
+                pass
+            if todo:
+                self.call_from_thread(self.notify, f"{', '.join(todo)}: l9s knows faster settings now. Select it in "
+                                      "Local and press o to see what changes.", title="⚡ Faster settings available",
+                                      timeout=15)
+        self.optimizable = todo
+        self.call_from_thread(lambda: setattr(self, "_prof_sig", None))
 
     # ------------------------------------------------------------ updates
     def update_available(self) -> bool:
@@ -3171,7 +3205,15 @@ class LLMTui(App):
             loads = json.loads((LLM_HOME / "cache" / "load-times.json").read_text())
         except (OSError, json.JSONDecodeError):
             loads = {}
-        sig = (act, tuple(profs), pf, tuple(sorted(loads.items())))
+        try:
+            speeds = json.loads((LLM_HOME / "cache" / "speeds.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            speeds = {}
+
+        def speed(name):
+            xs = sorted((speeds.get(name) or {}).get("tok_s") or [])
+            return Text(f"{xs[len(xs) // 2]:.0f} tok/s", style="") if xs else Text("-", style="dim")
+        sig = (act, tuple(profs), pf, tuple(sorted(loads.items())), json.dumps(speeds, sort_keys=True))
         if sig != getattr(self, "_prof_sig", None):
             self._prof_sig = sig
             pt = self.query_one("#profiles", DataTable)
@@ -3180,12 +3222,16 @@ class LLMTui(App):
             for name, repo, flags, env in profs:
                 pt.add_row(Text("● active", style="green") if name == act else "", name, repo,
                            Text(f"~{human_secs(loads[name])}" if name in loads else "-",
-                                style="" if name in loads else "dim"),
+                                style="" if name in loads else "dim"), speed(name),
                            (f"[env] {env}  " if env else "") + flags, key=name)
             if pt.row_count:
                 pt.move_cursor(row=min(row, pt.row_count - 1))
+            opt = [n for n in getattr(self, "optimizable", []) if n in {p[0] for p in profs}]
             self.query_one("#local-hdr1", Label).update(
-                f"Profiles ({len(profs)})   [dim]enter switch server to it · " + clk("edit_profile", "e edit flags") + " · "
+                f"Profiles ({len(profs)})   "
+                + (f"[b {K9['greenyellow']}]⚡ {len(opt)} can be faster ({', '.join(opt)}): o[/]   " if opt else "")
+                + "[dim]enter switch server to it · " + clk("edit_profile", "e edit flags") + " · "
+                + clk("optimize", "o optimize") + " · "
                 + clk("delete", "x delete") + " · " + clk("filter", "/ filter") + " · " + clk("info", "i analysis") + "[/dim]")
         self._scan_cache()
 
@@ -3295,6 +3341,49 @@ class LLMTui(App):
         prof = {n: (r, f, e) for n, r, f, e in read_profiles()}.get(name)
         if prof:
             self.serve_dialog(prof[0], name, prof[1], prof[2])
+
+    def action_optimize(self) -> None:
+        pt = self.query_one("#profiles", DataTable)
+        if not pt.row_count:
+            self.notify("no profiles yet", severity="warning")
+            return
+        name = pt.coordinate_to_cell_key(pt.cursor_coordinate).row_key.value
+        self.notify(f"checking {name} against the fastest settings l9s knows…", timeout=4)
+        self._optimize(name)
+
+    @work(thread=True, group="dialog")
+    def _optimize(self, name: str) -> None:
+        try:
+            out = subprocess.run([LLM_BIN, "optimize", name, "--json"], capture_output=True, text=True, timeout=180)
+            r = json.loads(out.stdout)[0]
+        except Exception as e:  # noqa: BLE001
+            self.call_from_thread(self.notify, f"couldn't check {name}: {e}", severity="error")
+            return
+        if not r["changes"]:
+            self.call_from_thread(self.notify, f"{name} already has the fastest settings l9s knows")
+            return
+        running = r["active"] and self.state.get("status") == "running"
+        msg = (f"[b]Faster settings for {name}[/b]\n\n" + "\n".join(f"• {c}" for c in r["changes"])
+               + ("\n\n[yellow]It's the running model: Apply reloads it, so the endpoint is down while it loads "
+                  f"(last load took ~{human_secs(proxy_load_times()[name])}).[/yellow]"
+                  if running and name in proxy_load_times() else
+                  "\n\n[yellow]It's the running model: Apply reloads it; the endpoint is down while it loads.[/yellow]"
+                  if running else "\n\nUsed the next time you switch to it."))
+
+        def cb(ok):
+            if not ok:
+                return
+            (PROFILES / name).write_text(r["new"])
+            self.optimizable = [n for n in getattr(self, "optimizable", []) if n != name]
+            self._prof_sig = None
+            self.refresh_local()
+            if running:
+                self.serving = name
+                self.goto_tab("server")
+                self.run_llm(["use", name], f"{name} reloaded with the faster settings")
+            else:
+                self.notify(f"{name} updated")
+        self.call_from_thread(self.push_screen, Confirm(msg, "Apply", danger=False), cb)
 
     def action_delete(self) -> None:
         tab = self.query_one(TabbedContent).active

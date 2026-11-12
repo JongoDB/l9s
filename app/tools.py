@@ -149,7 +149,9 @@ def claude(info: dict) -> Plan:
 def codex(info: dict) -> Plan:
     m = cur(info)
     provider = (f"[model_providers.{MARK}]\nname = \"l9s\"\nbase_url = {toml_str(v1(info))}\n"
-                f"env_key = \"L9S_API_KEY\"\nwire_api = \"responses\"\n")
+                f"env_key = \"L9S_API_KEY\"\nwire_api = \"responses\"\n"
+                # /model lists l9s's models (Codex's catalog format, served by the l9s proxy)
+                f"model_catalog_url = {toml_str(info['base'] + '/codex/models')}\n")
     profile = (f"# written by `l9s connect codex`; refreshed when the loaded model changes\n"
                f"model = {toml_str(m['id'])}\nmodel_provider = \"{MARK}\"\n"
                f"model_context_window = {ctx(m)}\nmodel_auto_compact_token_limit = {int(ctx(m) * 0.85)}\n")
@@ -160,6 +162,8 @@ def codex(info: dict) -> Plan:
                 snippet=f"# ~/.codex/config.toml\n{provider}\n# ~/.codex/{MARK}.config.toml\n{profile}\n"
                         f"export L9S_API_KEY={info['key']}\ncodex --profile {MARK}",
                 notes=["Adds an `l9s` provider and profile; plain `codex` is unchanged.",
+                       "/model lists your l9s models (and only those) while you're on the l9s profile, with "
+                       "thinking off (minimal) or on (medium). Checked with Codex 0.167.",
                        "Running `codex --profile l9s` yourself needs L9S_API_KEY in your shell; `l9s codex` sets it."])
 
 

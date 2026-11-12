@@ -163,7 +163,7 @@ change, and connects it with `enter`.
 | Tool | How l9s sets it up | Checked against l9s |
 |---|---|---|
 | **Claude Code** | `l9s claude`: launches it with the right environment; writes nothing. `/model` lists your l9s models (not Claude's), and the model knows it isn't Claude | ✅ vLLM and mlx, with tool calls |
-| **Codex CLI** | adds an `l9s` provider + profile to `~/.codex`; `l9s codex` or `codex --profile l9s` | config from current docs |
+| **Codex CLI** | adds an `l9s` provider + profile to `~/.codex`; `l9s codex` or `codex --profile l9s`. `/model` lists your l9s models (l9s serves Codex's model catalog) | config from current docs |
 | **OpenCode**, **Crush**, **Grok Build**, **Qwen Code**, **Goose**, **Factory Droid**, **Aider** | adds an `l9s` provider with every model (context and output limits filled in); `l9s run <tool>` launches it | config from current docs |
 | **Kilo Code**, **Continue**, **Zed** | adds an `l9s` provider / models to the editor's config | config from current docs |
 | **Cline**, **GitHub Copilot (VS Code)**, **JetBrains AI** | settings are GUI-only: the exact values to enter, step by step | n/a |

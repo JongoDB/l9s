@@ -495,3 +495,23 @@ def test_reasoning_off_reaches_the_chat_template(stack):
         "chat_template_kwargs"] == {"enable_thinking": False}
     call(px, "/v1/chat/completions", dict(chat_body("l9s"), reasoning_effort="high")).read()
     assert "chat_template_kwargs" not in json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]
+
+
+# fields Codex's ModelInfo requires (no serde default) in codex-rs/protocol/src/openai_models.rs, rust-v0.167
+CODEX_REQUIRED = {"slug", "display_name", "supported_reasoning_levels", "shell_type", "visibility", "supported_in_api",
+                  "priority", "support_verbosity", "truncation_policy", "experimental_supported_tools",
+                  "base_instructions"}
+
+
+def test_codex_catalog_lists_every_model_in_codex_format(stack):
+    px, _ = stack
+    with pytest.raises(urllib.error.HTTPError):
+        call(px, "/codex/models", key=None)
+    cat = json.load(call(px, "/codex/models?client_version=0.167.2"))["models"]
+    assert [m["slug"] for m in cat][:2] == ["l9s", "mymodel"]
+    for m in cat:
+        assert CODEX_REQUIRED <= set(m), CODEX_REQUIRED - set(m)
+        assert m["shell_type"] == "shell_command" and m["visibility"] == "list"
+        assert m["truncation_policy"]["mode"] in ("tokens", "bytes")
+        assert {e["effort"] for e in m["supported_reasoning_levels"]} <= {"minimal", "low", "medium", "high"}
+        assert "Codex CLI" in m["base_instructions"]

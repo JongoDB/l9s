@@ -46,6 +46,7 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
                                          save a profile and (re)start the server with it
   use <profile>                          switch to a saved profile
   profiles                               list saved profiles (* = active)
+  optimize [<profile>|--all] [-y]        give saved profiles the fastest settings l9s knows (drafters, MTP, …)
   ls | rm <org/repo>                     downloaded models / delete one
   status | logs [-f] | test              health, server log, test request
   stop | start | restart                 control the model server
@@ -241,6 +242,7 @@ case "$cmd" in
     fi
     HF_TOKEN="${HF_TOKEN:-}" "$HF" download "$@" ${extra[@]+"${extra[@]}"} ;;
   info) [[ $# -eq 1 ]] || die "usage: l9s info <org/repo>"; "$PY" "$APP/hfmeta.py" report "$1" ;;
+  optimize) "$PY" "$APP/hfmeta.py" optimize "$@" ;;
   quickstart)
     repo="${1:-}"
     if [[ -z "$repo" ]]; then

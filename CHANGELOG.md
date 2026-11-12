@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+- Codex: `/model` lists your l9s models. l9s serves Codex's own model catalog format at `/codex/models` (the follow id, then every model, with load times and context sizes; thinking off = minimal, on = medium), using Codex's generic agent instructions (Apache-2.0, see NOTICE). Checked with Codex 0.167.2: `codex debug models` shows exactly the l9s models, and a session runs tool calls through l9s.
+- Built-in MTP layers are used for speculative decoding when no drafter is known, but only if the checkpoint really has the `mtp.*` weights (some quantizations keep the config entry and drop the weights, and vLLM would fail to start). Measured on a GB10 with Nemotron-3-Super NVFP4: one conversation 16.6 → 31 tok/s, 4 at once 43 → 63 tok/s total; NVIDIA's separate MTPv2 drafter does the same (30.7 / 67).
+- `l9s optimize [<profile>|--all]` (or `o` on a profile in Local) gives saved profiles the fastest settings l9s knows (drafter, MTP, mlx draft model, load-adaptive drafting, DFlash token budget, 32 slots for hybrid models), touching nothing else and asking first. After an update the TUI checks your profiles once and says when one can be faster.
+- Local shows each profile's real speed: the median tokens/s of recent requests that ran alone, reset when the profile's settings change.
+- Mac draft model: 3 drafted tokens per step stays the default (2 and 3 tie at ~140 tok/s on Qwen3-8B; 4 and 5 are slower).
+
 ## 0.6.0
 - Speculative decoding adapts to load on vLLM 0.33+: many drafted tokens for one request, fewer as the batch grows. GB10 + Qwen3.6-35B-A3B + DFlash: 4 streams 177 → 223 tok/s, 8 streams 294 → 315, 32 streams 546 tok/s total, one stream unchanged at ~110; accepted drafts 33% → 66%. Applied to drafters from model cards too.
 - Hybrid (Mamba / linear-attention) models get 32 sequence slots instead of 16.

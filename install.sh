@@ -52,7 +52,7 @@ HFV="$(grep -E '^huggingface-hub==' requirements.lock | sed -E 's/^huggingface-h
 # ---------------------------------------------------------------- code + Python environment
 say "l9s -> $L9S_HOME"
 mkdir -p "$L9S_HOME/app" "$L9S_HOME/bin" "$L9S_HOME/profiles" "$L9S_HOME/cache" "$L9S_HOME/logs"
-cp app/*.py VERSION "$L9S_HOME/app/"
+cp app/*.py app/*.md VERSION "$L9S_HOME/app/"
 install -m 755 bin/l9s "$L9S_HOME/bin/l9s"
 [[ -d "$L9S_HOME/app/.venv" ]] || "$UV" venv -q --python 3.12 "$L9S_HOME/app/.venv"
 # exact, CI-tested versions (incl. mlx-lm + MLX on Apple Silicon); sync also removes anything not in the lock

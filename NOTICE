@@ -1,0 +1,8 @@
+l9s
+Copyright (c) the l9s authors. Licensed under the terms in LICENSE.
+
+app/codex_prompt.md is the generic agent prompt from OpenAI Codex
+(https://github.com/openai/codex, codex-rs/models-manager/prompt.md, tag rust-v0.167.2),
+Copyright OpenAI, licensed under the Apache License 2.0. l9s serves it unchanged as the
+base instructions in the model catalog it gives Codex, so Codex behaves as it does for
+models it doesn't know.

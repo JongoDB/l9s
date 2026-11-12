@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hashlib
 import json
 import os
 import re
@@ -299,6 +300,42 @@ def pinned_clients(away_from: str | None = None, within: float = 900) -> list[di
     return sorted(({**v, "ago": round(now - v["at"])} for v in pins.values()
                    if now - v["at"] <= within and (away_from is None or v["model"] != away_from)),
                   key=lambda v: v["ago"])
+
+
+CODEX_PROMPT = Path(__file__).with_name("codex_prompt.md")
+
+
+def codex_catalog() -> dict:
+    """/codex/models: the model catalog Codex reads for its /model picker (its own `ModelsResponse` format, not
+    OpenAI's /v1/models list). Every l9s model is listed, the follow id first. `base_instructions` is Codex's own
+    generic agent prompt (see NOTICE), so Codex behaves as it does for any model it doesn't know."""
+    try:
+        base = CODEX_PROMPT.read_text()
+    except OSError:
+        base = "You are a coding agent running in the Codex CLI. Be precise, safe, and helpful."
+    out = []
+    for i, m in enumerate(models_list()["data"]):
+        ctx = m.get("context_window") or 32768
+        if m.get("follows"):
+            desc = f"Whatever l9s has loaded (now {m['follows']}); follows your switches"
+        elif m.get("loaded"):
+            desc = "Loaded now"
+        else:
+            desc = "Not loaded: picking it switches the server for every client" + (
+                f" (~{human_secs(m['load_seconds'])})" if m.get("load_seconds") else "")
+        out.append({
+            "slug": m["id"], "display_name": m["id"], "description": desc,
+            "default_reasoning_level": "medium",
+            "supported_reasoning_levels": [
+                {"effort": "minimal", "description": "Thinking off: fastest"},
+                {"effort": "medium", "description": "Thinks before answering (hybrid-thinking models)"}],
+            "shell_type": "shell_command", "visibility": "list", "supported_in_api": True, "priority": i,
+            "availability_nux": None, "upgrade": None, "base_instructions": base,
+            "supports_reasoning_summary_parameter": False, "support_verbosity": False, "default_verbosity": None,
+            "apply_patch_tool_type": None, "truncation_policy": {"mode": "tokens", "limit": 10000},
+            "context_window": ctx, "auto_compact_token_limit": int(ctx * 0.85),
+            "experimental_supported_tools": [], "input_modalities": ["text"]})
+    return {"models": out}
 
 
 def models_list() -> dict:
@@ -674,6 +711,33 @@ def _absorb_other(rec: dict, d: dict) -> bool:
     return False
 
 
+SPEEDS = L9S_HOME / "cache" / "speeds.json"
+
+
+def record_speed(rec: dict) -> None:
+    """Each profile's real generation speed, from requests that ran alone (no other request generating), so the
+    Local view can show what you actually get. Samples reset when the profile's settings change."""
+    name, tok_s = rec.get("model"), rec.get("tok_s")
+    if not name or not tok_s or (rec.get("gen_tokens") or 0) < 64 or rec.get("_peers", 1) > 0 or not rec.get("stream"):
+        return
+    try:
+        sig = hashlib.sha1((L9S_HOME / "profiles" / name).read_bytes()).hexdigest()[:12]
+    except OSError:
+        return
+    try:
+        d = json.loads(SPEEDS.read_text())
+    except (OSError, json.JSONDecodeError):
+        d = {}
+    e = d.get(name) if isinstance(d.get(name), dict) and d[name].get("sig") == sig else {"sig": sig, "tok_s": []}
+    e["tok_s"] = (e["tok_s"] + [round(tok_s, 1)])[-30:]
+    d[name] = e
+    try:
+        SPEEDS.parent.mkdir(parents=True, exist_ok=True)
+        SPEEDS.write_text(json.dumps(d))
+    except OSError:
+        pass
+
+
 def finish(rec: dict, state: str) -> None:
     rec["state"] = state
     rec["end"] = time.time()
@@ -683,6 +747,8 @@ def finish(rec: dict, state: str) -> None:
         dt = rec["duration"] - rec["ttft"] if rec.get("ttft") is not None else rec["duration"]
         rec["tok_s"] = rec["gen_tokens"] / dt if dt > 0.05 else None
     active.pop(rec["id"], None)
+    if state == "done":
+        record_speed(rec)
     pub = public(rec)
     recent.append(pub)
     _append(REQ_LOG, pub)
@@ -700,11 +766,13 @@ async def proxy(request: web.Request) -> web.StreamResponse:
     # the key may come as `Authorization: Bearer` (OpenAI) or `x-api-key` (Anthropic clients)
     given = request.headers.get("Authorization", "")
     given = given[7:] if given.startswith("Bearer ") else request.headers.get("x-api-key", "")
-    if request.path.startswith("/v1/") and API_KEY and given != API_KEY:
+    if request.path.startswith(("/v1/", "/codex/")) and API_KEY and given != API_KEY:
         return web.json_response({"error": {"message": "Invalid or missing API key", "type": "invalid_request_error",
                                             "code": 401}}, status=401)
     if request.method == "GET" and request.path == "/v1/models":
         return web.json_response(models_list())
+    if request.method == "GET" and request.path == "/codex/models":
+        return web.json_response(codex_catalog())
     body = await request.read()
     record = (request.method, request.path) not in QUIET and not request.path.startswith("/_")
     rec = None
@@ -861,6 +929,12 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 async for chunk in up.content.iter_any():
                     if rec is not None and rec.get("ttft") is None:
                         rec["ttft"] = time.time() - rec["start"]
+                        # overlap with other generating requests: their speeds aren't single-stream speeds
+                        others = [r for r in active.values() if r is not rec and r.get("state") == "running"
+                                  and not r.get("_waiting")]
+                        rec["_peers"] = len(others)
+                        for r in others:
+                            r["_peers"] = max(r.get("_peers", 0), 1)
                     buf += chunk
                     while b"\n\n" in buf:
                         ev, buf = buf.split(b"\n\n", 1)

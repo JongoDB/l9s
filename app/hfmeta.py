@@ -136,10 +136,49 @@ def fetch_meta(repo: str, api, token: str | None = None) -> dict:
     meta["readme"] = text("README.md") or ""
     meta["drafters"] = find_drafters(repo, meta.get("base_models") or [], meta["readme"], api) if info is not None \
         else card_drafters(meta["readme"])
+    meta["mtp_weights"] = has_mtp_weights(repo, meta.get("config") or {}, api if info is not None else None, snap)
     is_mlx = repo.lower().startswith("mlx-community/") or "mlx" in [t.lower() for t in meta.get("tags") or []]
     meta["mlx_draft"] = find_mlx_draft(repo, (meta.get("config") or {}), api, token) \
         if is_mlx and info is not None else None
     return meta
+
+
+# model types whose built-in MTP layers vLLM 0.33 can run as a drafter (from vllm/config/speculative.py)
+MTP_TYPES = ("deepseek_v3", "deepseek_v32", "deepseek_v4", "dots3_note", "mimo", "glm4_moe", "glm5", "ernie4_5_moe",
+             "nemotron_h", "exaone_moe", "exaone4_5", "qwen3_next", "qwen3_5", "longcat_flash", "bailing_hybrid",
+             "minimax_m3", "kimi_k3", "pangu_ultra_moe", "step3p5", "step5", "hy_v3", "hy_v4", "gemma4")
+
+
+def has_mtp_weights(repo: str, cfg: dict, api, snap) -> bool:
+    """config.json can announce MTP layers whose weights a quantization dropped (Qwen3.6-35B-A3B-heretic-NVFP4
+    does): check the checkpoint really has `mtp.*` tensors before using them."""
+    tc = _text_cfg(cfg)
+    if not _first(tc, "num_nextn_predict_layers", "mtp_num_hidden_layers", "num_mtp_layers"):
+        return False
+    names: list[str] = []
+    if snap:
+        try:
+            idx = json.loads((snap / "model.safetensors.index.json").read_text())
+            names = list(idx.get("weight_map", {}))
+        except (OSError, json.JSONDecodeError):
+            try:
+                import struct
+                with open(snap / "model.safetensors", "rb") as f:
+                    names = list(json.loads(f.read(struct.unpack("<Q", f.read(8))[0])))
+            except (OSError, ValueError, struct.error):
+                names = []
+    if not names and api is not None:
+        try:
+            md = api.get_safetensors_metadata(repo)
+            names = [n for fm in md.files_metadata.values() for n in fm.tensors]
+        except Exception:  # noqa: BLE001
+            return False
+    return any(n.startswith("mtp.") or ".mtp." in n or "mtp_" in n.split(".")[0] for n in names)
+
+
+def mtp_supported(model_type: str | None) -> bool:
+    mt = (model_type or "").lower()
+    return any(mt == t or mt.startswith(t + "_") for t in MTP_TYPES)
 
 
 SIZE_RE = re.compile(r"^(?P<fam>.+?)[-_](?P<size>\d+(?:\.\d+)?)[Bb](?![a-z])(?P<rest>.*)$")
@@ -924,6 +963,8 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
     A["card_commands"] = cmds
     A["drafters"] = meta.get("drafters") or []
     A["mlx_draft"] = meta.get("mlx_draft")
+    A["mtp_weights"] = meta.get("mtp_weights")
+    A["text_model_type"] = tc.get("model_type")
     A["readme"] = meta.get("readme", "")
     A["presets"] = build_presets_mlx(A, caps) if backend == "mlx" else build_presets(A, caps)
     A["verdict"] = "blocked" if A["blockers"] else ("warn" if A["warnings"] else "ok")
@@ -955,14 +996,20 @@ def build_presets(A: dict, caps: dict | None) -> list[dict]:
     usable = [] if spec_off() else [d for d in A.get("drafters") or [] if drafter_spec(d)]
     spec = next((drafter_spec(d, int(card_n.group(1)) if card_n and d in card_drafters(A.get("readme", "")) else None)
                  for d in usable if drafter_trusted(d, A.get("readme", ""))), None)
+    if not spec and not spec_off() and A.get("mtp_weights") and A.get("mtp_layers") \
+            and mtp_supported(A.get("text_model_type") or A.get("model_type")):
+        spec = {"method": "mtp", "num_speculative_tokens": 3}
+        A["mtp_used"] = True
     if not spec and usable:
         A["warnings"].append(f"a speculative-decoding drafter exists ({usable[0]}), from a publisher l9s doesn't "
                              f"know: add --speculative-config '{json.dumps(drafter_spec(usable[0]))}' to try it")
     if spec:
         spec = dynamic_schedule(spec, caps)
+        why = (f"the model's own {A['mtp_layers']} MTP layer(s) draft ahead" if spec["method"] == "mtp" and
+               "model" not in spec else f"{spec['method']} drafter {spec['model']}")
         computed["--speculative-config"] = (json.dumps(spec, separators=(",", ":")),
-                                            f"{spec['method']} drafter {spec['model']}: typically 1.5-2.5x faster "
-                                            "generation for one user (measured 2.5x for Qwen3.6-35B on a GB10)")
+                                            f"{why}: typically 1.5-2.5x faster generation for one user "
+                                            "(measured 2.5x for Qwen3.6-35B on a GB10)")
         if spec["method"] == "dflash":
             computed["--max-num-batched-tokens"] = ("16384", "DFlash needs an explicit token budget to start")
     presets = []
@@ -1179,10 +1226,76 @@ STARTERS = {
 
 
 # ======================================================================= CLI (used by `l9s pull` / `l9s info`)
+SPEED_FLAGS = ("--speculative-config", "--max-num-batched-tokens", "--draft-model", "--num-draft-tokens")
+
+
+def _profile_pairs(lines: list[str]) -> list[tuple[str, str | None]]:
+    """Profile body (after the repo line): one token per line, `ENV K=V` lines kept as-is."""
+    out, i = [], 0
+    while i < len(lines):
+        t = lines[i]
+        if t.startswith("--") and i + 1 < len(lines) and not lines[i + 1].startswith("--") \
+                and not lines[i + 1].startswith("ENV "):
+            out.append((t, lines[i + 1]))
+            i += 2
+        else:
+            out.append((t, None))
+            i += 1
+    return out
+
+
+def optimize_profile(text: str, A: dict, caps: dict | None) -> tuple[str, list[str]]:
+    """Bring a saved profile's speed settings up to what l9s recommends now, without touching anything else:
+    add a drafter (or MTP / an mlx draft model) if it has none, and the load-adaptive draft schedule to a
+    speculative config that lacks it. Returns (new profile text, human-readable changes)."""
+    lines = [l for l in text.split("\n")]
+    repo, body = lines[0], [l for l in lines[1:] if l != ""]
+    pairs = _profile_pairs(body)
+    have = {f: v for f, v in pairs}
+    rec = A["presets"][0]["flags"] if A.get("presets") else {}
+    changes = []
+    if "--speculative-config" in have:
+        try:
+            spec = json.loads(have["--speculative-config"] or "{}")
+            tuned = dynamic_schedule(spec, caps)
+            if tuned != spec:
+                have["--speculative-config"] = json.dumps(tuned, separators=(",", ":"))
+                changes.append("speculative decoding: fewer drafts as the batch grows "
+                               f"({tuned['num_speculative_tokens_per_batch_size']})")
+        except json.JSONDecodeError:
+            pass
+    elif "--draft-model" not in have and not spec_off():
+        for f in SPEED_FLAGS:
+            if f in rec and f not in have:
+                have[f] = rec[f][0]
+                changes.append(f"{f} {rec[f][0]}  ({rec[f][1]})")
+    if "--speculative-config" in have and "dflash" in (have["--speculative-config"] or "") \
+            and "--max-num-batched-tokens" not in have:
+        have["--max-num-batched-tokens"] = "16384"
+        changes.append("--max-num-batched-tokens 16384  (DFlash needs an explicit token budget)")
+    if have.get("--max-num-seqs") == "16" and A.get("layout", {}).get("linear_layers"):
+        have["--max-num-seqs"] = "32"
+        changes.append("--max-num-seqs 16 → 32  (hybrid model; measured fine on a GB10)")
+    if not changes:
+        return text, []
+    seen, out = set(), [repo]
+    for f, v in pairs:
+        seen.add(f)
+        out.append(f)
+        if f in have and have[f] is not None:
+            out.append(have[f])
+    for f, v in have.items():
+        if f not in seen:
+            out += [f] + ([v] if v is not None else [])
+    return "\n".join(out) + "\n", changes
+
+
 def _cli() -> None:
     import os
     import sys
     from huggingface_hub import HfApi
+    if len(sys.argv) >= 2 and sys.argv[1] == "optimize":
+        return _cli_optimize(sys.argv[2:])
     if not (len(sys.argv) == 3 and sys.argv[1] in ("exclude", "report", "serveargs")
             or len(sys.argv) == 2 and sys.argv[1] == "starter"):
         print("usage: hfmeta.py exclude|report|serveargs <org/repo>  |  hfmeta.py starter", file=sys.stderr)
@@ -1242,6 +1355,68 @@ def _cli() -> None:
         env_args = " ".join(f"--env {k}={shlex.quote(v)}" for k, v in best["env"].items())
         print(f"\n# to serve with the recommended settings:\nl9s serve {sys.argv[2]} --name {sys.argv[2].split('/')[-1].lower()} "
               f"{env_args} {flags_to_str(best['flags'])}")
+
+
+def _cli_optimize(args: list[str]) -> None:
+    """l9s optimize [<profile>...|--all] [-y] [--json]"""
+    import os
+    import sys
+    from huggingface_hub import HfApi
+    import hw
+    yes, as_json = "-y" in args, "--json" in args
+    names = [a for a in args if not a.startswith("-")]
+    pdir = L9S_HOME / "profiles"
+    if "--all" in args or not names:
+        names = sorted(p.name for p in pdir.iterdir()) if pdir.exists() else []
+    env = {}
+    try:
+        for line in (L9S_HOME / "env").read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    token = env.get("HF_TOKEN") or os.environ.get("HF_TOKEN") or None
+    api = HfApi(token=token)
+    h = hw.detect()
+    backend = env.get("BACKEND", h.backend)
+    caps = load_caps("mlx" if backend == "mlx" else env.get("IMAGE", h.default_image()))
+    try:
+        active = os.path.basename(os.readlink(L9S_HOME / "active"))
+    except OSError:
+        active = ""
+    report = []
+    for name in names:
+        f = pdir / name
+        if not f.is_file():
+            print(f"no profile {name}", file=sys.stderr)
+            continue
+        text = f.read_text()
+        repo = text.split("\n", 1)[0].strip()
+        A = analyze(fetch_meta(repo, api, token), caps, h.pool_per_gpu(), float(env.get("GPU_MEM", "0.85")),
+                    backend, max(1, h.n_gpus), h.card_tags())
+        new, changes = optimize_profile(text, A, caps)
+        report.append({"profile": name, "repo": repo, "changes": changes, "active": name == active, "new": new})
+    if as_json:
+        print(json.dumps(report))
+        return
+    todo = [r for r in report if r["changes"]]
+    for r in report:
+        print(f"{r['profile']}: " + ("already has the fastest settings l9s knows" if not r["changes"] else ""))
+        for c in r["changes"]:
+            print(f"  + {c}")
+    if not todo:
+        return
+    if not yes:
+        if not sys.stdin.isatty():
+            print("\nrun with -y to apply")
+            return
+        if input("\nApply these changes? [y/N] ").strip().lower() not in ("y", "yes"):
+            return
+    for r in todo:
+        (pdir / r["profile"]).write_text(r["new"])
+        print(f"updated {r['profile']}" + (f"  (it's running: `l9s use {r['profile']}` reloads it with these "
+                                             "settings; the endpoint is down while it loads)" if r["active"] else ""))
 
 
 if __name__ == "__main__":

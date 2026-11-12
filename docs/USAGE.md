@@ -151,6 +151,7 @@ l9s stop | start | restart
 l9s pull <org/repo>                         # download from Hugging Face
 l9s serve <org/repo> [--name N] [vllm flags...]   # save profile + switch to it
 l9s info <org/repo>                         # full analysis + recommended serve command
+l9s optimize [<profile>|--all] [-y]         # bring saved profiles up to the fastest settings l9s knows
 l9s profiles                                # saved profiles (* = active)
 l9s use <profile>                           # switch to a saved profile
 l9s ls                                      # downloaded models + disk free
@@ -342,6 +343,13 @@ it takes to load.
   then runs requests one at a time instead of batching them (4 at once: 285 → 116 tok/s total), so a Mac shared by
   several users should use Settings → Speculative decoding → off (`SPEC_DECODE=off`). Without a draft model mlx-lm
   batches up to 32 requests and keeps 10 prompt caches.
+- **Built-in MTP layers.** Models that ship their own multi-token-prediction layers (DeepSeek-V3, GLM-4.5+,
+  Qwen3.5/3.6, Nemotron-H, MiMo, …) use them as the drafter when no better one is known, but only if the
+  checkpoint really contains the `mtp.*` weights: some quantizations keep `num_nextn_predict_layers` in config.json
+  and drop the weights, and vLLM would then fail to start.
+- **Profiles you already have.** A profile keeps the settings it was created with. `l9s optimize` (or `o` on a
+  profile in Local) shows what would change (a drafter, MTP, the load-adaptive schedule, the DFlash token budget, 32
+  slots for hybrid models), touches nothing else, and asks first; the running model is reloaded only if you say so.
 - **Reasoning follows the tool's own setting.** When a tool turns reasoning off (Claude Code with thinking disabled,
   `reasoning_effort: none|minimal`, Codex's `minimal`), hybrid-thinking models (Qwen3, GLM, …) skip the thinking
   phase: a short answer took 2 tokens instead of 117 on the GB10.
