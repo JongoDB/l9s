@@ -1073,14 +1073,17 @@ class LLMTui(App):
     .sparkrow { height: 1; }
     .sparklabel { width: 12; color: $text-muted; }
     Sparkline { width: 1fr; height: 1; }
-    #srv-bar { height: 1; margin: 0 0 1 0; }
+    #srv-bar { height: 1; margin: 1 0 0 0; }
     #srv-bar Button { height: 1; min-width: 9; margin-right: 1; border: none; padding: 0 1; background: #1C1C1C;
                       color: #87CEFA; text-style: bold; }
     #srv-bar Button:hover, #srv-bar Button:focus { background: #1E90FF; color: #000000; }
     #srv-bar Button.-error { color: #FF4500; }
     #srv-bar Button.-warning { color: #FFD75F; }
     #srv-bar Button.-success { color: #ADFF2F; }
-    #srv-bar Checkbox { height: 1; }
+    #srv-bar Checkbox, #log-bar Checkbox { height: 1; }
+    #log-bar { height: 1; margin-top: 1; }
+    #log-bar Button { margin-right: 1; }
+    #log-bar Checkbox { margin-left: 1; border: none; padding: 0; }
     Button { border: none; height: 1; padding: 0 1; min-width: 8; background: #1C1C1C; color: #87CEFA; text-style: bold; }
     Button:hover, Button:focus { background: #1E90FF; color: #000000; }
     Button.-primary { color: #00FFFF; }
@@ -1219,6 +1222,11 @@ class LLMTui(App):
         with TabbedContent(initial="server", id="tabs"):
             with TabPane("1 Server", id="server"):
                 yield Static("loading…", id="st-head")
+                with Horizontal(id="srv-bar"):
+                    yield Button("Test", id="b-test", variant="primary")
+                    yield Button("Restart", id="b-restart", variant="warning")
+                    yield Button("Stop", id="b-stop", variant="error")
+                    yield Button("Start", id="b-start", variant="success")
                 with Horizontal(id="panels"):
                     with Vertical(classes="panel", id="p-live"):
                         yield Static("", id="st-live")
@@ -1230,11 +1238,7 @@ class LLMTui(App):
                             yield Sparkline(list(self.kv_hist), summary_function=max, id="sp-kv")
                     yield Static("", id="st-totals", classes="panel")
                     yield Static("", id="st-sys", classes="panel")
-                with Horizontal(id="srv-bar"):
-                    yield Button("Test", id="b-test", variant="primary")
-                    yield Button("Restart", id="b-restart", variant="warning")
-                    yield Button("Stop", id="b-stop", variant="error")
-                    yield Button("Start", id="b-start", variant="success")
+                with Horizontal(id="log-bar"):
                     yield Button("Clear log", id="b-clear")
                     yield Checkbox("errors/warnings only", False, id="log-errors")
                     yield Checkbox("show polling requests", False, id="log-noise")

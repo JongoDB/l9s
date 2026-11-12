@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.3
+- Server view: Test / Restart / Stop / Start sit right under the summary (always visible, even in a small terminal); the log's own controls (Clear log, filters) sit directly above the log.
+
 ## 0.3.2
 - Connect is now view `2` (Requests 3, Local 4, Hub 5, Downloads 6, Events 7, Settings 8).
 - Less repetition: the Server view no longer repeats the header (status, endpoint, image, proxy) and lost its Connect button; Connect shows one line and points to Settings (API key, model switching) and Local (models, with a new load-time column); Settings has one vLLM release check (shown under the image) instead of two buttons; `c` no longer appears twice in the key hints.
