@@ -484,7 +484,7 @@ class ServeDialog(ModalScreen[dict | None]):
     #why { color: $text-muted; margin-bottom: 1; }
     #problems { color: $error; }
     #preset { margin-bottom: 1; }
-    #btns { height: auto; align-horizontal: right; margin-bottom: 1; }
+    #btns { dock: bottom; height: 2; align-horizontal: right; padding-top: 1; background: $surface; }
     #btns Button { margin-left: 2; }
     """
 
@@ -616,23 +616,23 @@ class ServeDialog(ModalScreen[dict | None]):
 class Confirm(ModalScreen[bool]):
     DEFAULT_CSS = """
     Confirm { align: center middle; }
-    #box { width: 84; height: auto; border: thick $primary; padding: 1 2; background: $surface; }
+    #box { width: 84; height: auto; max-height: 90%; border: thick $primary; padding: 1 2; background: $surface; }
     Confirm.danger #box { border: thick $error; }
-    #btns { height: auto; align-horizontal: right; margin-top: 1; }
+    #btns { dock: bottom; height: 2; align-horizontal: right; padding-top: 1; background: $surface; }
     #btns Button { margin-left: 2; }
     """
 
-    def __init__(self, msg: str, yes: str = "Yes", danger: bool = True):
+    def __init__(self, msg: str, yes: str = "Yes", danger: bool = True, cancel: str = "Cancel"):
         super().__init__()
-        self.msg, self.yes, self.danger = msg, yes, danger
+        self.msg, self.yes, self.danger, self.cancel = msg, yes, danger, cancel
 
     def compose(self) -> ComposeResult:
         if self.danger:
             self.add_class("danger")
-        with Vertical(id="box"):
+        with VerticalScroll(id="box"):
             yield Static(self.msg)
             with Horizontal(id="btns"):
-                yield Button("Cancel", id="no")
+                yield Button(self.cancel, id="no")
                 yield Button(self.yes, id="yes", variant="error" if self.danger else "primary")
 
     def on_mount(self) -> None:
@@ -644,6 +644,37 @@ class Confirm(ModalScreen[bool]):
 
     def key_escape(self) -> None:
         self.dismiss(False)
+
+
+class Choice(ModalScreen[str]):
+    """A question with several answers (buttons); esc picks the last one."""
+    DEFAULT_CSS = """
+    Choice { align: center middle; }
+    #box { width: 84; height: auto; max-height: 90%; border: thick $warning; padding: 1 2; background: $surface; }
+    #btns { dock: bottom; height: 2; align-horizontal: right; padding-top: 1; background: $surface; }
+    #btns Button { margin-left: 2; }
+    """
+
+    def __init__(self, msg: str, options: list[tuple[str, str, str]]):
+        super().__init__()
+        self.msg, self.options = msg, options  # (id, label, variant)
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="box"):
+            yield Static(self.msg)
+            with Horizontal(id="btns"):
+                for oid, label, variant in self.options:
+                    yield Button(label, id=oid, variant=variant)
+
+    def on_mount(self) -> None:
+        self.query_one(f"#{self.options[0][0]}", Button).focus()
+
+    @on(Button.Pressed)
+    def pressed(self, ev: Button.Pressed) -> None:
+        self.dismiss(ev.button.id)
+
+    def key_escape(self) -> None:
+        self.dismiss(self.options[-1][0])
 
 
 class TextModal(ModalScreen[None]):
@@ -1071,12 +1102,18 @@ class LLMTui(App):
     #clients { height: 1fr; border: solid #87CEFA; }
     #events-t { border: solid #87CEFA; }
     #profiles, #models, #dls, #hub-results { border: solid #87CEFA; }
-    .frow { height: auto; margin-bottom: 1; }
+    .frow { height: auto; margin-bottom: 1; align: left middle; }
+    #settings-form Input { height: 1; border: none; padding: 0 1; background: #1C1C1C; }
+    #settings-form Input:focus { background: #1E3A5F; }
+    #settings-form .section { margin-top: 1; color: #00FFFF; }
     .frow Input { width: 1fr; }
     .frow Button { margin-left: 1; }
-    .frow Static { width: 1fr; padding: 1 1 0 2; }
+    .frow Static { width: 1fr; padding: 0 1 0 2; }
     .hint { color: $text-muted; padding: 1 0; }
-    #set-changes { padding: 1 0; }
+    #set-bar { dock: bottom; height: auto; min-height: 3; max-height: 6; padding: 0 1;
+               border-top: solid #87CEFA; background: #000000; }
+    #set-changes { width: 1fr; height: auto; padding: 0 1 0 0; }
+    #set-bar Button { margin-left: 1; }
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
@@ -1090,6 +1127,7 @@ class LLMTui(App):
         Binding("a", "toggle_active", "In-flight"),
         Binding("f", "follow", "Follow"),
         Binding("ctrl+s", "save_log", "Save log", key_display="ctrl-s"),
+        Binding("ctrl+s", "save_settings", "Save", key_display="ctrl-s"),
         Binding("y", "copy_row", "Copy"),
         Binding("escape", "escape", "Back", show=False),
         Binding("p", "pull", "Pull"),
@@ -1110,7 +1148,7 @@ class LLMTui(App):
     ACTION_TABS = {"pull": {"hub"}, "serve": {"hub", "local"}, "edit_profile": {"local"}, "info": {"hub", "local"},
                    "delete": {"local", "downloads"}, "copy_row": {"hub", "local", "downloads", "requests", "events"},
                    "describe": {"requests", "events"}, "kill": {"requests"}, "toggle_active": {"requests"},
-                   "follow": {"server"}, "save_log": {"server"},
+                   "follow": {"server"}, "save_log": {"server"}, "save_settings": {"settings"},
                    "filter": {"server", "requests", "local", "hub", "events"}}
 
     def __init__(self):
@@ -1213,8 +1251,8 @@ class LLMTui(App):
                     yield KTable(id="hub-results", cursor_type="row", zebra_stripes=False)
                     with Vertical(id="hub-detail"):
                         with Horizontal(id="hub-btns"):
-                            yield Button("Pull (p)", id="b-pull", variant="primary")
-                            yield Button("Pull + serve (s)", id="b-pullserve", variant="success")
+                            yield Button("Pull", id="b-pull", variant="primary")
+                            yield Button("Pull + serve", id="b-pullserve", variant="success")
                         yield Static("[dim]" + clk("filter", "Press / to search Hugging Face") + ", then highlight a result to "
                                      "see details and its model card.[/dim]",
                                      id="hub-meta")
@@ -1228,9 +1266,10 @@ class LLMTui(App):
                 yield KTable(id="events-t", cursor_type="row", zebra_stripes=False)
             with TabPane("7 Settings", id="settings"):
                 with VerticalScroll(id="settings-form"):
-                    yield Static(f"Server settings, stored in [b]{LLM_HOME / 'env'}[/b] (readable only by you). "
-                                 "[b]Save[/b] writes the file; [b]Save & apply[/b] also restarts the server so it picks "
-                                 "the changes up.", classes="hint")
+                    yield Static(f"Stored in [b]{LLM_HOME / 'env'}[/b] (readable only by you). [b]Save[/b] (bar at the "
+                                 "bottom, or ctrl+s) applies each change the way it needs: most take effect at once; "
+                                 "memory, vLLM image and (vLLM) API key need the model server restarted, and Save "
+                                 "asks before doing that.", classes="hint")
                     yield Label("Hugging Face token", classes="section")
                     yield Static("[dim]Needed for gated models (Llama, Gemma, …) and faster downloads. Create one at "
                                  "huggingface.co/settings/tokens; read access is enough.[/dim]")
@@ -1277,11 +1316,11 @@ class LLMTui(App):
                     yield Label("Request log", classes="section")
                     yield Checkbox("Record short prompt/response previews (first ~400 chars) for the Requests view",
                                    True, id="set-logprompts")
+                with Horizontal(id="set-bar"):
                     yield Static("", id="set-changes")
-                    with Horizontal(classes="frow"):
-                        yield Button("Save", id="set-save", variant="primary")
-                        yield Button("Save & apply", id="set-apply", variant="warning")
-                        yield Button("Revert", id="set-revert")
+                    yield Button("Save (ctrl+s)", id="set-save", variant="primary")
+                    yield Button("Discard", id="set-revert")
+                    yield Button("Restart server", id="set-apply", variant="warning")
         with Horizontal(id="crumbs"):
             for t in TABS:
                 yield Label(f"<{t}>", id=f"crumb-{t}", classes="crumb")
@@ -1543,6 +1582,9 @@ class LLMTui(App):
         tc = self.query_one(TabbedContent)
         if tc.active == tab:
             return
+        if tc.active == "settings" and self.settings_dirty():
+            self.confirm_leave_settings(lambda: self.goto_tab(tab))
+            return
         # drop focus first: a focused widget left in the old pane makes TabbedContent switch straight back to it
         self.set_focus(None)
         tc.active = tab
@@ -1568,7 +1610,8 @@ class LLMTui(App):
             if lg.auto_scroll:
                 self.call_after_refresh(lambda: lg.scroll_end(animate=False))
         elif pid == "settings":
-            self.load_settings_form()
+            if not self.settings_dirty():
+                self.load_settings_form()
             self.query_one("#settings-form").focus()
         elif pid == "requests":
             self.query_one("#reqs", DataTable).focus()
@@ -2059,6 +2102,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                     "IMAGE": "#set-image"}
 
     def load_settings_form(self) -> None:
+        self._settings_loaded = True
         self.query_one("#vllm-settings").display = self.backend != "mlx"
         env = load_env()
         defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0"}
@@ -2095,6 +2139,33 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             probs.append("image needs a tag, e.g. vllm/vllm-openai:v0.33.0")
         return probs
 
+    # What each setting needs before it is in effect. Everything else is read when used (HF token, update mode).
+    PROXY_KEYS = ("PORT", "API_KEY", "LOG_PROMPTS")  # the request proxy reads these at start: restarted on Save
+
+    def server_keys(self) -> tuple:
+        """Settings the model server reads at start (need a server restart)."""
+        return () if self.backend == "mlx" else ("API_KEY", "GPU_MEM", "IMAGE")
+
+    def settings_dirty(self) -> list[str]:
+        if not getattr(self, "_settings_loaded", False):
+            return []
+        try:
+            v = self.settings_values()
+        except Exception:
+            return []
+        cur = load_env()
+        defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0", "LOG_PROMPTS": "1",
+                    "UPDATE_MODE": "notify"}
+        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE"]
+                if v[k] != cur.get(k, defaults.get(k, ""))]
+
+    def server_pending(self) -> list[str]:
+        """Saved settings the running model server doesn't use yet."""
+        if not active_profile():
+            return []
+        saved, running = load_env(), self.applied_env()
+        return [k for k in self.server_keys() if saved.get(k, "") != running.get(k, saved.get(k, ""))]
+
     @on(Input.Changed, "#settings-form Input")
     @on(Checkbox.Changed, "#set-logprompts")
     @on(Select.Changed, "#set-update")
@@ -2109,21 +2180,20 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             self.query_one("#set-mem-info", Static).update("")
         self.query_one("#set-port-info", Static).update(
             f"endpoint would be http://{self.ip}:{v['PORT'] or '?'}/v1")
-        cur = load_env()
-        changed = [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE"]
-                   if v[k] != cur.get(k, v[k] if k not in cur else "")]
-        probs = self.settings_problems(v)
-        lines = []
-        if probs:
-            lines += [f"[red]✗ {p}[/red]" for p in probs]
-        if changed:
-            lines.append("[yellow]unsaved changes: " + ", ".join(changed) + "[/yellow]")
-        running = self.applied_env()
-        pending = [k for k in ("API_KEY", "PORT", "GPU_MEM", "HF_TOKEN", "IMAGE", "LOG_PROMPTS") if v[k] != running.get(k, v[k])]
+        dirty, probs, pending = self.settings_dirty(), self.settings_problems(v), self.server_pending()
+        lines = [f"[{K9['orangered']}]✗ {p}[/]" for p in probs]
+        if dirty:
+            lines.append(f"[{K9['gold']}]● unsaved changes: {', '.join(dirty)}[/]")
         if pending:
-            lines.append("[cyan]the running server still uses the old " + ", ".join(pending)
-                         + ": Save & apply restarts it with the new values[/cyan]")
-        self.query_one("#set-changes", Static).update("\n".join(lines) or "[green]✓ saved and in effect[/green]")
+            lines.append(f"[{K9['sky']}]● saved, but the model server still runs with the old {', '.join(pending)}: "
+                         f"Restart server to use it (the endpoint is down while the model reloads)[/]")
+        if not lines:
+            lines = [f"[{K9['greenyellow']}]✓ all settings saved and in effect[/]"]
+        self.query_one("#set-changes", Static).update("\n".join(lines))
+        save = self.query_one("#set-save", Button)
+        save.disabled = not dirty or bool(probs)
+        self.query_one("#set-revert", Button).display = bool(dirty)
+        self.query_one("#set-apply", Button).display = bool(pending) and not dirty
 
     def applied_env(self) -> dict:
         if not hasattr(self, "_applied_env"):
@@ -2160,6 +2230,37 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             self.image = img
             self.caps = hfmeta.load_caps(img)
 
+    def confirm_leave_settings(self, then) -> None:
+        """Ask before leaving Settings (or quitting) with unsaved changes."""
+        dirty = self.settings_dirty()
+        msg = (f"[b]Save your settings changes?[/b]\n\nUnsaved: {', '.join(dirty)}"
+               + ("\n\n" + "\n".join(f"[red]✗ {p}[/red]" for p in self.settings_problems(self.settings_values()))
+                  if self.settings_problems(self.settings_values()) else ""))
+
+        def cb(choice):
+            if choice == "save":
+                if self.settings_save() and not self.server_pending():
+                    then()
+            elif choice == "discard":
+                self.load_settings_form()
+                then()
+        self.push_screen(Choice(msg, [("save", "Save", "primary"), ("discard", "Discard", "error"),
+                                      ("stay", "Keep editing", "default")]), cb)
+
+    async def action_quit(self) -> None:
+        if self.settings_dirty():
+            self.confirm_leave_settings(self.exit)
+        else:
+            self.exit()
+
+    def action_save_settings(self) -> None:
+        if not self.query_one("#set-save", Button).disabled:
+            self.settings_save()
+        elif self.settings_problems(self.settings_values()):
+            self.notify("fix the settings marked ✗ first", severity="error")
+        else:
+            self.notify("nothing to save")
+
     @on(Button.Pressed, "#set-save")
     def settings_save(self) -> bool:
         v = self.settings_values()
@@ -2167,51 +2268,53 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         if probs:
             self.notify("fix the settings first: " + "; ".join(probs), severity="error")
             return False
+        running = self.applied_env()
+        changed = [k for k in v if v[k] != running.get(k, v[k])]
         self.write_env(v)
-        self.notify(f"saved {LLM_HOME / 'env'}")
+        applied = dict(running)
+        done = []
+        # no restart needed: read whenever they're used
+        for k in ("HF_TOKEN", "UPDATE_MODE"):
+            applied[k] = v[k]
+        proxy = [k for k in changed if k in self.PROXY_KEYS]
+        if proxy:
+            self.run_llm(["proxy", "restart"], "request proxy restarted with the new settings")
+            for k in proxy:
+                if k not in self.server_keys():
+                    applied[k] = v[k]
+            done.append("proxy restarted")
+            if "PORT" in proxy:
+                self.notify(f"the endpoint is now http://{self.ip}:{v['PORT']}/v1", timeout=10)
+        if not active_profile():  # nothing running: everything applies when a model is served
+            applied = load_env()
+        self._applied_env = applied
+        self.notify("saved" + (f" · {', '.join(done)}" if done else ""))
         self.settings_changed()
+        if self.server_pending():
+            self.settings_apply()
         return True
 
     @on(Button.Pressed, "#set-apply")
     def settings_apply(self) -> None:
-        v = self.settings_values()
-        running = self.applied_env()
-        pending = [k for k in ("API_KEY", "PORT", "GPU_MEM", "HF_TOKEN", "IMAGE", "LOG_PROMPTS") if v[k] != running.get(k, v[k])]
-        if not self.settings_save():
-            return
-        if not pending:
-            self.notify("nothing to apply: the server already uses these settings")
-            return
-        if set(pending) & {"PORT", "API_KEY", "LOG_PROMPTS"}:
-            # the proxy reads PORT / API_KEY / LOG_PROMPTS at start; restarting it takes a second
-            self.run_llm(["proxy", "restart"], "request proxy restarted with the new settings")
-            if "PORT" in pending:
-                self.notify(f"the endpoint is now http://{self.ip}:{v['PORT']}/v1", timeout=10)
-        server_keys = ("HF_TOKEN",) if self.backend == "mlx" else ("API_KEY", "GPU_MEM", "HF_TOKEN", "IMAGE")
-        pending = [k for k in pending if k in server_keys]  # keys the model server reads at start
-        if not pending:
-            self._applied_env = load_env()
-            self.settings_changed()
-            return
+        pending = self.server_pending()
         act = active_profile()
-        if not act:
-            self._applied_env = load_env()
-            self.notify("saved; no server profile yet, the settings apply when you serve a model")
+        if not pending or not act or self.busy():
             return
-        if self.busy():
-            return
+        v = load_env()
         image_changed = "IMAGE" in pending
-        msg = (f"Apply {', '.join(pending)}?\n"
-               + (f"This downloads [b]{v['IMAGE']}[/b] (can take a while) and restarts [b]{act}[/b]."
-                  if image_changed else f"This restarts [b]{act}[/b]; the endpoint is down while it reloads.")
+        msg = (f"[b]Restart the model server now?[/b]\n\n{', '.join(pending)} only take effect when "
+               f"[b]{act}[/b] restarts. "
+               + (f"This downloads [b]{v['IMAGE']}[/b] (can take a while) first. " if image_changed else "")
+               + "The endpoint is down while the model reloads."
                + ("\n[yellow]Clients must switch to the new API key.[/yellow]" if "API_KEY" in pending else "")
-               + (f"\n[yellow]The endpoint moves to port {v['PORT']}.[/yellow]" if "PORT" in pending else ""))
+               + "\n\nChoose Later to keep the current server running; Settings keeps a Restart server button.")
 
         def cb(ok):
             if not ok:
                 return
             self._applied_env = load_env()
             self.serving = act
+            self.settings_changed()
             self.goto_tab("server")
             if image_changed:
                 self.run_llm(["upgrade", v["IMAGE"]], f"now running {v['IMAGE']}")
@@ -2219,7 +2322,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                     self.probe_caps()
             else:
                 self.run_llm(["use", act], f"{act} restarted with the new settings")
-        self.push_screen(Confirm(msg, "Apply"), cb)
+        self.push_screen(Confirm(msg, "Restart now", cancel="Later", danger=False), cb)
 
     @on(Button.Pressed, "#set-update-check")
     def settings_check_updates(self) -> None:
@@ -2241,7 +2344,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
     @on(Button.Pressed, "#set-revert")
     def settings_revert(self) -> None:
         self.load_settings_form()
-        self.notify("reverted to the saved settings")
+        self.notify("changes discarded")
 
     @on(Button.Pressed, "#set-hf-show")
     def settings_toggle_token(self) -> None:
@@ -2251,8 +2354,8 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
 
     @on(Button.Pressed, "#set-key-gen")
     def settings_gen_key(self) -> None:
-        self.query_one("#set-key", Input).value = "sk-gb10-" + secrets.token_hex(16)
-        self.notify("new key generated: Save & apply to use it, then update your clients")
+        self.query_one("#set-key", Input).value = "sk-l9s-" + secrets.token_hex(16)
+        self.notify("new key generated: Save to use it, then update your clients")
 
     @on(Button.Pressed, "#set-key-copy")
     def settings_copy_key(self) -> None:
@@ -2305,7 +2408,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                                                    for _, n, d in rel[:6])]
             if newest[1] != cur:
                 lines.append(f"[cyan]newer release available: set the image to [b]{repo}:{newest[1]}[/b] and "
-                             "Save & apply[/cyan]")
+                             "Save[/cyan]")
             else:
                 lines.append("[green]✓ you're on the newest release[/green]")
             self.call_from_thread(info.update, "\n".join(lines))

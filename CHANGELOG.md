@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+- Settings: one Save button in a bar pinned to the bottom (always visible; `ctrl+s` works too) instead of Save / Save & apply. Each change is applied the way it needs: HF token and update mode at once, port / API key / prompt logging by restarting the request proxy, and memory / vLLM image / (vLLM) API key by restarting the model server, which Save asks about first ("Restart now / Later"; Later keeps a Restart server button in the bar).
+- Leaving Settings or quitting with unsaved changes asks: Save / Discard / Keep editing. Unsaved edits are no longer wiped when you switch views.
+- Settings fields are compact single-line inputs aligned with their buttons.
+- Dialog buttons (serve, confirmations) stay visible while their content scrolls; Hub buttons fit narrow terminals.
+- Generated API keys use the `sk-l9s-` prefix.
+
 ## 0.2.2
 - Hub: all columns fit beside the detail panel (long repo ids shortened, org first; relative "updated" ages; ✓ column for downloaded models).
 - Fresh screenshots.

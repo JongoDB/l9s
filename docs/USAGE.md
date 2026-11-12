@@ -219,7 +219,7 @@ GPU_ARGS="--gpus all"        # how Docker gets the GPUs (AMD: --device=/dev/kfd 
 GPU_MEM=0.85                 # fraction of GPU memory vLLM may use (per GPU)
 CONTAINER=l9s
 ```
-Edit it in the TUI's Settings tab (Save & apply restarts what needs restarting), or by hand and then `l9s use <profile>`.
+Edit it in the TUI's Settings tab (Save applies each change and asks before restarting the model server), or by hand and then `l9s use <profile>`.
 
 ## Using it from clients
 
