@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.4
+- Model switching is first come, first served: once a request is waiting to switch models, later requests queue behind it instead of keeping the old model busy (which could hold a switch off for up to 15 minutes).
+- A client that disconnects while queued no longer triggers a switch (unless that switch is already under way).
+
 ## 0.3.3
 - Server view: Test / Restart / Stop / Start sit right under the summary (always visible, even in a small terminal); the log's own controls (Clear log, filters) sit directly above the log.
 

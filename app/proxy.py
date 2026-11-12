@@ -297,6 +297,7 @@ def models_list() -> dict:
 
 _switch_lock = asyncio.Lock()
 switching: dict = {}  # {"to": name, "since": t} while a switch runs
+pending: dict = {}  # request id -> model it's waiting to switch to (queued switches, first come first served)
 SWITCH_WAIT = 900  # seconds a request waits for other requests to drain before switching
 
 
@@ -315,15 +316,17 @@ def resolve(model: str) -> tuple[str, str | None] | None:
 
 
 def needs_switch(model: str) -> bool:
+    """True if this request must go through the switch queue: its model isn't loaded, a switch is running, or an
+    earlier request is already waiting to switch to another model (it goes first, so it can't be starved)."""
     r = resolve(model)
-    return bool(r) and (r[0] != active_model()[0] or bool(switching))
+    return bool(r) and (r[0] != active_model()[0] or bool(switching) or any(t != r[0] for t in pending.values()))
 
 
 async def ensure_model(name: str, new_repo: str | None = None, me: str | None = None) -> dict | None:
     """Make `name` the loaded model, like Ollama: wait for running requests on the current model to finish,
     switch (creating a profile with the recommended settings for a downloaded model), and return None once it
     serves; or an OpenAI-style error body."""
-    if name == active_model()[0] and not switching:
+    if name == active_model()[0] and not switching and not any(t != name for t in pending.values()):
         return None
     if load_env().get("MODEL_SWITCH", "auto") == "off":
         act = active_model()[0]
@@ -331,7 +334,16 @@ async def ensure_model(name: str, new_repo: str | None = None, me: str | None = 
             "message": f"`{name}` isn't loaded: the server is running `{act or 'nothing'}`. Switch with "
                        f"`l9s use {name}` or in the l9s TUI (automatic switching is off: MODEL_SWITCH=off).",
             "type": "model_not_loaded", "code": 409}}
-    async with _switch_lock:
+    if me:
+        pending[me] = name
+    try:
+        return await _switch(name, new_repo, me)
+    finally:
+        pending.pop(me, None)
+
+
+async def _switch(name: str, new_repo: str | None, me: str | None) -> dict | None:
+    async with _switch_lock:  # FIFO: requests switch in the order they asked
         act = active_model()[0]
         if name == act:
             return None
@@ -606,12 +618,33 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                             pre = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream",
                                                                           "Cache-Control": "no-cache"})
                             await pre.prepare(request)
-                            while not task.done():
+                        gone, last_ka = False, 0.0
+                        while not task.done():
+                            tr = request.transport
+                            if tr is None or tr.is_closing():
+                                gone = True
+                            elif pre is not None and time.time() - last_ka >= 5:
+                                last_ka = time.time()
                                 est = load_times().get(name)
-                                await pre.write((f": l9s is loading {name}" + (f" (usually ~{human_secs(est)})" if est else "")
-                                                 + f", {time.time() - rec['start']:.0f}s so far…\n\n").encode())
-                                await asyncio.wait([task], timeout=5)
-                        err = await task
+                                try:
+                                    await pre.write((f": l9s is loading {name}"
+                                                     + (f" (usually ~{human_secs(est)})" if est else "")
+                                                     + f", {time.time() - rec['start']:.0f}s so far…\n\n").encode())
+                                except (ConnectionResetError, RuntimeError):
+                                    gone = True
+                            if gone:
+                                # the client gave up while queued: drop its switch, unless it's already under way
+                                # (stopping a half-done switch would leave no model loaded)
+                                if switching.get("to") != name:
+                                    task.cancel()
+                                    event("switch", f"a client waiting for {name} disconnected: its switch was "
+                                                    f"dropped", profile=name)
+                                active.pop(rec["id"], None)
+                                rec["status"], rec["error"] = 499, f"client disconnected while waiting for {name}"
+                                finish(rec, "cancelled")
+                                return pre or web.Response(status=499)
+                            await asyncio.wait([task], timeout=1)
+                        err = task.result()
                         rec.pop("_waiting", None)
                         if err:
                             active.pop(rec["id"], None)

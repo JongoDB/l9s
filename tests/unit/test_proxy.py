@@ -333,3 +333,55 @@ def test_models_carry_load_time_and_limits(stack):
     assert data["mymodel"]["max_output_tokens"] == 100  # from the profile's --max-tokens
     h = admin(px, "/_l9s/health")
     assert h["switching"] is None and h["waiting"] == 0
+
+
+def test_queued_switch_is_not_starved_by_new_requests(stack):
+    """A asks for the loaded model and runs long; B asks for another model (waits for A); C asks for the loaded
+    model after B: C must queue behind B's switch (then switch back), not jump the queue."""
+    import threading
+    px, _ = stack
+    env_set(MODEL_SWITCH="auto")
+    order, t0 = [], time.time()
+
+    def run(tag, model, stream, n):
+        try:
+            resp = call(px, "/v1/chat/completions", chat_body(model, stream=stream, max_tokens=n))
+            for _ in resp:
+                pass
+        finally:
+            order.append((tag, round(time.time() - t0, 2)))
+    a = threading.Thread(target=run, args=("A", "mymodel", True, 60))  # ~1.2 s of streaming
+    a.start()
+    time.sleep(0.3)
+    b = threading.Thread(target=run, args=("B", "other", False, 3))
+    b.start()
+    time.sleep(0.3)
+    c = threading.Thread(target=run, args=("C", "mymodel", False, 3))
+    c.start()
+    for t in (a, b, c):
+        t.join(30)
+    assert [x for x, _ in order] == ["A", "B", "C"], order
+    assert active_name() == "mymodel"
+    ev = [e["detail"] for e in admin(px, "/_l9s/events")["events"] if e["kind"] == "switch"]
+    assert ev[-4:] == [d for d in ev[-4:]] and any("loading other" in d for d in ev[-4:]) \
+        and any("loading mymodel" in d for d in ev[-4:])
+
+
+def test_client_that_gives_up_while_queued_does_not_switch(stack):
+    import threading
+    px, _ = stack
+    env_set(MODEL_SWITCH="auto")
+    a = threading.Thread(target=lambda: list(call(px, "/v1/chat/completions", chat_body("mymodel", stream=True,
+                                                                                        max_tokens=100))))
+    a.start()
+    time.sleep(0.3)
+    req = urllib.request.Request(f"http://127.0.0.1:{px}/v1/chat/completions",
+                                 json.dumps(chat_body("other")).encode(),
+                                 {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
+    with pytest.raises(Exception):
+        urllib.request.urlopen(req, timeout=0.6)  # gives up while A is still running
+    a.join(30)
+    time.sleep(1)
+    assert active_name() == "mymodel"  # nobody wants `other` any more: no switch happened
+    ev = [e["detail"] for e in admin(px, "/_l9s/events")["events"] if e["kind"] == "switch"]
+    assert "disconnected" in ev[-1] and "dropped" in ev[-1]
