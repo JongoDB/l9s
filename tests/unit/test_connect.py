@@ -146,7 +146,7 @@ def test_config_tools_list_the_follow_id_first(cx):
     connect, home = cx
     connect.apply(connect.tool("qwen"), FOLLOW)
     entries = json.loads((home / ".qwen/settings.json").read_text())["modelProviders"]["openai"]
-    assert [e["id"] for e in entries][0] == "l9s" and "whatever l9s has loaded" in entries[0]["name"]
+    assert [e["id"] for e in entries][0] == "l9s" and "follows whatever is loaded" in entries[0]["name"]
 
 
 def test_claude_model_picker_lists_only_l9s_models(cx):
@@ -161,3 +161,23 @@ def test_claude_model_picker_lists_only_l9s_models(cx):
     assert rows[1]["description"].startswith("Loaded now") and "~2 min" in rows[2]["description"]
     assert p.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "l9s" and p.env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "l9s"
     assert p.env["ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"] == "l9s (l9s)"
+
+
+def test_opencode_refresh_drops_models_that_are_gone(cx):
+    connect, home = cx
+    t = connect.tool("opencode")
+    connect.apply(t, FOLLOW)
+    connect.apply(t, dict(FOLLOW, models=FOLLOW["models"][:2]))
+    cfg = json.loads((home / ".config/opencode/opencode.json").read_text())
+    assert list(cfg["provider"]["l9s"]["models"]) == ["l9s", "nemotron-3-super"]
+    assert cfg["provider"]["l9s"]["models"]["nemotron-3-super"]["name"] == "nemotron-3-super"  # no "(l9s)" suffix
+
+
+def test_claude_prompt_is_cache_friendly_and_lean_on_small_context(cx):
+    connect, _ = cx
+    big = connect.tool("claude").plan(FOLLOW)
+    assert big.env["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+    assert big.argv[big.argv.index("--disallowedTools") + 1] == "WebSearch"
+    small = dict(FOLLOW, models=[dict(m, context_window=40960) for m in FOLLOW["models"]])
+    drop = connect.tool("claude").plan(small).argv
+    assert "Monitor" in drop[drop.index("--disallowedTools") + 1]

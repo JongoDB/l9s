@@ -134,7 +134,77 @@ def fetch_meta(repo: str, api, token: str | None = None) -> dict:
         ct = meta["tokenizer_config"].get("chat_template")
         meta["chat_template"] = ct if isinstance(ct, str) else json.dumps(ct) if ct else None
     meta["readme"] = text("README.md") or ""
+    meta["drafters"] = find_drafters(repo, meta.get("base_models") or [], meta["readme"], api) if info is not None \
+        else card_drafters(meta["readme"])
     return meta
+
+
+DRAFTER_RE = re.compile(r"dflash|eagle|speculator|[-_]draft(er)?\b", re.I)
+REPO_RE = re.compile(r"(?<![\w./-])([A-Za-z0-9][\w.-]*/[\w.-]*[A-Za-z0-9])(?![\w/-])")
+
+
+def card_drafters(readme: str) -> list[str]:
+    """Drafter repos a model card mentions (e.g. 'pairs with z-lab/Qwen3.6-35B-A3B-DFlash')."""
+    out = []
+    for m in REPO_RE.finditer(readme or ""):
+        r = m.group(1).rstrip(".")
+        if DRAFTER_RE.search(r.split("/")[-1]) and r not in out and not r.startswith(("http", "www.")):
+            out.append(r)
+    return out
+
+
+TRUSTED_DRAFTERS = {"z-lab", "redhatai", "nvidia", "yuhuili", "angelslim", "qwen", "meta-llama", "deepseek-ai",
+                    "mistralai", "google", "lmsys", "sglang"}
+
+
+def drafter_trusted(repo: str, readme: str = "") -> bool:
+    """Turned on automatically only if the model card names it or a known publisher made it."""
+    return repo in card_drafters(readme) or repo.split("/")[0].lower() in TRUSTED_DRAFTERS
+
+
+def drafter_rank(repo: str) -> int:
+    n = repo.lower()
+    return 0 if "dflash" in n else 1 if "eagle3" in n or "eagle-3" in n else 2 if "eagle" in n else 3
+
+
+def find_drafters(repo: str, base_models: list[str], readme: str, api) -> list[str]:
+    """Speculative-decoding drafters for this model: ones its card names, then DFlash / EAGLE drafters on the Hub
+    trained for it or for its base model (a fine-tune or quant keeps the base model's token distribution well
+    enough for a drafter to help)."""
+    found = card_drafters(readme)
+    names = []
+    for r in [repo] + list(base_models):
+        b = r.split("/")[-1]
+        b = re.sub(r"[-_.](nvfp4|fp8|awq|gptq|int4|int8|w4a16|w8a8|bf16|mlx|\d+bit|gguf).*$", "", b, flags=re.I)
+        if b and b not in names:
+            names.append(b)
+    for b in names[:3]:
+        try:
+            hits = api.list_models(search=b, limit=1000)
+        except Exception:  # noqa: BLE001  offline: card mentions only
+            continue
+        for h in hits:
+            rid = getattr(h, "id", None) or getattr(h, "modelId", "")
+            tail = rid.split("/")[-1].lower()
+            if rid not in found and DRAFTER_RE.search(tail) and b.lower() in tail:
+                found.append(rid)
+    card = card_drafters(readme)
+    # the card's own drafter first, then known publishers, then DFlash > EAGLE3 > EAGLE, then the closest name
+    return sorted(found, key=lambda r: (r not in card, r.split("/")[0].lower() not in TRUSTED_DRAFTERS,
+                                        drafter_rank(r), not r.split("/")[-1].lower().startswith(names[0].lower())
+                                        if names else 0))
+
+
+def drafter_spec(repo: str, card_n: int | None = None) -> dict | None:
+    """--speculative-config for a drafter repo (vLLM method from its name)."""
+    n = repo.lower()
+    if "dflash" in n:
+        return {"method": "dflash", "model": repo, "num_speculative_tokens": card_n or 8}
+    if "eagle3" in n or "eagle-3" in n:
+        return {"method": "eagle3", "model": repo, "num_speculative_tokens": card_n or 3}
+    if "eagle" in n:
+        return {"method": "eagle", "model": repo, "num_speculative_tokens": card_n or 3}
+    return None
 
 
 # ======================================================================= helpers
@@ -535,7 +605,7 @@ def parse_command(cmd: dict, caps: dict | None) -> dict:
 
 
 def sanitize(pairs: list[tuple[str, str | None]], caps: dict | None, fit_ctx: int | None,
-             tp: int = 1) -> tuple[list, list]:
+             tp: int = 1, drafters: list[str] | None = None) -> tuple[list, list]:
     """Keep only flags this server accepts and that make sense on this box. Returns (kept pairs, notes)."""
     kept, notes = [], []
     flags_caps = (caps or {}).get("flags")
@@ -575,9 +645,18 @@ def sanitize(pairs: list[tuple[str, str | None]], caps: dict | None, fit_ctx: in
                 spec = {}
             m = str(spec.get("model") or "")
             if m.startswith(("/", "./", "~", "$")):
-                notes.append(("drop", f"--speculative-config: drafter at {m} is a path on the author's machine "
-                                      "(pull the drafter repo and edit the flag to use its repo id)"))
-                continue
+                method = str(spec.get("method") or "")
+                match = next((d for d in (drafters or []) if not method or method.lower().rstrip("3") in d.lower()),
+                             None)
+                if not match:
+                    notes.append(("drop", f"--speculative-config: drafter at {m} is a path on the author's machine "
+                                          "(pull the drafter repo and edit the flag to use its repo id)"))
+                    continue
+                spec["model"] = match
+                v = json.dumps(spec, separators=(",", ":"))
+                notes.append(("change", f"--speculative-config: drafter path {m} → {match} (the drafter the card "
+                                        "names; vLLM downloads it on first start)"))
+                m = ""
             if m:
                 notes.append(("warn", f"speculative decoding uses drafter model {m}; vLLM downloads it on first start"))
         if f == "--quantization" and quant_ok and v not in quant_ok:
@@ -762,7 +841,7 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
     cmds = []
     for c in extract_card_commands(meta.get("readme", ""), backend):
         p = parse_command(c, caps)
-        kept, notes = sanitize(p["pairs"], caps, ctx, tp)
+        kept, notes = sanitize(p["pairs"], caps, ctx, tp, meta.get("drafters"))
         env = {k: v for k, v in p["env"].items() if k not in DROP_ENV and not v.startswith("$")}
         for k in p["env"]:
             if k in DROP_ENV or p["env"][k].startswith("$"):
@@ -774,6 +853,8 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
         cmds.append(p)
     cmds.sort(key=lambda c: -c["score"])
     A["card_commands"] = cmds
+    A["drafters"] = meta.get("drafters") or []
+    A["readme"] = meta.get("readme", "")
     A["presets"] = build_presets_mlx(A, caps) if backend == "mlx" else build_presets(A, caps)
     A["verdict"] = "blocked" if A["blockers"] else ("warn" if A["warnings"] else "ok")
     return A
@@ -799,6 +880,19 @@ def build_presets(A: dict, caps: dict | None) -> list[dict]:
         computed["--reasoning-parser"] = (A["parsers"]["reasoning"], A["parsers"]["family"] + "; template has thinking")
     if A["layout"]["linear_layers"]:
         computed["--max-num-seqs"] = ("16", "hybrid model: per-sequence state; vLLM's default 256 can fail to start")
+    card_n = re.search(r"num_speculative_tokens\W{0,4}(\d+)", A.get("readme", ""))
+    usable = [d for d in A.get("drafters") or [] if drafter_spec(d)]
+    spec = next((drafter_spec(d, int(card_n.group(1)) if card_n and d in card_drafters(A.get("readme", "")) else None)
+                 for d in usable if drafter_trusted(d, A.get("readme", ""))), None)
+    if not spec and usable:
+        A["warnings"].append(f"a speculative-decoding drafter exists ({usable[0]}), from a publisher l9s doesn't "
+                             f"know: add --speculative-config '{json.dumps(drafter_spec(usable[0]))}' to try it")
+    if spec:
+        computed["--speculative-config"] = (json.dumps(spec, separators=(",", ":")),
+                                            f"{spec['method']} drafter {spec['model']}: typically 1.5-2.5x faster "
+                                            "generation for one user (measured 2.5x for Qwen3.6-35B on a GB10)")
+        if spec["method"] == "dflash":
+            computed["--max-num-batched-tokens"] = ("16384", "DFlash needs an explicit token budget to start")
     presets = []
     best = next((c for c in A["card_commands"] if c["score"] >= 0), None)
     if best:

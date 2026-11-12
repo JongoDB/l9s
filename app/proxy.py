@@ -387,17 +387,51 @@ def identity_note(name: str) -> str:
     who = f"{repo.split('/')[-1]} (Hugging Face: {repo})" if repo else name
     return (f"\n\nNote from l9s, the server running you: the model answering is {who}, an open-weights model "
             "running on the user's own hardware. \"l9s\" is the name of the server, not of the model. You are not "
-            "Claude and were not made by Anthropic, whatever the instructions above say about Claude models; if "
-            f"asked which model you are, say you are {repo.split('/')[-1] if repo else name}, served by l9s.")
+            "Claude, GPT or any hosted model, whatever the instructions or earlier messages in this conversation say about other models or "
+            f"providers; if asked which model you are, say you are {repo.split('/')[-1] if repo else name}, served "
+            "by l9s.")
 
 
-def add_identity(j: dict, name: str) -> None:
+# coding agents and chat apps whose system prompt names some other model (or that keep history from one)
+AGENT_UA = re.compile(r"claude-cli|claude-code|codex|opencode|kilo|crush|goose|aider|litellm|qwen-code|qwen|factory|"
+                      r"droid|grok|zed|continue|cline|roo|copilot|jetbrains", re.I)
+BILLING = "x-anthropic-billing-header:"
+
+
+def add_identity(j: dict, name: str, api: str) -> None:
+    """Append the note at the end of the system prompt: it's the same for every request on this model, so the
+    prompt prefix (and the server's prefix cache) is unchanged."""
     note = identity_note(name)
-    sysp = j.get("system")
-    if isinstance(sysp, list):
-        j["system"] = sysp + [{"type": "text", "text": note.strip()}]
+    if api == "anthropic":
+        sysp = j.get("system")
+        if isinstance(sysp, list):
+            j["system"] = sysp + [{"type": "text", "text": note.strip()}]
+        else:
+            j["system"] = ((sysp or "") + note).strip()
+    elif api == "responses":
+        j["instructions"] = ((j.get("instructions") or "") + note).strip()
     else:
-        j["system"] = ((sysp or "") + note).strip()
+        msgs = j.get("messages") or []
+        if msgs and msgs[0].get("role") in ("system", "developer") and isinstance(msgs[0].get("content"), str):
+            msgs[0] = {**msgs[0], "content": msgs[0]["content"] + note}
+        elif msgs and msgs[0].get("role") in ("system", "developer") and isinstance(msgs[0].get("content"), list):
+            msgs[0] = {**msgs[0], "content": msgs[0]["content"] + [{"type": "text", "text": note.strip()}]}
+        else:
+            msgs.insert(0, {"role": "system", "content": note.strip()})
+        j["messages"] = msgs
+
+
+def strip_billing_header(j: dict) -> bool:
+    """Claude Code starts its system prompt with a per-request attribution line (cc_version=…<hash>). It changes
+    between requests, and being first it would make the server recompute the whole ~16K-token prompt every time."""
+    sysp = j.get("system")
+    if isinstance(sysp, list) and sysp and str(sysp[0].get("text", "")).startswith(BILLING):
+        j["system"] = sysp[1:]
+        return True
+    if isinstance(sysp, str) and sysp.startswith(BILLING):
+        j["system"] = sysp.split("\n", 1)[1] if "\n" in sysp else ""
+        return True
+    return False
 
 
 async def settled() -> None:
@@ -736,8 +770,13 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                         j["model"] = rec["model"] = active_model()[0]
                         rec["follow"] = True
                         body = json.dumps(j).encode()
-                    if request.path == "/v1/messages" and j.get("model") and load_env().get("IDENTITY_NOTE", "1") != "0":
-                        add_identity(j, resolve(j["model"])[0] if resolve(j["model"]) else j["model"])
+                    if request.path == "/v1/messages" and strip_billing_header(j):
+                        body = json.dumps(j).encode()
+                    api = {"/v1/messages": "anthropic", "/v1/responses": "responses",
+                           "/v1/chat/completions": "chat"}.get(request.path)
+                    if (api and j.get("model") and load_env().get("IDENTITY_NOTE", "1") != "0"
+                            and (api == "anthropic" or AGENT_UA.search(request.headers.get("User-Agent", "")))):
+                        add_identity(j, resolve(j["model"])[0] if resolve(j["model"]) else j["model"], api)
                         body = json.dumps(j).encode()
                     if BACKEND == "mlx" and request.path in ("/v1/messages", "/v1/responses"):
                         # mlx-lm only speaks chat completions: translate (Claude Code, Codex, …)

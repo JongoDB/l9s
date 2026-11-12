@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+- Speculative decoding by default: serving a model finds its drafter (named on the model card, or a DFlash / EAGLE drafter on the Hub from a known publisher) and adds `--speculative-config`. A card's author-local drafter path is replaced by the repo it names. Measured on a GB10 with Qwen3.6-35B-A3B NVFP4 + DFlash: 2.5x faster for one stream (42 → 108 tokens/s), 1.45x aggregate at 8 streams.
+- Prefix caching works for Claude Code: its per-request attribution line at the top of the prompt is turned off by `l9s claude` and stripped by the proxy (up to 99% of each prompt reused instead of ~78–90%).
+- `l9s claude` turns off WebSearch (it runs on Anthropic's servers) and, on models with less than 100K of context, the scheduling / worktree / team tools: the prompt shrinks from ~16K to ~6K tokens, so Claude Code works on a 40K model instead of compacting over and over.
+- The "which model am I" note now reaches every coding agent (OpenCode, Codex, Crush, …) on every API, and tells the model to ignore earlier messages from other models (OpenCode sessions that started on another model kept repeating its name).
+- OpenCode, Kilo, Grok, Crush, Zed: model names without the redundant "(l9s)" (they're already under the l9s provider); refreshing OpenCode / Kilo config now drops models that are gone.
+
 ## 0.4.1
 - `l9s claude`: `/model` lists your l9s models instead of Claude's lineup (no more "Custom Opus/Sonnet/Haiku model" rows or a Fable row). Each row says whether the model is loaded and how long it takes to load. Every tier, background tasks included, stays on the session's model.
 - Claude Code requests get one line telling the model which model it really is, so it no longer claims to be Claude (`IDENTITY_NOTE=0` turns this off).

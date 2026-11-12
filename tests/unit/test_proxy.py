@@ -446,3 +446,27 @@ def test_anthropic_requests_are_told_which_model_answers(stack):
     system = sent["messages"][0]["content"]
     assert system.startswith("You are Claude") and "model answering is model (Hugging Face: org/model)" in system
     assert "not Claude" in system
+
+
+def test_claude_code_billing_header_is_stripped(stack):
+    px, up = stack
+    call(px, "/v1/messages", {"model": "l9s", "max_tokens": 4, "system": [
+        {"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.322.340; cc_entrypoint=cli;"},
+        {"type": "text", "text": "You are a coding agent."}],
+        "messages": [{"role": "user", "content": "hi"}]}).read()
+    system = json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]["messages"][0]["content"]
+    assert "billing-header" not in system and system.startswith("You are a coding agent.")
+
+
+def test_agents_on_chat_completions_get_the_identity_note(stack):
+    px, up = stack
+
+    def sent(ua):
+        req = urllib.request.Request(f"http://127.0.0.1:{px}/v1/chat/completions", json.dumps(chat_body("l9s")).encode(),
+                                     {"Authorization": f"Bearer {KEY}", "Content-Type": "application/json",
+                                      "User-Agent": ua})
+        urllib.request.urlopen(req).read()
+        return json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]["messages"]
+    m = sent("opencode/latest/2.2.7/desktop")
+    assert m[0]["role"] == "system" and "earlier messages" in m[0]["content"] and m[-1]["content"]
+    assert not any("Note from l9s" in str(x.get("content")) for x in sent("my-app/1.0"))  # plain apps untouched

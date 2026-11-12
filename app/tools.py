@@ -54,10 +54,14 @@ def v1(info: dict) -> str:
     return info["base"] + "/v1"
 
 
+def name(m: dict) -> str:
+    """Model name for pickers that already group models under an `l9s` provider."""
+    return "l9s: follows whatever is loaded" if m.get("follows") else m["id"]
+
+
 def label(m: dict) -> str:
-    if m.get("follows"):
-        return f"{m['id']}: whatever l9s has loaded {TAG}"
-    return f"{m['id']} {TAG}"
+    """Model name for flat lists (tagged, so l9s can find its own entries again)."""
+    return f"{name(m)} {TAG}"
 
 
 def comment_fallback(plan: Plan, path: Path, snippet: str, where: str) -> Plan:
@@ -95,6 +99,15 @@ def claude_picker(info: dict) -> dict:
     return {"modelPicker": {"replaceBuiltInOptions": True, "options": rows}}
 
 
+# WebSearch is run by Anthropic's servers: a local model can't use it
+CLAUDE_NEVER = ["WebSearch"]
+# Claude Code's prompt is ~16K tokens, mostly tool descriptions. On a small context window these leave no room to
+# work (it compacts over and over), so the scheduling / worktree / team tools go and the coding tools stay.
+CLAUDE_LEAN_DROP = ["CronCreate", "CronDelete", "CronList", "EnterWorktree", "ExitWorktree", "ListAgents", "Monitor",
+                    "ScheduleWakeup", "SendMessage", "Workflow", "ReportFindings", "TaskStop"]
+LEAN_BELOW = 100_000
+
+
 def claude(info: dict) -> Plan:
     m = cur(info)
     mid = m["id"]
@@ -103,7 +116,11 @@ def claude(info: dict) -> Plan:
            "ANTHROPIC_MODEL": mid, "CLAUDE_CODE_SUBAGENT_MODEL": mid,
            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(out(m)),
            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(ctx(m)),  # its real window, so Claude Code compacts in time
-           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"}
+           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+           # a per-request line at the top of the prompt: off, so the server's prefix cache can reuse the prompt
+           "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}
+    lean = ctx(m) < LEAN_BELOW
+    drop = CLAUDE_NEVER + (CLAUDE_LEAN_DROP if lean else [])
     # background tasks (titles, summaries) run on the Haiku tier etc.: keep every tier on the same model, so they
     # never ask the server to switch
     for tier in ("OPUS", "SONNET", "HAIKU", "FABLE"):
@@ -111,9 +128,10 @@ def claude(info: dict) -> Plan:
         env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_NAME"] = name
         env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_DESCRIPTION"] = "your l9s server"
     settings = json.dumps(claude_picker(info), separators=(",", ":"))
-    return Plan(env=env, argv=["claude", "--settings", settings],
+    argv = ["claude", "--settings", settings, "--disallowedTools", ",".join(drop)]
+    return Plan(env=env, argv=argv,
                 snippet="\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
-                        + f"\nclaude --settings {shlex.quote(settings)}",
+                        + "\n" + shlex.join(argv),
                 use="l9s claude    (follows the model you load in l9s; pin one: l9s claude -m <model>)",
                 notes=["Nothing is written: your normal `claude` keeps using your Anthropic account.",
                        ("Follows l9s: switch models in l9s and the session uses the new one on its next message. "
@@ -121,7 +139,10 @@ def claude(info: dict) -> Plan:
                        if follows(info) else f"Pinned to {mid}: if another model is loaded, its requests switch back.",
                        "/model lists only your l9s models (the Claude ones are hidden). Picking one that isn't "
                        "loaded loads it: the next reply waits for that (see Connect for how long each took).",
-                       "Background and sub-agent tasks use the same l9s model."])
+                       "Background and sub-agent tasks use the same l9s model.",
+                       "Web search is off (it runs on Anthropic's servers); WebFetch works."
+                       + (f" With {ctx(m) // 1024}K of context, the scheduling, worktree and team tools are off too, "
+                          "so the prompt leaves room to work." if lean else "")])
 
 
 # ------------------------------------------------------------------ Codex CLI (Responses API)
@@ -148,7 +169,7 @@ def codex_args(info: dict, model: str | None) -> list[str]:
 
 # ------------------------------------------------------------------ OpenCode / Kilo (OpenCode-style providers)
 def _oc_models(info: dict) -> dict:
-    return {m["id"]: {"name": label(m), "tool_call": True, "limit": {"context": ctx(m), "output": out(m)}}
+    return {m["id"]: {"name": name(m), "tool_call": True, "limit": {"context": ctx(m), "output": out(m)}}
             for m in models(info)}
 
 
@@ -182,7 +203,7 @@ def grok(info: dict) -> Plan:
     block = (f"[model_providers.{MARK}]\nbase_url = {toml_str(v1(info))}\napi_backend = \"chat_completions\"\n")
     for m in models(info):
         block += (f"\n[model.{toml_str(m['id'])}]\nmodel = {toml_str(m['id'])}\nmodel_provider = \"{MARK}\"\n"
-                  f"name = {toml_str(label(m))}\nenv_key = \"L9S_API_KEY\"\ncontext_window = {ctx(m)}\n"
+                  f"name = {toml_str(name(m))}\nenv_key = \"L9S_API_KEY\"\ncontext_window = {ctx(m)}\n"
                   f"max_completion_tokens = {out(m)}\n")
     return Plan(changes=[Change(HOME / ".grok" / "config.toml", "block", block)],
                 env={"L9S_API_KEY": info["key"]}, argv=["grok", "-m", active_model(info)],
@@ -241,7 +262,7 @@ def continue_(info: dict) -> Plan:
 # ------------------------------------------------------------------ Zed
 def zed(info: dict) -> Plan:
     prov = {"api_url": v1(info), "available_models": [
-        {"name": m["id"], "display_name": label(m), "max_tokens": ctx(m), "max_output_tokens": out(m),
+        {"name": m["id"], "display_name": name(m), "max_tokens": ctx(m), "max_output_tokens": out(m),
          "capabilities": {"tools": True, "images": False, "parallel_tool_calls": False, "prompt_cache_key": False}}
         for m in models(info)]}
     path = XDG / "zed" / "settings.json"

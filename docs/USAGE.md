@@ -218,7 +218,7 @@ PORT=8000                    # public endpoint (l9s-proxy)
 BACKEND_PORT=8001            # model server, localhost only
 LOG_PROMPTS=1                # keep short prompt/response previews in the request log
 MODEL_SWITCH=auto            # auto: a request for another model loads it (like Ollama) · off: it gets an error
-IDENTITY_NOTE=1              # Anthropic-API requests (Claude Code) get one line telling the model which model it really is
+IDENTITY_NOTE=1              # coding agents (Claude Code, OpenCode, Codex, …) get one line telling the model which model it really is
 UPDATE_MODE=notify           # notify | auto | off
 # vllm only
 IMAGE=vllm/vllm-openai:v0.33.0
@@ -320,6 +320,22 @@ ago"), and `l9s use` prints the same.
 so the model doesn't claim to be Claude. Turn it off with `IDENTITY_NOTE=0`. `l9s claude` also replaces Claude
 Code's `/model` list with your l9s models: `l9s (follow l9s)`, then each model with whether it's loaded and how long
 it takes to load.
+
+### Speed: what l9s does for you
+
+- **Prefix caching stays effective.** Coding agents resend a ~16K-token prompt (instructions + tool descriptions) on
+  every turn; vLLM reuses it from its prefix cache (90–99% of each request on a GB10, ~0.2 s to first token). Claude
+  Code puts a per-request line at the very top of its prompt, which would defeat that: `l9s claude` turns it off and
+  the proxy strips it for any Claude Code. The identity note goes at the end of the system prompt, so it never moves
+  the prefix.
+- **Speculative decoding is set up for you.** When you serve a model, l9s looks for a drafter: the one the model
+  card names (a card's `"model": "/drafter"` path becomes the repo it names), else a DFlash / EAGLE drafter on the Hub
+  made for the model or its base model. It's turned on only if the card names it or a known publisher made it
+  (z-lab, Red Hat, NVIDIA, the EAGLE authors, …); otherwise the analysis suggests it. Measured on a GB10 with
+  Qwen3.6-35B-A3B NVFP4 + `z-lab/Qwen3.6-35B-A3B-DFlash`: one stream 42 → 108 tokens/s, 8 streams 203 → 294 tokens/s.
+- **Claude Code fits small models.** WebSearch is off (it runs on Anthropic's servers). With less than 100K of context,
+  the scheduling / worktree / team tools are off too: Claude Code's prompt drops from ~16K to ~6K tokens, so a 40K
+  model can work instead of compacting over and over.
 
 ## Upgrading the server
 

@@ -288,11 +288,15 @@ def api_ok(t: Tool, info: dict) -> tuple[bool, str]:
 # ------------------------------------------------------------------ apply / remove
 def _render(ch: Change, current: str | None) -> str:
     if ch.fmt == "json":
-        return json.dumps(deep_merge(json.loads(_strip_jsonc(current)) if current and current.strip() else {},
-                                     ch.add), indent=2) + "\n"
+        base = json.loads(_strip_jsonc(current)) if current and current.strip() else {}
+        for p in ch.remove:  # our previous entries go first, so models that are gone don't linger
+            drop_path(base, tuple(p))
+        return json.dumps(deep_merge(base, ch.add), indent=2) + "\n"
     if ch.fmt == "yaml":
         import yaml
         base = (yaml.safe_load(current) or {}) if current else {}
+        for p in ch.remove:
+            drop_path(base, tuple(p))
         merged = deep_merge(base, ch.add)
         return yaml.safe_dump(merged, sort_keys=False, allow_unicode=True)
     if ch.fmt in ("block", "toml-block"):
