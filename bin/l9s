@@ -53,6 +53,10 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
   upgrade <image:tag>                    (vllm) switch vLLM image
   hw                                     detected hardware and deployment
   key                                    print the API key
+  connect [tool] [--remove|--print]      set up Claude Code, Codex, OpenCode, Cursor, … to use this server
+                                         (no tool: list them; --server <ssh-host>: target another l9s)
+  run <tool> [-m model] [args]           launch a CLI agent against l9s without changing its normal setup
+                                         (shortcuts: l9s claude, l9s codex, l9s opencode, …)
   tui                                    open the terminal UI
   update [--check] [-y]                  check for / install a newer l9s (and mlx-lm on a Mac)
   uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
@@ -150,6 +154,7 @@ run_profile() {
   else vllm_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}; fi
   ln -sfn "$file" "$L9S_HOME/active"
   rm -f "$L9S_HOME/cache/restart-pending"
+  "$PY" "$APP/connect.py" refresh -q >/dev/null 2>&1 || true   # tools whose config lists the models
   wait_ready
 }
 
@@ -279,6 +284,9 @@ case "$cmd" in
       -d "{\"model\":\"$m\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in five words.\"}],\"max_tokens\":512}" \
       | python3 -c 'import sys,json;r=json.load(sys.stdin);print(r["choices"][0]["message"]["content"]);print(r["usage"])' ;;
   key) need_key; echo "$API_KEY" ;;
+  connect) exec "$PY" "$APP/connect.py" "$@" ;;
+  run) exec "$PY" "$APP/connect.py" run "$@" ;;
+  claude|codex|opencode|crush|aider|goose|qwen|grok|droid) exec "$PY" "$APP/connect.py" run "$cmd" "$@" ;;
   hw) "$PY" "$APP/hw.py" ;;
   upgrade)
     [[ "$BACKEND" == "vllm" ]] || die "upgrade is for the vllm deployment (mlx: l9s update brings tested mlx-lm versions)"

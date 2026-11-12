@@ -140,6 +140,42 @@ export OPENAI_API_KEY=<output of: l9s key>
 
 On a remote box, run the TUI over SSH: `ssh -t <host> l9s`.
 
+## Use it with your coding agent
+
+```bash
+l9s claude                    # Claude Code on your local model (your normal `claude` is untouched)
+l9s codex                     # Codex CLI
+l9s connect opencode          # add l9s to OpenCode's config (shows the change, backs up the file, asks first)
+l9s connect                   # every supported tool: installed? connected? how
+```
+
+Or press `8` (or `c`) in the TUI: the **Connect** view lists the tools, shows exactly what each one's setup would
+change, and connects it with `enter`.
+
+![l9s Connect view: coding agents and editors, with the config change for the selected one](docs/img/connect.svg)
+
+| Tool | How l9s sets it up | Checked against l9s |
+|---|---|---|
+| **Claude Code** | `l9s claude`: launches it with the right environment; writes nothing. `/model` lists every l9s model | ✅ vLLM and mlx, with tool calls |
+| **Codex CLI** | adds an `l9s` provider + profile to `~/.codex`; `l9s codex` or `codex --profile l9s` | config from current docs |
+| **OpenCode**, **Crush**, **Grok Build**, **Qwen Code**, **Goose**, **Factory Droid**, **Aider** | adds an `l9s` provider with every model (context and output limits filled in); `l9s run <tool>` launches it | config from current docs |
+| **Kilo Code**, **Continue**, **Zed** | adds an `l9s` provider / models to the editor's config | config from current docs |
+| **Cline**, **GitHub Copilot (VS Code)**, **JetBrains AI** | settings are GUI-only: the exact values to enter, step by step | n/a |
+| **Cursor**, **Amp** | not possible: they send requests from their own cloud, which can't reach your network | n/a |
+
+Every saved profile **and every downloaded model that fits** shows up as a model in these tools. Only one model is
+loaded at a time: asking for another one **loads it on demand, like Ollama**. Requests already running finish
+first, then the server is down while the new model loads (seconds on a Mac, often minutes for a big model on vLLM)
+and every client waits. You always know what you're in for: model pickers show "loads on first use, last load took
+~3 min", the TUI header shows `LOADING → model (1 min of ~3 min, asked by 192.168.1.20)` with a notification, and
+streaming clients get keep-alives so they don't time out. Turn it off in Settings (Model switching) to get an error
+instead.
+
+Claude Code and Codex speak the Anthropic and OpenAI Responses APIs: vLLM serves them natively, and on a Mac the
+proxy translates them to mlx-lm (tool calls included). Your tools on another machine: `l9s connect <tool> --server
+<ssh-host>` there (with l9s installed), or copy the snippet from the Connect view. Configs that list models are
+updated automatically when you add or remove profiles; `l9s connect <tool> --remove` takes l9s back out.
+
 ## CLI
 
 | Command | |
@@ -155,6 +191,8 @@ On a remote box, run the TUI over SSH: `ssh -t <host> l9s`.
 | `l9s ls` · `l9s rm <repo>` | downloaded models / delete weights |
 | `l9s proxy status\|restart\|logs` | the request proxy |
 | `l9s upgrade <image:tag>` | (vllm) switch vLLM version |
+| `l9s connect [tool] [--remove\|--print\|--server host]` | set up Claude Code, Codex, OpenCode, Zed, … to use l9s |
+| `l9s claude` · `l9s codex` · `l9s run <tool> [-m model]` | launch a coding agent on l9s without changing its normal setup |
 | `l9s hw` · `l9s key` | detected hardware / API key |
 | `l9s update [--check] [-y]` | check for / install a newer l9s (and mlx-lm on a Mac) |
 | `l9s uninstall [-y] [--keep-config] [--remove-models] [--remove-image]` | remove l9s |
@@ -179,7 +217,9 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 | `app/hfmeta.py` | model analysis: Hub metadata, memory and KV math, card command extraction and sanitizing, presets |
 | `app/hw.py` | hardware detection: vendor, GPUs, unified vs dedicated memory, Docker GPU flags, live GPU stats |
 | `app/updater.py` | update checks: l9s (GitHub), mlx-lm (PyPI), vLLM releases (Docker Hub); cached daily |
-| `app/proxy.py` | request-tracking reverse proxy ([aiohttp](https://github.com/aio-libs/aiohttp)), API key for mlx, event recorder |
+| `app/proxy.py` | request-tracking reverse proxy ([aiohttp](https://github.com/aio-libs/aiohttp)): API key, model list, on-demand model loading, event recorder |
+| `app/translate.py` | Anthropic Messages and OpenAI Responses ⇄ chat completions, for mlx-lm (tool calls and streaming) |
+| `app/connect.py` · `app/tools.py` | `l9s connect` / `l9s run`: safe config merges (backup, only l9s' own entries) and each tool's setup |
 | `app/vllm_caps.py` / `app/mlx_caps.py` | ask the installed server which flags, architectures, parsers and quant methods it supports |
 | `requirements.in` / `requirements.lock` | allowed ranges / exact pinned versions (`uv pip compile --universal`) |
 | `.github/workflows/` | `ci.yml` (Linux + Apple Silicon MLX), `deps.yml` (weekly lock refresh → release), `release.yml` (tag on `VERSION` change) |

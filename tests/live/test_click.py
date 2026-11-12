@@ -27,7 +27,7 @@ async def main():
         info = str(app.query_one("#hdr-info", Static).render()).split("\n")
         r = next(i for i, l in enumerate(info) if l.startswith("Endpoint")); c = info[r].index("http")
         await pilot.click("#hdr-info", offset=(c + 2, r)); await pilot.pause(0.6)
-        check("click Endpoint opens connect panel", isinstance(app.screen, TextModal) and "Base URL" in app.screen.md); await pilot.press("escape"); await pilot.pause(0.3)
+        check("click Endpoint opens the Connect view", tab() == "connect"); await pilot.press("f1"); await pilot.pause(0.3)
         await pilot.press("4"); await pilot.pause(0.5)
         check("hub opens on results (not search box)", isinstance(app.focused, DataTable) and app.focused.id == "hub-results", app.focused)
         await pilot.press("1"); await pilot.pause(0.4)

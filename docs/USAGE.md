@@ -40,7 +40,8 @@ Press `?` inside for help. The header always shows server state, model, endpoint
 | `4`/`F4` | Hub | `/` to search Hugging Face (enter searches, esc back to the results); full model analysis + model card; pull / pull + serve |
 | `5`/`F5` | Downloads | progress, speed, ETA, logs; keeps running after you quit |
 | `6`/`F6` | **Events** | timeline: container start / exit / OOM, ready, model switches, cancels, error bursts (recorded even when the TUI is closed) |
-| `7`/`F7` | Settings | HF token (with test), API key, GPU_MEM, port, vLLM image (with release check), prompt-preview logging |
+| `7`/`F7` | Settings | HF token (with test), API key, GPU_MEM, port, vLLM image (with release check), model switching, prompt-preview logging, updates |
+| `8`/`F8`, `c` | **Connect** | coding agents and editors: installed? connected? the exact config change; `enter` connects, Remove, Copy for another machine |
 
 k9s-style keys:
 
@@ -213,6 +214,8 @@ HF_TOKEN=                    # for gated models
 PORT=8000                    # public endpoint (l9s-proxy)
 BACKEND_PORT=8001            # model server, localhost only
 LOG_PROMPTS=1                # keep short prompt/response previews in the request log
+MODEL_SWITCH=auto            # auto: a request for another model loads it (like Ollama) · off: it gets an error
+UPDATE_MODE=notify           # notify | auto | off
 # vllm only
 IMAGE=vllm/vllm-openai:v0.33.0
 GPU_ARGS="--gpus all"        # how Docker gets the GPUs (AMD: --device=/dev/kfd --device=/dev/dri ...)
@@ -237,8 +240,65 @@ print(c.chat.completions.create(model="<profile>",
 ```
 
 Most tools take the same env vars: `OPENAI_BASE_URL=http://<host>:8000/v1`, `OPENAI_API_KEY=<key>`.
-Routes: vLLM serves `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/embeddings`
-(embedding models) and `/metrics`; mlx-lm serves `/v1/models`, `/v1/chat/completions` and `/v1/completions`.
+The key is accepted as `Authorization: Bearer` or `x-api-key`.
+
+Routes on both deployments: `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v1/messages` (Anthropic,
+incl. `/count_tokens`) and `/v1/responses` (OpenAI Responses). vLLM serves them natively (plus `/v1/embeddings` for
+embedding models and `/metrics`); on a Mac the proxy translates Messages and Responses to mlx-lm's chat completions,
+including streaming and tool calls.
+
+### Coding agents and editors: `l9s connect`
+
+```bash
+l9s connect                     # list: installed? connected? how
+l9s connect codex               # show the change, back up the file once (<file>.l9s-backup), ask, write
+l9s connect codex --print       # only show it
+l9s connect codex --remove      # take l9s' entries back out (nothing else in the file is touched)
+l9s claude [-m model] [args]    # launch with l9s for this session only (also: l9s codex, opencode, crush, grok,
+                                #   qwen, goose, aider, droid; generic: l9s run <tool>)
+l9s connect --server gb10       # on another machine with l9s: target that server for every connect / launch
+```
+
+What l9s writes is always an addition with its own name (`l9s` provider / profile, models labelled `(l9s)`): your
+defaults stay as they were. JSON files with comments (Zed, Kilo) are never rewritten; you get the snippet to paste.
+Tools on the same machine use `http://127.0.0.1:<port>`; snippets for other machines use the LAN address.
+Configs that list models are rewritten when profiles change (`l9s serve`, `l9s use`, deleting a profile).
+
+| Tool | Writes | Launch |
+|---|---|---|
+| Claude Code | nothing (env for the session: base URL, key, model for every tier, the model's real context window) | `l9s claude` |
+| Codex CLI | `~/.codex/config.toml` (marked `l9s` provider block) + `~/.codex/l9s.config.toml` (profile) | `l9s codex`, `codex --profile l9s` |
+| OpenCode | `~/.config/opencode/opencode.json` → `provider.l9s` | `opencode`, then /models |
+| Crush | `~/.config/crush/crushrc` (marked block) | `crush` |
+| Grok Build | `~/.grok/config.toml` (marked block: provider + one `[model."…"]` per model) | `l9s grok` |
+| Qwen Code | `~/.qwen/settings.json` → `modelProviders.openai` entries | `l9s qwen` |
+| Goose | `~/.config/goose/custom_providers/l9s.json` | `l9s goose` |
+| Aider | `~/.aider.model.metadata.json` (context sizes) | `l9s aider` |
+| Factory Droid | `~/.factory/settings.json` → `customModels` entries | `droid`, then /model |
+| Kilo Code | `~/.config/kilo/kilo.jsonc` → `provider.l9s` | model picker |
+| Continue | `~/.continue/config.yaml` → `models` entries | model dropdown |
+| Zed | `~/.config/zed/settings.json` → `language_models.openai_compatible.l9s` (paste the key once in Zed) | agent panel |
+| Cline, Copilot (VS Code), JetBrains AI | GUI-only: step-by-step values | |
+| Cursor, Amp, Gemini CLI, Windsurf | not possible from a LAN (cloud-routed / Gemini-only / no custom endpoint) | |
+
+### Every model, one at a time (like Ollama)
+
+`/v1/models` lists every saved profile and every fully downloaded model that this server can load and that fits in
+memory (each with `context_window`, `max_output_tokens`, and `load_seconds` once it has been loaded). The loaded one
+answers immediately. A request for any other one:
+
+1. waits for requests already running on the current model to finish (new ones queue behind the switch);
+2. switches the server (a downloaded model without a profile gets one with the recommended settings, like
+   `l9s quickstart`): **the endpoint answers nothing else meanwhile**;
+3. is answered once the model is ready. Streaming clients get SSE keep-alive comments
+   (`: l9s is loading X (usually ~3 min), 40s so far…`) so they don't time out.
+
+How long it takes is shown wherever you'd look: model pickers that read `/v1/models` ("loads on first use, last
+load took ~3 min"), the TUI header (`LOADING → X (1 min of ~3 min, asked by <client>)` plus a notification), the
+Connect view, and the Events view (`loading X`, `X loaded in 2m 51s`). On a Mac a switch takes seconds; on vLLM a
+large model can take several minutes, so two tools asking for different models will make the server switch back
+and forth. Set `MODEL_SWITCH=off` (Settings → Model switching) to refuse such requests with a message saying which
+model is loaded.
 
 ## Upgrading the server
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+- **Coding agents and editors:** `l9s connect` and the new Connect view (`8` / `c`) set up Claude Code, Codex, OpenCode, Crush, Grok Build, Qwen Code, Goose, Aider, Factory Droid, Kilo Code, Continue and Zed, with step-by-step values for Cline, Copilot and JetBrains, and an explanation for tools that can't reach a LAN server (Cursor, Amp, Gemini CLI, Windsurf). Changes are additions under an `l9s` name, shown before writing, with a one-time backup; `--remove` takes them out; model lists are refreshed when profiles change.
+- `l9s claude`, `l9s codex`, `l9s run <tool>`: launch a coding agent on l9s for that session only.
+- **Every model, one at a time, like Ollama:** `/v1/models` lists every profile and every downloaded model that fits; a request for another one loads it (waiting for running requests first, keep-alives for streaming clients). Measured load times are shown in model pickers, the TUI header, Connect and Events. `MODEL_SWITCH=off` in Settings turns it off.
+- On a Mac, the proxy translates the Anthropic Messages and OpenAI Responses APIs to mlx-lm (streaming and tool calls), so Claude Code and Codex work there too.
+- Requests view: token counts, tool calls and finish reasons for Anthropic and Responses traffic; the key is accepted as `x-api-key` too.
+
 ## 0.2.3
 - Settings: one Save button in a bar pinned to the bottom (always visible; `ctrl+s` works too) instead of Save / Save & apply. Each change is applied the way it needs: HF token and update mode at once, port / API key / prompt logging by restarting the request proxy, and memory / vLLM image / (vLLM) API key by restarting the model server, which Save asks about first ("Restart now / Later"; Later keeps a Restart server button in the bar).
 - Leaving Settings or quitting with unsaved changes asks: Save / Discard / Keep editing. Unsaved edits are no longer wiped when you switch views.

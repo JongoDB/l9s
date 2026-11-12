@@ -148,6 +148,10 @@ def est_bytes(params: float | None, fmt: str, repo: str = "") -> float | None:
     return params * FMT_BYTES[fmt]
 
 
+def human_secs(s: float) -> str:
+    return f"{s:.0f}s" if s < 90 else f"{s / 60:.0f} min"
+
+
 def short_repo(repo: str, n: int = 38) -> str:
     """Long repo ids shortened to n chars: the org is trimmed first (lmstud…/Qwen3-…), the model name only if it
     alone is too long (then in the middle, keeping the quant suffix)."""
@@ -891,9 +895,10 @@ HELP_MD = """
 | `4` / `F4` | **Hub** | search Hugging Face, inspect model cards, pull / pull + serve |
 | `5` / `F5` | **Downloads** | progress of pulls (they keep running if you quit) |
 | `6` / `F6` | **Events** | timeline: server starts, ready, crashes, OOM, model switches, error bursts, cancels |
-| `7` / `F7` | **Settings** | HF token, API key, memory budget, port, vLLM image, prompt logging |
+| `7` / `F7` | **Settings** | HF token, API key, memory budget, port, vLLM image, prompt logging, model switching |
+| `8` / `F8` | **Connect** | set up Claude Code, Codex, OpenCode, Cursor, … to use this server (`enter` connects) |
 
-`F1`–`F7` work even while typing in a text box. `Esc` leaves the search box or clears a filter.
+`F1`–`F8` work even while typing in a text box. `Esc` leaves the search box or clears a filter.
 
 **Arrow keys:** `←` / `→` previous / next view (in a text box they move the cursor; in dialogs they move between
 buttons). `↑` / `↓` move through a table, and past its first or last row into the next table of the view
@@ -963,7 +968,7 @@ opens a drop-down.
 
 
 # ================================================================ app
-TABS = ["server", "requests", "local", "hub", "downloads", "events", "settings"]
+TABS = ["server", "requests", "local", "hub", "downloads", "events", "settings", "connect"]
 
 # k9s-style skin. Same color names as k9s' default skin, except gold replaces k9s' orange (orange renders as
 # red on many terminals, and red is reserved for failures here).
@@ -1110,6 +1115,12 @@ class LLMTui(App):
     .frow Button { margin-left: 1; }
     .frow Static { width: 1fr; padding: 0 1 0 2; }
     .hint { color: $text-muted; padding: 1 0; }
+    #cx-head { height: auto; padding: 0 1; border: solid #87CEFA; }
+    #cx-body { height: 1fr; }
+    #cx-tools { width: 3fr; border: solid #87CEFA; }
+    #cx-detail { width: 2fr; border: solid #87CEFA; padding: 0 1; }
+    #cx-btns { height: 1; margin-bottom: 1; }
+    #cx-btns Button { margin-right: 1; }
     #set-bar { dock: bottom; height: auto; min-height: 3; max-height: 6; padding: 0 1;
                border-top: solid #87CEFA; background: #000000; }
     #set-changes { width: 1fr; height: auto; padding: 0 1 0 0; }
@@ -1304,6 +1315,14 @@ class LLMTui(App):
                             yield Input(id="set-image")
                             yield Button("Check releases", id="set-image-check")
                         yield Static("", id="set-image-info")
+                    yield Label("Model switching", classes="section")
+                    yield Static("[dim]auto: a request that names another model (any profile, or a downloaded model "
+                                 "that fits) loads it, like Ollama: running requests finish first, then the model "
+                                 "switches; streaming clients are kept waiting with keep-alives. off: such requests "
+                                 "get an error saying which model is loaded.[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Select([("auto (like Ollama)", "auto"), ("off", "off")], value="auto",
+                                     allow_blank=False, id="set-switch")
                     yield Label("Updates", classes="section")
                     yield Static("[dim]Checked daily. notify: tell you in the header and CLI · auto: also install l9s (and "
                                  "mlx-lm on a Mac) in the background, without restarting a running model · off. "
@@ -1321,6 +1340,17 @@ class LLMTui(App):
                     yield Button("Save (ctrl+s)", id="set-save", variant="primary")
                     yield Button("Discard", id="set-revert")
                     yield Button("Restart server", id="set-apply", variant="warning")
+            with TabPane("8 Connect", id="connect"):
+                yield Static("loading…", id="cx-head")
+                with Horizontal(id="cx-body"):
+                    yield KTable(id="cx-tools", cursor_type="row", zebra_stripes=False)
+                    with Vertical(id="cx-detail"):
+                        with Horizontal(id="cx-btns"):
+                            yield Button("Connect", id="cx-do", variant="primary")
+                            yield Button("Remove", id="cx-rm", variant="error")
+                            yield Button("Copy for another machine", id="cx-copy")
+                        with VerticalScroll(id="cx-scroll"):
+                            yield Static("", id="cx-info")
         with Horizontal(id="crumbs"):
             for t in TABS:
                 yield Label(f"<{t}>", id=f"crumb-{t}", classes="crumb")
@@ -1349,7 +1379,7 @@ class LLMTui(App):
             key = b.key_display or b.key
             acts.append((f"<{key}> {b.description}",
                          clk(b.action, f"[{K9['dodger']}]<{key}>[/] [{K9['gray']}]{b.description}[/]")))
-        cols = [views] + [acts[i:i + 7] for i in range(0, len(acts), 7)]
+        cols = [views[i:i + 7] for i in range(0, len(views), 7)] + [acts[i:i + 7] for i in range(0, len(acts), 7)]
         widths = [max(len(p) for p, _ in c) + 3 for c in cols]
         lines = []
         for r in range(7):
@@ -1376,6 +1406,13 @@ class LLMTui(App):
             (("CRASHED", K9["orangered"]) if s.get("exit") not in (0, None, 137, 143) else ("STOPPED", K9["gray"]))
         if self.serving:
             badge, color = f"SWITCHING → {self.serving}", K9["sky"]
+        sw = getattr(self, "client_switch", None)
+        if sw:
+            el = time.time() - sw.get("since", time.time())
+            badge = (f"LOADING → {sw['to']} ({human_secs(el)}" + (f" of ~{human_secs(sw['estimate'])}"
+                                                                  if sw.get("estimate") else "")
+                     + f", asked by {sw.get('by') or 'a client'})")
+            color = K9["gold"]
         gpus = s.get("gpus") or []
         util = [g["util"] for g in gpus if g.get("util") is not None]
         px = s.get("proxy")
@@ -1426,6 +1463,12 @@ class LLMTui(App):
         self.query_one("#reqs").border_title = "Requests"
         self.query_one("#clients").border_title = "Clients"
         self.query_one("#events-t").border_title = "Events"
+        cx = self.query_one("#cx-tools", DataTable)
+        for label, key in (("", "st"), ("tool", "tool"), ("kind", "kind"), ("installed", "inst"), ("status", "status")):
+            cx.add_column(label, key=key)
+        self.query_one("#cx-tools").border_title = "Coding agents & editors"
+        self.query_one("#cx-head").border_title = "Connect"
+        self.query_one("#cx-detail").border_title = "Details"
         self.set_interval(1, self.poll_requests)
         self.set_interval(3, self.poll_events)
         self.poll_events()
@@ -1617,6 +1660,9 @@ class LLMTui(App):
             self.query_one("#reqs", DataTable).focus()
             self._last_req_poll = 0
             self.poll_requests()
+        elif pid == "connect":
+            self.query_one("#cx-tools", DataTable).focus()
+            self.refresh_connect()
         elif pid == "events":
             self.query_one("#events-t", DataTable).focus()
             self.poll_events()
@@ -1928,6 +1974,20 @@ class LLMTui(App):
 
     def render_requests(self, data: dict | None, ok: bool | None) -> None:
         self.req_data, self.req_ok = data, ok
+        sw = (data or {}).get("switching")
+        prev = getattr(self, "client_switch", None)
+        if sw and not prev:
+            est = f" Last load took ~{human_secs(sw['estimate'])}." if sw.get("estimate") else \
+                " A big model can take a few minutes."
+            self.notify(f"{sw.get('by') or 'A client'} asked for {sw['to']}: loading it now. Requests wait until it's "
+                        f"ready (the endpoint answers nothing else meanwhile).{est}", title="Switching model",
+                        severity="warning", timeout=15)
+        elif prev and not sw:
+            self.notify(f"{prev['to']} is loaded", title="Model switched", timeout=6)
+            self.refresh_local()
+        if bool(sw) != bool(prev):
+            self.client_switch = sw
+            self.render_info()
         summ = self.query_one("#req-summary", Static)
         if not ok or data is None:
             summ.update(f"[red]● request proxy not reachable on :{self.port}[/red]: clients can't connect either. "
@@ -2059,43 +2119,185 @@ class LLMTui(App):
         self.push_screen(TextModal("Help", HELP_MD))
 
     def action_connect(self) -> None:
-        key = load_env().get("API_KEY", "")
-        model = active_profile() or "<model>"
-        curl = (f'curl {self.endpoint}/chat/completions \\\n  -H "Authorization: Bearer {key}" '
-                f'-H "Content-Type: application/json" \\\n  -d \'{{"model":"{model}","messages":'
-                f'[{{"role":"user","content":"hi"}}]}}\'')
-        env = f"export OPENAI_BASE_URL={self.endpoint}\nexport OPENAI_API_KEY={key}\nexport OPENAI_MODEL={model}"
-        py = (f'from openai import OpenAI\nc = OpenAI(base_url="{self.endpoint}", api_key="{key}")\n'
-              f'r = c.chat.completions.create(model="{model}", messages=[{{"role": "user", "content": "hi"}}])\n'
-              f'print(r.choices[0].message.content)')
-        md = f"""
-| | |
-|---|---|
-| **Base URL** | `{self.endpoint}` |
-| **API key** | `{key}` |
-| **Model** | `{model}` |
-| **State** | {"ready" if self.state.get("ready") else self.state.get("status", "?")} |
+        self.goto_tab("connect") if isinstance(self.screen, ModalScreen) else self.action_tab("connect")
 
-Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and enter the three values above
-(Cline, Roo, Continue, Aider, Open WebUI, LibreChat, the OpenAI SDKs, LangChain…).
+    # ------------------------------------------------------------ connect (coding agents / editors)
+    @work(thread=True, exclusive=True, group="connect")
+    def refresh_connect(self) -> None:
+        import connect
+        import tools  # noqa: F401  registers the tools
+        try:
+            info = connect.local_info()
+            info["server"] = "local"
+            rows = connect.status_rows(info)
+        except Exception as e:  # noqa: BLE001
+            self.call_from_thread(self.query_one("#cx-head", Static).update, f"[red]couldn't read the server: {e}[/red]")
+            return
+        self.cx_info, self.cx_rows = info, {r["id"]: r for r in rows}
+        mode = load_env().get("MODEL_SWITCH", "auto")
+        models = "  ".join((f"[b {K9['greenyellow']}]{m['id']} ●[/]" if m["loaded"] else
+                            f"[{K9['sky']}]{m['id']}[/]" + (f"[dim] ~{human_secs(m['load_seconds'])}[/dim]"
+                                                            if m.get("load_seconds") else ""))
+                           for m in info["models"]) or "[dim]none yet[/dim]"
+        head = (f"[b]Base URL[/b] [{K9['gold']}]{info['base']}/v1[/]   [b]API key[/b] [{K9['gold']}]{info['key']}[/]   "
+                + clk("cx_copy_key", f"[{K9['dodger']}]copy key[/]") + "\n"
+                + f"[b]Models[/b] {models}\n[dim]● = loaded; ~time = how long that model took to load last time. "
+                + ("A tool that asks for another model loads it on first use, like Ollama: running requests finish "
+                   "first, then the server is down while it loads, and every client waits (the TUI header shows "
+                   "the progress)." if mode != "off" else
+                   "Automatic switching is off (MODEL_SWITCH=off): other models must be switched to by hand.")
+                + " Configs that list models are updated when your profiles change.[/dim]")
 
-**Environment variables**
-```bash
-{env}
-```
+        def fill():
+            self.query_one("#cx-head", Static).update(head)
+            t = self.query_one("#cx-tools", DataTable)
+            cur = t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value if t.row_count else None
+            t.clear()
+            order = sorted(rows, key=lambda r: (not r["installed"], not r["supported"], r["name"].lower()))
+            for r in order:
+                if not r["supported"]:
+                    st, col = "not supported here", K9["gray"]
+                elif r["connected"]:
+                    st, col = "connected", K9["greenyellow"]
+                elif r["how"].startswith("launch"):
+                    st, col = f"ready: l9s run {r['id']}", K9["sky"]
+                elif r["how"] == "manual steps":
+                    st, col = "manual steps", K9["gold"]
+                else:
+                    st, col = "not connected", K9["white"]
+                t.add_row(Text("●" if r["connected"] else "", style=K9["greenyellow"]),
+                          Text(r["name"], style="bold" if r["installed"] else ""), r["kind"],
+                          Text("✓", style="green") if r["installed"] else Text("-", style="dim"),
+                          Text(st, style=col), key=r["id"])
+            if t.row_count:
+                t.move_cursor(row=t.get_row_index(cur) if cur in self.cx_rows else 0)
+            self.render_cx_detail()
+        self.call_from_thread(fill)
 
-**curl**
-```bash
-{curl}
-```
+    @work(thread=True, group="connect-refresh")
+    def _refresh_connected(self) -> None:
+        """Connected tools whose configs list the models: drop / add entries after profiles change."""
+        try:
+            import connect
+            import tools  # noqa: F401
+            names = connect.refresh()
+            if names:
+                self.call_from_thread(self.notify, "updated model lists in: " + ", ".join(names))
+        except Exception:  # noqa: BLE001
+            pass
 
-**Python**
-```python
-{py}
-```
-"""
-        self.push_screen(TextModal("Connect to this server", md, {"URL": self.endpoint, "key": key,
-                                                                  "env vars": env, "curl": curl}))
+    def cx_selected(self) -> str | None:
+        t = self.query_one("#cx-tools", DataTable)
+        if not t.row_count:
+            return None
+        return t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+
+    @on(DataTable.RowHighlighted, "#cx-tools")
+    def cx_highlight(self, _ev) -> None:
+        self.render_cx_detail()
+
+    def render_cx_detail(self) -> None:
+        import connect
+        tid = self.cx_selected()
+        info = getattr(self, "cx_info", None)
+        if not tid or not info:
+            return
+        t = connect.tool(tid)
+        r = self.cx_rows[tid]
+        p = t.plan(info)
+        ok = r["supported"]
+        lines = [f"[b]{t.name}[/b]  [dim]{t.kind} · speaks {dict(chat='OpenAI chat completions', responses='the OpenAI Responses API', anthropic='the Anthropic Messages API')[t.api]}"
+                 + (" · reads the model list from the server" if t.fetches_models else "")
+                 + (" · its config lists every model" if t.lists_models else "") + "[/dim]", ""]
+        if not ok:
+            lines.append(f"[{K9['orangered']}]{r['why']}[/]")
+        else:
+            if p.changes:
+                lines.append("[b]Connect[/b] writes:" if not r["connected"] else "[b]Connected.[/b] Config:")
+                for ch in p.changes:
+                    lines.append(f"  [{K9['gold']}]{ch.path}[/]  [dim](original backed up once to "
+                                 f"{ch.path.name}.l9s-backup)[/dim]")
+                lines.append("")
+            if p.steps:
+                lines.append("[b]Steps[/b]")
+                lines += [f"  {i + 1}. {st}" for i, st in enumerate(p.steps)]
+                lines.append("")
+            if p.use:
+                lines.append(f"[b]Use[/b]  [{K9['greenyellow']}]{p.use}[/]")
+            lines += [f"[dim]• {n}[/dim]" for n in p.notes]
+            if p.changes:
+                lines += ["", "[b]Change[/b]"]
+                for ch in p.changes:
+                    d = connect.diff_preview(ch)
+                    lines += [("[green]" + Text(x).markup + "[/green]") if x.startswith("+") and not x.startswith("+++") else
+                              ("[red]" + Text(x).markup + "[/red]") if x.startswith("-") and not x.startswith("---") else
+                              "[dim]" + Text(x).markup + "[/dim]" for x in d.splitlines()[:80]]
+        self.query_one("#cx-info", Static).update("\n".join(lines))
+        do, rm = self.query_one("#cx-do", Button), self.query_one("#cx-rm", Button)
+        do.display = ok and bool(p.changes)
+        do.label = "Update config" if r["connected"] else "Connect"
+        rm.display = ok and bool(p.changes) and r["connected"]
+        self.query_one("#cx-copy", Button).display = ok and bool(p.snippet)
+
+    @on(DataTable.RowSelected, "#cx-tools")
+    def cx_enter(self, _ev) -> None:
+        if self.query_one("#cx-do", Button).display:
+            self.cx_do()
+
+    @on(Button.Pressed, "#cx-do")
+    def cx_do(self) -> None:
+        import connect
+        tid = self.cx_selected()
+        if not tid:
+            return
+        t = connect.tool(tid)
+        p = t.plan(self.cx_info)
+        files = "\n".join(f"  {c.path}" for c in p.changes)
+
+        def cb(ok):
+            if ok:
+                try:
+                    done = connect.apply(t, self.cx_info)
+                    self.notify(f"{t.name} connected" + (f": wrote {len(done)} file(s)" if done else " (already up to date)")
+                                + (f"\n{p.use}" if p.use else ""), timeout=10)
+                except Exception as e:  # noqa: BLE001
+                    self.notify(f"couldn't write {t.name}'s config: {e}", severity="error", timeout=15)
+                self.refresh_connect()
+        self.push_screen(Confirm(f"[b]Connect {t.name} to l9s?[/b]\n\nWrites (only l9s' own entries; the rest of the "
+                                 f"file is kept, and the original is backed up once next to it):\n{files}"
+                                 + (f"\n\nThen: {p.use}" if p.use else ""), "Connect", danger=False), cb)
+
+    @on(Button.Pressed, "#cx-rm")
+    def cx_remove(self) -> None:
+        import connect
+        tid = self.cx_selected()
+        if not tid:
+            return
+        t = connect.tool(tid)
+
+        def cb(ok):
+            if ok:
+                done = connect.remove(t, self.cx_info)
+                self.notify(f"removed l9s from {t.name}" + (f" ({', '.join(done)})" if done else ""))
+                self.refresh_connect()
+        self.push_screen(Confirm(f"Remove l9s from {t.name}'s config? Only l9s' entries are removed.", "Remove"), cb)
+
+    @on(Button.Pressed, "#cx-copy")
+    def cx_copy(self) -> None:
+        import connect
+        tid = self.cx_selected()
+        if not tid:
+            return
+        snip = connect.snippet(connect.tool(tid), self.cx_info)
+        self.copy_to_clipboard(snip)
+        self.push_screen(TextModal(f"{connect.tool(tid).name} on another machine",
+                                   "Copied to the clipboard. On the other machine, paste this (or install l9s there and "
+                                   "run `l9s connect --server <this-host>`, which also keeps it up to date):"
+                                   "\n\n```\n" + snip + "\n```"))
+
+    def action_cx_copy_key(self) -> None:
+        self.copy_to_clipboard(getattr(self, "cx_info", {}).get("key", ""))
+        self.notify("API key copied")
 
     # ------------------------------------------------------------ settings
     SETTING_KEYS = {"HF_TOKEN": "#set-hf", "API_KEY": "#set-key", "GPU_MEM": "#set-mem", "PORT": "#set-port",
@@ -2109,6 +2311,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         for k, sel in self.SETTING_KEYS.items():
             self.query_one(sel, Input).value = env.get(k, defaults.get(k, ""))
         self.query_one("#set-logprompts", Checkbox).value = env.get("LOG_PROMPTS", "1") != "0"
+        self.query_one("#set-switch", Select).value = "off" if env.get("MODEL_SWITCH") == "off" else "auto"
         self.query_one("#set-update", Select).value = env.get("UPDATE_MODE", "notify") \
             if env.get("UPDATE_MODE", "notify") in ("notify", "auto", "off") else "notify"
         self.query_one("#set-hf-status", Static).update(
@@ -2119,6 +2322,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         v = {k: self.query_one(sel, Input).value.strip() for k, sel in self.SETTING_KEYS.items()}
         v["LOG_PROMPTS"] = "1" if self.query_one("#set-logprompts", Checkbox).value else "0"
         v["UPDATE_MODE"] = str(self.query_one("#set-update", Select).value)
+        v["MODEL_SWITCH"] = str(self.query_one("#set-switch", Select).value)
         return v
 
     def settings_problems(self, v: dict) -> list[str]:
@@ -2155,8 +2359,8 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             return []
         cur = load_env()
         defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0", "LOG_PROMPTS": "1",
-                    "UPDATE_MODE": "notify"}
-        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE"]
+                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto"}
+        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH"]
                 if v[k] != cur.get(k, defaults.get(k, ""))]
 
     def server_pending(self) -> list[str]:
@@ -2169,6 +2373,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
     @on(Input.Changed, "#settings-form Input")
     @on(Checkbox.Changed, "#set-logprompts")
     @on(Select.Changed, "#set-update")
+    @on(Select.Changed, "#set-switch")
     def settings_changed(self, *_) -> None:
         v = self.settings_values()
         try:
@@ -2274,7 +2479,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
         applied = dict(running)
         done = []
         # no restart needed: read whenever they're used
-        for k in ("HF_TOKEN", "UPDATE_MODE"):
+        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH"):
             applied[k] = v[k]
         proxy = [k for k in changed if k in self.PROXY_KEYS]
         if proxy:
@@ -3054,6 +3259,7 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
                     (PROFILES / name).unlink(missing_ok=True)
                     self.refresh_local()
                     self.notify(f"deleted profile {name}")
+                    self._refresh_connected()
             self.push_screen(Confirm(f"Delete profile [b]{name}[/b]? (weights stay on disk)", "Delete"), cb)
         elif focused and focused.id == "models" and focused.row_count:
             repo = focused.coordinate_to_cell_key(focused.cursor_coordinate).row_key.value

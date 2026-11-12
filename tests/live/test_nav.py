@@ -23,13 +23,13 @@ async def main():
             check(f"click <7> settings from {src}", tab() == "settings", tab())
         app.action_tab("server"); await pilot.pause(0.4)
         seen = [tab()]
-        for _ in range(7):
+        for _ in range(len(tui.TABS)):
             await pilot.press("right"); await pilot.pause(0.3); seen.append(tab())
         check("→ cycles all views", seen == tui.TABS + ["server"], seen)
         await pilot.press("left"); await pilot.pause(0.3)
-        check("← wraps to settings", tab() == "settings")
+        check("← wraps to the last view", tab() == tui.TABS[-1])
         await pilot.press("left"); await pilot.pause(0.3)
-        check("← to events", tab() == "events")
+        check("← to the one before", tab() == tui.TABS[-2])
         # settings field navigation
         await pilot.press("7"); await pilot.pause(0.4)
         order = []
