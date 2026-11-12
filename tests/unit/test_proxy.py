@@ -67,10 +67,22 @@ ln -sfn "$H/profiles/$2" "$H/active"; echo "==> ready: $2"
     (hub / "models--org--partial" / "blobs").mkdir()
     (hub / "models--org--partial" / "blobs" / "x.incomplete").write_bytes(b"")
     env = dict(os.environ, L9S_HOME=str(home), HF_HUB_CACHE=str(hub), FAKE_SWITCH_SECS="0")
-    procs = [subprocess.Popen([sys.executable, str(HERE / "mock_upstream.py"), str(up)]),
-             subprocess.Popen([sys.executable, str(APP / "proxy.py")], env=env)]
-    wait_port(up)
-    wait_port(px)
+    for attempt in range(4):  # a port picked as free can be taken before the servers bind it (seen on CI runners)
+        procs = [subprocess.Popen([sys.executable, str(HERE / "mock_upstream.py"), str(up)]),
+                 subprocess.Popen([sys.executable, str(APP / "proxy.py")], env=env)]
+        try:
+            wait_port(up, 10)
+            wait_port(px, 10)
+            if all(p.poll() is None for p in procs):
+                break
+        except RuntimeError:
+            pass
+        for p in procs:
+            p.kill()
+        up, px = free_port(), free_port()
+        (home / "env").write_text(f"BACKEND=mlx\nAPI_KEY={KEY}\nPORT={px}\nBACKEND_PORT={up}\nLOG_PROMPTS=1\n")
+    else:
+        raise RuntimeError("couldn't start the proxy and mock server")
     global HOMEDIR
     HOMEDIR = home
     yield px, up
