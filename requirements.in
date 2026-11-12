@@ -1,0 +1,6 @@
+# Direct dependencies. CI resolves these into requirements.lock (exact, tested versions); the installer installs the lock.
+textual>=8.2,<9
+huggingface_hub[hf_xet]>=2.4,<3
+aiohttp>=3.10,<4
+# Apple Silicon only: the mlx deployment's model server
+mlx-lm; sys_platform == "darwin" and platform_machine == "arm64"

@@ -1,0 +1,47 @@
+"""A tiny OpenAI-style server standing in for vLLM / mlx-lm in proxy tests."""
+import asyncio
+import json
+import sys
+
+from aiohttp import web
+
+STATE = {"last": None, "disconnects": 0, "models_seen": []}
+
+
+async def chat(request):
+    body = await request.json()
+    STATE["last"] = body
+    STATE["models_seen"].append(body.get("model"))
+    n = int(body.get("max_tokens") or 5)
+    if not body.get("stream"):
+        return web.json_response({"id": "x", "object": "chat.completion", "model": body.get("model"),
+                                  "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi " * n},
+                                               "finish_reason": "length"}],
+                                  "usage": {"prompt_tokens": 7, "completion_tokens": n, "total_tokens": 7 + n}})
+    resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+    await resp.prepare(request)
+    try:
+        for i in range(n):
+            chunk = {"choices": [{"index": 0, "delta": {"content": f"t{i} "}, "finish_reason": None}]}
+            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            await asyncio.sleep(0.02)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}\n\n')
+        if (body.get("stream_options") or {}).get("include_usage"):
+            usage = {"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": n, "total_tokens": 7 + n}}
+            await resp.write(f"data: {json.dumps(usage)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+    except (ConnectionResetError, asyncio.CancelledError):
+        STATE["disconnects"] += 1
+        raise
+    return resp
+
+
+async def state(request):
+    return web.json_response(STATE)
+
+
+app = web.Application()
+app.router.add_post("/v1/chat/completions", chat)
+app.router.add_get("/v1/models", lambda r: web.json_response({"data": [{"id": "org/model"}]}))
+app.router.add_get("/_mock/state", state)
+web.run_app(app, host="127.0.0.1", port=int(sys.argv[1]), print=None)

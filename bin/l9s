@@ -281,7 +281,7 @@ case "$cmd" in
   key) need_key; echo "$API_KEY" ;;
   hw) "$PY" "$APP/hw.py" ;;
   upgrade)
-    [[ "$BACKEND" == "vllm" ]] || die "upgrade is for the vllm deployment (mlx: re-run install.sh to update mlx-lm)"
+    [[ "$BACKEND" == "vllm" ]] || die "upgrade is for the vllm deployment (mlx: l9s update brings tested mlx-lm versions)"
     [[ $# -eq 1 ]] || die "usage: l9s upgrade <image:tag>"
     docker pull "$1"
     sed -i '/^IMAGE=/d' "$L9S_HOME/env"; echo "IMAGE=$1" >> "$L9S_HOME/env"; IMAGE="$1"

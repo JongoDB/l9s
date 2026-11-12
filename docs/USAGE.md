@@ -123,6 +123,10 @@ Re-running the one-liner updates l9s in place (code in `~/.l9s/src`).
 - `l9s update` checks and installs (asks first; `-y` skips the question; `--check` only reports). On a Mac, if mlx-lm
   changed, the model server is restarted. In the TUI: `U`, `:update`, or click the header notice.
 - vLLM is never upgraded automatically: switch with `l9s upgrade vllm/vllm-openai:<tag>` (or Settings).
+- What an update contains: the latest GitHub release. Python packages (incl. mlx-lm) are pinned in
+  `requirements.lock`; a weekly CI job tries the newest versions and only releases them (patch version bump,
+  changelog entry) after the Linux and Apple Silicon test runs pass. `UPDATE_MODE=auto` therefore only ever installs
+  tested sets.
 
 ## Everyday commands
 
@@ -236,7 +240,7 @@ Routes: vLLM serves `/v1/models`, `/v1/chat/completions`, `/v1/completions`, `/v
 
 ## Upgrading the server
 
-mlx: re-run `./install.sh` (updates mlx-lm). vllm:
+mlx: `l9s update` (mlx-lm comes with each l9s release, pinned and CI-tested). vllm:
 
 ```bash
 l9s upgrade vllm/vllm-openai:v0.34.0     # pulls, saves to env, restarts active profile

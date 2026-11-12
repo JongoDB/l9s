@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: [VERSION, CHANGELOG.md]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      lock-artifact:
+        description: "Name of an uploaded artifact holding a candidate requirements.lock"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - if: inputs.lock-artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.lock-artifact }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Install pinned dependencies
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip sync --python .venv/bin/python requirements.lock
+          uv pip install --python .venv/bin/python pytest
+      - name: Lint shell and Python
+        run: |
+          for f in bin/l9s install.sh get.sh; do bash -n "$f"; done
+          shellcheck -S error bin/l9s install.sh get.sh
+          .venv/bin/python -m compileall -q app tests
+      - name: Unit tests
+        run: .venv/bin/python -m pytest -q tests/unit
+      - name: Installer (no services)
+        run: |
+          L9S_HOME="$RUNNER_TEMP/l9s" L9S_NO_SERVICES=1 ./install.sh --no-model
+          "$RUNNER_TEMP/l9s/app/.venv/bin/python" -c "import textual, aiohttp, huggingface_hub; print('ok')"
+
+  macos-mlx:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - if: inputs.lock-artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.lock-artifact }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Install pinned dependencies (incl. mlx-lm)
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip sync --python .venv/bin/python requirements.lock
+          uv pip install --python .venv/bin/python pytest
+      - name: Unit tests
+        run: .venv/bin/python -m pytest -q tests/unit
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-qwen3-0.6b-4bit
+      - name: MLX smoke test (generate + real server behind the proxy)
+        env:
+          L9S_MLX_E2E: "1"
+        run: |
+          .venv/bin/python -m mlx_lm generate --model mlx-community/Qwen3-0.6B-4bit --prompt "Say hi" --max-tokens 8
+          .venv/bin/python -m pytest -q tests/unit/test_mlx_e2e.py -rs

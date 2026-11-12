@@ -3,9 +3,11 @@
 Compares what's installed with what's available, caches the result in ~/.l9s/cache/update.json (so the TUI and CLI
 can show a notice without network calls), and prints a summary.
 
-  l9s itself     VERSION in ~/.l9s/app vs VERSION on GitHub main (+ the CHANGELOG entries in between)
-  mlx-lm (Mac)   installed package vs latest on PyPI
+  l9s itself     VERSION in ~/.l9s/app vs the latest GitHub release (+ the CHANGELOG entries in between).
+                 Python packages, incl. mlx-lm on a Mac, are pinned per release (requirements.lock); CI tests newer
+                 versions and ships them as a new l9s release, so updating l9s is how dependencies get updated.
   vLLM (Linux)   the IMAGE tag in ~/.l9s/env vs the newest vX.Y.Z release for this CPU architecture on Docker Hub
+                 (reported only: vLLM is never changed automatically)
 
 usage: updater.py check [--force] [--quiet] [--json]
 """
@@ -23,7 +25,7 @@ from pathlib import Path
 L9S_HOME = Path(os.environ.get("L9S_HOME", Path.home() / ".l9s"))
 CACHE = L9S_HOME / "cache" / "update.json"
 REPO = "JongoDB/l9s"
-RAW = f"https://raw.githubusercontent.com/{REPO}/main"
+RAW = f"https://raw.githubusercontent.com/{REPO}"
 MAX_AGE = 6 * 3600
 
 
@@ -76,21 +78,23 @@ def check() -> dict:
     res: dict = {"checked": time.time(), "backend": backend, "l9s": {}, "server": {}, "errors": []}
     cur = installed_version()
     try:
-        latest = _get(f"{RAW}/VERSION").strip()
-        res["l9s"] = {"installed": cur, "latest": latest, "update": vtuple(latest) > vtuple(cur)}
+        try:
+            ref = json.loads(_get(f"https://api.github.com/repos/{REPO}/releases/latest"))["tag_name"]
+        except Exception:  # noqa: BLE001  (no release yet: fall back to main)
+            ref = "main"
+        latest = _get(f"{RAW}/{ref}/VERSION").strip()
+        res["l9s"] = {"installed": cur, "latest": latest, "update": vtuple(latest) > vtuple(cur), "ref": ref}
         if res["l9s"]["update"]:
-            res["l9s"]["notes"] = changelog_between(_get(f"{RAW}/CHANGELOG.md"), cur, latest)
+            res["l9s"]["notes"] = changelog_between(_get(f"{RAW}/{ref}/CHANGELOG.md"), cur, latest)
     except Exception as e:  # noqa: BLE001
         res["errors"].append(f"l9s: {e}")
     if backend == "mlx":
         try:
             from importlib.metadata import version
-            have = version("mlx-lm")
-            latest = json.loads(_get("https://pypi.org/pypi/mlx-lm/json"))["info"]["version"]
-            res["server"] = {"name": "mlx-lm", "installed": have, "latest": latest, "update": vtuple(latest) > vtuple(have),
-                             "auto": True}
-        except Exception as e:  # noqa: BLE001
-            res["errors"].append(f"mlx-lm: {e}")
+            res["server"] = {"name": "mlx-lm", "installed": version("mlx-lm"), "latest": version("mlx-lm"),
+                             "update": False, "pinned": True}
+        except Exception:  # noqa: BLE001
+            pass
     else:
         image = env.get("IMAGE", "vllm/vllm-openai:v0.33.0")
         repo, _, tag = image.partition(":")
@@ -136,6 +140,8 @@ def summary(res: dict) -> list[str]:
         how = "installed by `l9s update` (the model server restarts)" if srv.get("auto") else \
             f"not updated automatically; to switch: {srv.get('command')}"
         lines.append(f"{srv['name']} {srv['installed']} → {srv['latest']} available, {how}")
+    elif srv.get("pinned"):
+        lines.append(f"{srv['name']} {srv['installed']} (pinned by this l9s release; newer versions arrive with l9s updates)")
     elif srv:
         lines.append(f"{srv['name']} {srv['installed']} is the latest")
     lines += [f"(couldn't check {e})" for e in res.get("errors", [])]

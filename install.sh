@@ -12,7 +12,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --model) MODEL="${2:?--model needs an org/repo}"; shift 2 ;;
     --no-model) NO_MODEL=1; shift ;;
-    --update) UPDATE=1; NO_MODEL=1; shift ;;   # used by `l9s update`: also upgrade l9s' Python libraries
+    --update) UPDATE=1; NO_MODEL=1; shift ;;   # used by `l9s update` (no starter model)
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -46,7 +46,8 @@ for c in curl openssl; do command -v "$c" >/dev/null || die "missing: $c"; done
 
 say "uv + Hugging Face CLI"
 [[ -x "$UV" ]] || curl -LsSf https://astral.sh/uv/install.sh | sh
-"$UV" tool install -q --upgrade "huggingface_hub[hf_xet]"
+HFV="$(grep -E '^huggingface-hub==' requirements.lock | sed -E 's/^huggingface-hub==([^ ;]+).*/\1/')"
+"$UV" tool install -q --force "huggingface_hub[hf_xet]==${HFV}"   # same version as l9s' lock
 
 # ---------------------------------------------------------------- code + Python environment
 say "l9s -> $L9S_HOME"
@@ -54,15 +55,14 @@ mkdir -p "$L9S_HOME/app" "$L9S_HOME/bin" "$L9S_HOME/profiles" "$L9S_HOME/cache" 
 cp app/*.py VERSION "$L9S_HOME/app/"
 install -m 755 bin/l9s "$L9S_HOME/bin/l9s"
 [[ -d "$L9S_HOME/app/.venv" ]] || "$UV" venv -q --python 3.12 "$L9S_HOME/app/.venv"
-PIP_UP=(); [[ $UPDATE -eq 1 ]] && PIP_UP=(--upgrade)
-"$UV" pip install -q ${PIP_UP[@]+"${PIP_UP[@]}"} --python "$L9S_HOME/app/.venv/bin/python" -r requirements.txt
-if [[ "$OS" == "Darwin" ]]; then
-  say "mlx-lm (Apple's MLX inference server)"
-  "$UV" pip install -q --upgrade --python "$L9S_HOME/app/.venv/bin/python" mlx-lm
-fi
+# exact, CI-tested versions (incl. mlx-lm + MLX on Apple Silicon); sync also removes anything not in the lock
+[[ "$OS" == "Darwin" ]] && say "Python packages incl. mlx-lm (Apple's MLX inference server), pinned by requirements.lock"
+"$UV" pip sync -q --python "$L9S_HOME/app/.venv/bin/python" requirements.lock
 PY="$L9S_HOME/app/.venv/bin/python"
 
-if [[ "$OS" == "Darwin" ]]; then
+if [[ -n "${L9S_NO_SERVICES:-}" ]]; then
+  BIN_NOTE="$L9S_HOME/bin/l9s"   # CI: leave the user's PATH alone
+elif [[ "$OS" == "Darwin" ]]; then
   mkdir -p "$HOME/.local/bin"
   ln -sf "$L9S_HOME/bin/l9s" "$HOME/.local/bin/l9s"
   BIN_NOTE="~/.local/bin/l9s"
@@ -92,6 +92,11 @@ fi
 grep -q '^BACKEND=' "$L9S_HOME/env" || echo "BACKEND=$BACKEND" >> "$L9S_HOME/env"
 envget() { ( set +u; source "$L9S_HOME/env"; eval "echo \"\${$1:-}\"" ); }
 BACKEND="$(envget BACKEND)"
+
+if [[ -n "${L9S_NO_SERVICES:-}" ]]; then   # CI / containers: files and Python environment only
+  say "L9S_NO_SERVICES set: skipping services, model server and starter model"
+  exit 0
+fi
 
 # ---------------------------------------------------------------- request proxy service
 say "request proxy (l9s-proxy)"

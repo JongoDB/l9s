@@ -106,6 +106,14 @@ and `sudo` for the `l9s` symlink and the proxy service.
 updates in the background without restarting a running model) or **off**. vLLM itself is never upgraded
 automatically; when a newer release exists you're told the exact `l9s upgrade …` command.
 
+**Releases and dependencies:** every Python package (Textual, aiohttp, huggingface_hub, and mlx-lm + MLX on a Mac)
+is pinned to an exact version in `requirements.lock`, so an install or update always gets a CI-tested set. A weekly
+GitHub Actions job re-resolves the lock to the newest versions; if anything changed it runs the full CI on Linux and
+on an Apple Silicon runner (including a real mlx-lm server behind the proxy), and only when that passes does it bump
+the patch version, write the changelog ("textual 8.2.8 → 8.3.0") and publish a release. `get.sh` and `l9s update`
+install the latest release, not `main`. vLLM image bumps are tested by hand on GPU hardware: the job opens an issue
+when a new vLLM release is out.
+
 **Uninstall:** `l9s uninstall` removes the model server, the proxy service, the command and `~/.l9s`.
 Downloaded models stay in the Hugging Face cache unless you add `--remove-models`; `--keep-config` keeps your
 settings, profiles and history; `--remove-image` also deletes the vLLM Docker image.
@@ -172,7 +180,10 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 | `app/updater.py` | update checks: l9s (GitHub), mlx-lm (PyPI), vLLM releases (Docker Hub); cached daily |
 | `app/proxy.py` | request-tracking reverse proxy ([aiohttp](https://github.com/aio-libs/aiohttp)), API key for mlx, event recorder |
 | `app/vllm_caps.py` / `app/mlx_caps.py` | ask the installed server which flags, architectures, parsers and quant methods it supports |
-| `tests/` | end-to-end tests that drive the real TUI and proxy against a live server (some switch models: run them on a box you can interrupt) |
+| `requirements.in` / `requirements.lock` | allowed ranges / exact pinned versions (`uv pip compile --universal`) |
+| `.github/workflows/` | `ci.yml` (Linux + Apple Silicon MLX), `deps.yml` (weekly lock refresh → release), `release.yml` (tag on `VERSION` change) |
+| `tests/unit/` | fast tests run in CI: model analysis math, updater, proxy against a mock server, real mlx-lm on Apple Silicon |
+| `tests/live/` | end-to-end tests that drive the real TUI and proxy against a live server (some switch models: run them on a box you can interrupt) |
 
 State lives in `~/.l9s` (config `env`, `profiles/`, `requests.jsonl`, `events.jsonl`, `logs/`); model weights stay
 in the standard Hugging Face cache, shared with other tools.
