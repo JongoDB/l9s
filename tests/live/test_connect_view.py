@@ -29,7 +29,8 @@ async def main():
         check("c opens Connect", app.query_one(TabbedContent).active == "connect")
         check("lists the tools", t.row_count >= 15, t.row_count)
         head = str(app.query_one("#cx-head", Static).render())
-        check("header shows URL, key and models", "/v1" in head and "sk-" in head and "Models" in head, head)
+        check("one-line header: URLs, pointers to Local / Settings (no key here)",
+              head.count("/v1") == 2 and "Settings" in head and "Local" in head and "sk-" not in head, head)
         keys = [t.coordinate_to_cell_key((i, 0)).row_key.value for i in range(t.row_count)]
         t.move_cursor(row=keys.index("opencode")); await pilot.pause(0.5)
         info = str(app.query_one("#cx-info", Static).render())

@@ -107,7 +107,7 @@ async def main():
         await pilot.press("slash")
         await pilot.pause(0.3)
         check("hub: / focuses the search box", isinstance(app.focused, Input))
-        await pilot.press("5")
+        await pilot.press("6")
         await pilot.pause(0.3)
         check("digit typed in search box stays in box (expected)", tabs() == "hub")
         app.query_one("#hub-q", Input).value = ""
@@ -115,14 +115,14 @@ async def main():
             await pilot.press(k)
             await pilot.pause(0.4)
             check(f"{k} -> {name} (works from search box)", tabs() == name)
-        await pilot.press("4")
+        await pilot.press("5")
         await pilot.pause(0.3)
         await pilot.press("slash")
         await pilot.pause(0.3)
         await pilot.press("escape")
         await pilot.pause(0.3)
         check("esc leaves search box", not isinstance(app.focused, Input))
-        await pilot.press("5")
+        await pilot.press("6")
         await pilot.pause(0.3)
         check("after esc, digit switches tab", tabs() == "downloads")
         await pilot.press("1")
@@ -174,7 +174,7 @@ async def main():
         check("Start while running -> 'already running'", noted("already running", n0))
 
         # ---------------- local tab
-        await pilot.press("3")
+        await pilot.press("4")
         mt, pt = app.query_one("#models", DataTable), app.query_one("#profiles", DataTable)
         check("local: externally pulled model listed", await wait(pilot, lambda: AEON in rows(mt), 10))
         check("local: serving model marked", await wait(pilot, lambda: any(
@@ -243,7 +243,7 @@ async def main():
         check("cancel keeps model", AEON in rows(mt))
 
         # ---------------- hub
-        await pilot.press("4")
+        await pilot.press("5")
         await pilot.pause(0.5)
         await pilot.press("slash")
         await pilot.pause(0.3)
@@ -311,7 +311,7 @@ async def main():
         check("Pull button starts download", await wait(pilot, lambda: noted("downloading", n0), 20))
 
         # ---------------- downloads
-        await pilot.press("5")
+        await pilot.press("6")
         dt = app.query_one("#dls", DataTable)
         key = SMALL.replace("/", "__")
         check("download row appears", await wait(pilot, lambda: key in rows(dt), 10))
@@ -351,7 +351,7 @@ async def main():
         check("finished download cleared", await wait(pilot, lambda: key not in rows(dt), 5))
 
         # ---------------- serve small model via UI + startup progress
-        await pilot.press("3")
+        await pilot.press("4")
         check("pulled model listed on Local", await wait(pilot, lambda: SMALL in rows(mt), 15))
         check("stalled partial marked on Local", await wait(
             pilot, lambda: EXT in rows(mt) and "partial" in str(mt.get_row(EXT)[0]), 15))
@@ -414,7 +414,7 @@ async def main():
             "container started" in str(getattr(l, "text", l)) for l in rl.lines), 20))
 
         # ---------------- switch back via profiles table
-        await pilot.press("3")
+        await pilot.press("4")
         check("test profile marked active", await wait(pilot, lambda: TEST_PROFILE in rows(pt) and
                                                        "active" in str(pt.get_row(TEST_PROFILE)[0]), 10))
         pt.focus()
@@ -433,7 +433,7 @@ async def main():
         check("Test on original model", await wait(pilot, lambda: noted("test request succeeded", n0), 300))
 
         # ---------------- cleanup via UI
-        await pilot.press("3")
+        await pilot.press("4")
         await wait(pilot, lambda: TEST_PROFILE in rows(pt), 10)
         pt.focus()
         pt.move_cursor(row=pt.get_row_index(TEST_PROFILE))

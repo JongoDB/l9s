@@ -34,14 +34,17 @@ Press `?` inside for help. The header always shows server state, model, endpoint
 
 | Key | View | What you get |
 |---|---|---|
-| `1`/`F1` | Server | state (READY / STARTING + phase & progress / STOPPED / CRASHED + last error), context, KV capacity, proxy health, live tok/s + KV sparklines, totals (TTFT, ITL, prefix-cache hits), GPU/mem/disk, server log. Buttons: Test, Restart, Stop, Start, Connect |
-| `2`/`F2` | **Requests** | every request in flight (▶) and recently finished (✓ ✗ ■): client, model, tokens in/out, TTFT, tok/s, duration, finish reason / tool calls / errors. Clients table: who uses the server |
-| `3`/`F3` | Local | profiles and downloaded models (serve, edit, delete, `i` analysis) |
-| `4`/`F4` | Hub | `/` to search Hugging Face (enter searches, esc back to the results); full model analysis + model card; pull / pull + serve |
-| `5`/`F5` | Downloads | progress, speed, ETA, logs; keeps running after you quit |
-| `6`/`F6` | **Events** | timeline: container start / exit / OOM, ready, model switches, cancels, error bursts (recorded even when the TUI is closed) |
-| `7`/`F7` | Settings | HF token (with test), API key, GPU_MEM, port, vLLM image (with release check), model switching, prompt-preview logging, updates |
-| `8`/`F8`, `c` | **Connect** | coding agents and editors: installed? connected? the exact config change; `enter` connects, Remove, Copy for another machine |
+| `1`/`F1` | Server | details the header doesn't show: repo, uptime, context, KV capacity, startup phase & progress, last error; live tok/s + KV sparklines, totals (TTFT, ITL, prefix-cache hits), GPU/mem/disk, server log. Buttons: Test, Restart, Stop, Start |
+| `2`/`F2`, `c` | **Connect** | coding agents and editors: installed? connected? the exact config change; `enter` connects, Remove, Copy for another machine |
+| `3`/`F3` | **Requests** | every request in flight (▶) and recently finished (✓ ✗ ■): client, model, API, tokens in/out, TTFT, tok/s, duration, finish reason / tool calls / errors. Clients table: who uses the server |
+| `4`/`F4` | Local | profiles (with how long each took to load last time) and downloaded models (serve, edit, delete, `i` analysis) |
+| `5`/`F5` | Hub | `/` to search Hugging Face (enter searches, esc back to the results); full model analysis + model card; pull / pull + serve |
+| `6`/`F6` | Downloads | progress, speed, ETA, logs; keeps running after you quit |
+| `7`/`F7` | **Events** | timeline: container start / exit / OOM, ready, model switches, cancels, error bursts (recorded even when the TUI is closed) |
+| `8`/`F8` | Settings | HF token (with test), API key, GPU_MEM, port, vLLM image (newest release shown), model switching, prompt-preview logging, updates |
+
+The header is always on screen: model, deployment, endpoint, status (with requests in flight), server version,
+GPU/memory and the l9s version; the views add details instead of repeating it.
 
 k9s-style keys:
 

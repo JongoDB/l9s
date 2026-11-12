@@ -18,7 +18,7 @@ async def main():
         for src in tui.TABS:
             app.action_tab(src); await pilot.pause(0.4)
             plain = str(app.query_one("#hdr-keys", Static).render()).split("\n")
-            r = next(i for i, l in enumerate(plain) if "<7>" in l); c = plain[r].index("<7>")
+            r = next(i for i, l in enumerate(plain) if "<8>" in l); c = plain[r].index("<8>")
             await pilot.click("#hdr-keys", offset=(c + 4, r)); await pilot.pause(0.8)
             check(f"click <7> settings from {src}", tab() == "settings", tab())
         app.action_tab("server"); await pilot.pause(0.4)
@@ -31,7 +31,7 @@ async def main():
         await pilot.press("left"); await pilot.pause(0.3)
         check("← to the one before", tab() == tui.TABS[-2])
         # settings field navigation
-        await pilot.press("7"); await pilot.pause(0.4)
+        await pilot.press("8"); await pilot.pause(0.4)
         order = []
         for _ in range(6):
             await pilot.press("down"); await pilot.pause(0.15); order.append(fid())
@@ -43,7 +43,7 @@ async def main():
         await pilot.press("left"); await pilot.pause(0.1)
         check("← in a text box moves the cursor, not the view", tab() == "settings" and inp.cursor_position == 2)
         # hub: up from results -> search box, down -> results; typing digits in search
-        await pilot.press("f4"); await pilot.pause(0.5)
+        await pilot.press("f5"); await pilot.pause(0.5)
         ht = app.query_one("#hub-results", DataTable)
         ht.move_cursor(row=0); await pilot.pause(0.1)
         await pilot.press("up"); await pilot.pause(0.2)
@@ -51,7 +51,7 @@ async def main():
         await pilot.press("down"); await pilot.pause(0.2)
         check("↓ from search back to results", fid() == "hub-results", fid())
         # local: profiles <-> models
-        await pilot.press("3"); await pilot.pause(0.5)
+        await pilot.press("4"); await pilot.pause(0.5)
         m = app.query_one("#models", DataTable); m.move_cursor(row=0); await pilot.pause(0.1)
         await pilot.press("up"); await pilot.pause(0.2)
         check("↑ from first model goes to profiles", fid() == "profiles", fid())

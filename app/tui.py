@@ -751,7 +751,7 @@ COMMANDS = [
     ("settings", "HF token, API key, memory, port, image"), ("serve <profile>", "switch the server to a profile"),
     ("stop", "stop the server"), ("start", "start the server"), ("restart", "restart the server"),
     ("test", "send a test request"), ("pull <org/repo>", "download a model"), ("info <org/repo>", "full model analysis"),
-    ("search <text>", "search Hugging Face"), ("connect", "connection details"), ("update", "update l9s"),
+    ("search <text>", "search Hugging Face"), ("connect", "coding agents & editors"), ("update", "update l9s"),
     ("help", "keys and concepts"),
     ("quit", "exit (server keeps running)"),
 ]
@@ -890,13 +890,13 @@ HELP_MD = """
 | key | tab | what it's for |
 |---|---|---|
 | `1` / `F1` | **Server** | health, live throughput/latency, startup progress, logs, stop/start/restart/test |
-| `2` / `F2` | **Requests** | every request in flight and recently finished (the "pods" view), plus clients |
-| `3` / `F3` | **Local** | saved profiles (model + flags) and downloaded weights |
-| `4` / `F4` | **Hub** | search Hugging Face, inspect model cards, pull / pull + serve |
-| `5` / `F5` | **Downloads** | progress of pulls (they keep running if you quit) |
-| `6` / `F6` | **Events** | timeline: server starts, ready, crashes, OOM, model switches, error bursts, cancels |
-| `7` / `F7` | **Settings** | HF token, API key, memory budget, port, vLLM image, prompt logging, model switching |
-| `8` / `F8` | **Connect** | set up Claude Code, Codex, OpenCode, Cursor, … to use this server (`enter` connects) |
+| `2` / `F2`, `c` | **Connect** | set up Claude Code, Codex, OpenCode, Zed, … to use this server (`enter` connects) |
+| `3` / `F3` | **Requests** | every request in flight and recently finished (the "pods" view), plus clients |
+| `4` / `F4` | **Local** | saved profiles (model + flags, how long each takes to load) and downloaded weights |
+| `5` / `F5` | **Hub** | search Hugging Face, inspect model cards, pull / pull + serve |
+| `6` / `F6` | **Downloads** | progress of pulls (they keep running if you quit) |
+| `7` / `F7` | **Events** | timeline: server starts, ready, crashes, OOM, model switches, error bursts, cancels |
+| `8` / `F8` | **Settings** | HF token, API key, memory budget, port, vLLM image, model switching, prompt logging, updates |
 
 `F1`–`F8` work even while typing in a text box. `Esc` leaves the search box or clears a filter.
 
@@ -968,7 +968,7 @@ opens a drop-down.
 
 
 # ================================================================ app
-TABS = ["server", "requests", "local", "hub", "downloads", "events", "settings", "connect"]
+TABS = ["server", "connect", "requests", "local", "hub", "downloads", "events", "settings"]
 
 # k9s-style skin. Same color names as k9s' default skin, except gold replaces k9s' orange (orange renders as
 # red on many terminals, and red is reserved for failures here).
@@ -1146,7 +1146,7 @@ class LLMTui(App):
         Binding("e", "edit_profile", "Edit"),
         Binding("x", "delete", "Delete"),
         Binding("i", "info", "Info"),
-        Binding("c", "connect", "Connect"),
+        Binding("c", "connect", "Connect", show=False),
         Binding("r", "refresh", "Refresh"),
         Binding("question_mark", "help", "Help", key_display="?"),
         Binding("U", "update", "Update", key_display="U"),
@@ -1235,21 +1235,20 @@ class LLMTui(App):
                     yield Button("Restart", id="b-restart", variant="warning")
                     yield Button("Stop", id="b-stop", variant="error")
                     yield Button("Start", id="b-start", variant="success")
-                    yield Button("Connect", id="b-connect")
                     yield Button("Clear log", id="b-clear")
                     yield Checkbox("errors/warnings only", False, id="log-errors")
                     yield Checkbox("show polling requests", False, id="log-noise")
                 yield Log(id="srvlog", max_lines=5000, highlight=True)
-            with TabPane("2 Requests", id="requests"):
+            with TabPane("3 Requests", id="requests"):
                 yield Static("", id="req-summary")
                 yield KTable(id="reqs", cursor_type="row", zebra_stripes=False)
                 yield KTable(id="clients", cursor_type="row", zebra_stripes=False)
-            with TabPane("3 Local", id="local"):
+            with TabPane("4 Local", id="local"):
                 yield Label("", id="local-hdr1", classes="section")
                 yield KTable(id="profiles", cursor_type="row", zebra_stripes=False)
                 yield Label("", id="local-hdr2", classes="section")
                 yield KTable(id="models", cursor_type="row", zebra_stripes=False)
-            with TabPane("4 Hub", id="hub"):
+            with TabPane("5 Hub", id="hub"):
                 with Horizontal(id="hub-bar"):
                     yield Input(placeholder="/ to search Hugging Face · enter searches · esc back to results "
                                             "(e.g. qwen3.8 nvfp4, coder fp8)", id="hub-q")
@@ -1269,13 +1268,13 @@ class LLMTui(App):
                                      id="hub-meta")
                         with VerticalScroll():
                             yield Markdown("", id="hub-card")
-            with TabPane("5 Downloads", id="downloads"):
+            with TabPane("6 Downloads", id="downloads"):
                 yield Label("Downloads   [dim]run in the background and keep going if you quit · enter show log · "
                             + clk("delete", "x cancel / clear") + "[/dim]", classes="section")
                 yield KTable(id="dls", cursor_type="row", zebra_stripes=False)
-            with TabPane("6 Events", id="events"):
+            with TabPane("7 Events", id="events"):
                 yield KTable(id="events-t", cursor_type="row", zebra_stripes=False)
-            with TabPane("7 Settings", id="settings"):
+            with TabPane("8 Settings", id="settings"):
                 with VerticalScroll(id="settings-form"):
                     yield Static(f"Stored in [b]{LLM_HOME / 'env'}[/b] (readable only by you). [b]Save[/b] (bar at the "
                                  "bottom, or ctrl+s) applies each change the way it needs: most take effect at once; "
@@ -1313,13 +1312,12 @@ class LLMTui(App):
                                      "speed-ups. Applying a new image downloads it (~20 GB) and restarts the server.[/dim]")
                         with Horizontal(classes="frow"):
                             yield Input(id="set-image")
-                            yield Button("Check releases", id="set-image-check")
                         yield Static("", id="set-image-info")
                     yield Label("Model switching", classes="section")
                     yield Static("[dim]auto: a request that names another model (any profile, or a downloaded model "
                                  "that fits) loads it, like Ollama: running requests finish first, then the model "
-                                 "switches; streaming clients are kept waiting with keep-alives. off: such requests "
-                                 "get an error saying which model is loaded.[/dim]")
+                                 "switches; streaming clients are kept waiting with keep-alives. Each model's last load time "
+                                 "is in Local. off: such requests get an error saying which model is loaded.[/dim]")
                     with Horizontal(classes="frow"):
                         yield Select([("auto (like Ollama)", "auto"), ("off", "off")], value="auto",
                                      allow_blank=False, id="set-switch")
@@ -1340,7 +1338,7 @@ class LLMTui(App):
                     yield Button("Save (ctrl+s)", id="set-save", variant="primary")
                     yield Button("Discard", id="set-revert")
                     yield Button("Restart server", id="set-apply", variant="warning")
-            with TabPane("8 Connect", id="connect"):
+            with TabPane("2 Connect", id="connect"):
                 yield Static("loading…", id="cx-head")
                 with Horizontal(id="cx-body"):
                     yield KTable(id="cx-tools", cursor_type="row", zebra_stripes=False)
@@ -1445,7 +1443,7 @@ class LLMTui(App):
         self.query_one("#st-totals").border_title = "Since server start"
         self.query_one("#st-sys").border_title = "System"
         self.query_one("#srvlog").border_title = "Server log"
-        self.query_one("#profiles", DataTable).add_columns("", "profile (model name)", "repo", "flags")
+        self.query_one("#profiles", DataTable).add_columns("", "profile (model name)", "repo", "load time", "flags")
         self.query_one("#models", DataTable).add_columns("", "repo", "size", "used by profiles", "last used")
         h = self.query_one("#hub-results", DataTable)
         for label, key in (("", "local"), ("repo", "repo"), ("downloads", "dl"), ("likes", "likes"),
@@ -1655,6 +1653,9 @@ class LLMTui(App):
         elif pid == "settings":
             if not self.settings_dirty():
                 self.load_settings_form()
+            if self.backend != "mlx" and not getattr(self, "_releases_checked", False):
+                self._releases_checked = True
+                self._check_releases(self.query_one("#set-image", Input).value.strip())
             self.query_one("#settings-form").focus()
         elif pid == "requests":
             self.query_one("#reqs", DataTable).focus()
@@ -2135,18 +2136,11 @@ class LLMTui(App):
             return
         self.cx_info, self.cx_rows = info, {r["id"]: r for r in rows}
         mode = load_env().get("MODEL_SWITCH", "auto")
-        models = "  ".join((f"[b {K9['greenyellow']}]{m['id']} ●[/]" if m["loaded"] else
-                            f"[{K9['sky']}]{m['id']}[/]" + (f"[dim] ~{human_secs(m['load_seconds'])}[/dim]"
-                                                            if m.get("load_seconds") else ""))
-                           for m in info["models"]) or "[dim]none yet[/dim]"
-        head = (f"[b]Base URL[/b] [{K9['gold']}]{info['base']}/v1[/]   [b]API key[/b] [{K9['gold']}]{info['key']}[/]   "
-                + clk("cx_copy_key", f"[{K9['dodger']}]copy key[/]") + "\n"
-                + f"[b]Models[/b] {models}\n[dim]● = loaded; ~time = how long that model took to load last time. "
-                + ("A tool that asks for another model loads it on first use, like Ollama: running requests finish "
-                   "first, then the server is down while it loads, and every client waits (the TUI header shows "
-                   "the progress)." if mode != "off" else
-                   "Automatic switching is off (MODEL_SWITCH=off): other models must be switched to by hand.")
-                + " Configs that list models are updated when your profiles change.[/dim]")
+        head = (f"This machine: [{K9['gold']}]{info['base']}/v1[/]   other machines: [{K9['gold']}]{info['lan_base']}/v1[/]   "
+                f"[dim]{len(info['models'])} models ("
+                + clk("tab('local')", "load times in Local") + ") · API key and model switching ("
+                + (f"{mode}" if mode != "auto" else "auto: another model loads on first use") + ") in "
+                + clk("tab('settings')", "Settings") + "[/dim]")
 
         def fill():
             self.query_one("#cx-head", Static).update(head)
@@ -2294,10 +2288,6 @@ class LLMTui(App):
                                    "Copied to the clipboard. On the other machine, paste this (or install l9s there and "
                                    "run `l9s connect --server <this-host>`, which also keeps it up to date):"
                                    "\n\n```\n" + snip + "\n```"))
-
-    def action_cx_copy_key(self) -> None:
-        self.copy_to_clipboard(getattr(self, "cx_info", {}).get("key", ""))
-        self.notify("API key copied")
 
     # ------------------------------------------------------------ settings
     SETTING_KEYS = {"HF_TOKEN": "#set-hf", "API_KEY": "#set-key", "GPU_MEM": "#set-mem", "PORT": "#set-port",
@@ -2537,6 +2527,8 @@ class LLMTui(App):
     def _settings_check_updates(self) -> None:
         info_w = self.query_one("#set-update-info", Static)
         self.call_from_thread(info_w.update, "[dim]checking GitHub / PyPI / Docker Hub…[/dim]")
+        if self.backend != "mlx":
+            self.call_from_thread(lambda: self._check_releases(self.query_one("#set-image", Input).value.strip()))
         try:
             self.update_info = updater.check()
             lines = updater.summary(self.update_info)
@@ -2586,10 +2578,6 @@ class LLMTui(App):
         except Exception as e:
             msg = str(e).splitlines()[0][:160]
             self.call_from_thread(st.update, f"[red]✗ rejected by huggingface.co: {msg}[/red]")
-
-    @on(Button.Pressed, "#set-image-check")
-    def settings_check_image(self) -> None:
-        self._check_releases(self.query_one("#set-image", Input).value.strip())
 
     @work(thread=True, exclusive=True, group="releases")
     def _check_releases(self, image: str) -> None:
@@ -2751,12 +2739,11 @@ class LLMTui(App):
         ctx = next((ml for mid, ml in s.get("models", []) if mid == prof), None) or \
             next((ml for _, ml in s.get("models", [])), None)
         tr = self.startup
-        lines = [f"[b {color}]● {badge}[/]   [b]{prof or '-'}[/b]  [dim]{repo}[/dim]"]
+        # status, model, endpoint, image and requests in flight are in the header; this adds the details
         px = s.get("proxy")
-        pxs = (f"[green]proxy ●[/green] {px['active']} in flight" if px else
-               "[b red]proxy DOWN: clients can't connect (l9s proxy restart)[/b red]")
-        lines.append(f"endpoint [b]{self.endpoint}[/b]  {pxs}   " + clk("connect", "[dim](c = connection details)[/dim]") + "   "
-                     f"uptime {dur(up)}   image [dim]{s.get('image', '-')}[/dim]")
+        lines = [f"[b]{repo or prof or '-'}[/b]" + (f"   up {dur(up)}" if up else "")
+                 + ("" if px else "   [b red]request proxy DOWN: clients can't connect (l9s proxy restart)[/b red]")
+                 + (f"   [b {color}]{badge}[/]" if badge.startswith(("CRASHED", "SWITCHING")) else "")]
         kv = ""
         if tr.kv_tokens:
             kv = f"   KV capacity {tr.kv_tokens:,} tokens (≈{tr.kv_conc:.1f} full-length requests at once)"
@@ -3087,10 +3074,6 @@ class LLMTui(App):
             return
         self.run_llm(["start"], "server started")
 
-    @on(Button.Pressed, "#b-connect")
-    def b_connect(self) -> None:
-        self.action_connect()
-
     @on(Button.Pressed, "#b-clear")
     def b_clear(self) -> None:
         self.query_one("#srvlog", Log).clear()
@@ -3119,7 +3102,11 @@ class LLMTui(App):
         profs = read_profiles()
         pf = self.filters.get("profiles", "")
         profs = [p for p in profs if match(pf, *p)]
-        sig = (act, tuple(profs), pf)
+        try:
+            loads = json.loads((LLM_HOME / "cache" / "load-times.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            loads = {}
+        sig = (act, tuple(profs), pf, tuple(sorted(loads.items())))
         if sig != getattr(self, "_prof_sig", None):
             self._prof_sig = sig
             pt = self.query_one("#profiles", DataTable)
@@ -3127,6 +3114,8 @@ class LLMTui(App):
             pt.clear()
             for name, repo, flags, env in profs:
                 pt.add_row(Text("● active", style="green") if name == act else "", name, repo,
+                           Text(f"~{human_secs(loads[name])}" if name in loads else "-",
+                                style="" if name in loads else "dim"),
                            (f"[env] {env}  " if env else "") + flags, key=name)
             if pt.row_count:
                 pt.move_cursor(row=min(row, pt.row_count - 1))

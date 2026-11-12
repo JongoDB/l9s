@@ -38,10 +38,10 @@ async def main():
             await pilot.press(str(i + 1)); await pilot.pause(0.3)
             check(f"key {i+1} -> {t}", tabs() == t)
             await pilot.press("f1" if t != "server" else "f2"); await pilot.pause(0.2)
-        await pilot.press("f4"); await pilot.pause(0.3)
+        await pilot.press("f5"); await pilot.pause(0.3)
         await pilot.press("slash"); await pilot.pause(0.3)
         await pilot.press(*"qwen")
-        await pilot.press("f2"); await pilot.pause(0.3)
+        await pilot.press("f3"); await pilot.pause(0.3)
         check("F2 from inside search box -> requests", tabs() == "requests")
         # generate traffic: 3 quick requests
         RUN = f"kt{int(time.time()) % 100000}"
@@ -137,7 +137,7 @@ async def main():
         await pilot.press("colon"); await pilot.pause(0.3); await pilot.press(*"bogus", "enter"); await pilot.pause(0.5)
         check("unknown command handled", tabs() == "hub" and app.is_running)
         # filter on local models & hub results
-        await pilot.press("3"); await pilot.pause(0.5)
+        await pilot.press("4"); await pilot.pause(0.5)
         mt = app.query_one("#models", DataTable); mt.focus()
         await pilot.press("slash"); await pilot.pause(0.3); await pilot.press(*"aeon", "enter"); await pilot.pause(1)
         check("filter local models", await wait(pilot, lambda: mt.row_count == 1 and "AEON" in str(mt.get_row_at(0)[1]), 5), mt.row_count)
@@ -163,14 +163,14 @@ async def main():
         # footer context
         fk = lambda: sorted(k for k, b in app.active_bindings.items() if b.binding.show and app.check_action(b.binding.action.split("(")[0], ()))
         check("footer on server: f/^s/filter, no kill", {"f", "ctrl+s", "slash"} <= set(fk()) and "ctrl+k" not in fk(), fk())
-        await pilot.press("2"); await pilot.pause(0.3)
+        await pilot.press("3"); await pilot.pause(0.3)
         check("footer on requests: kill/describe/a", {"ctrl+k", "d", "a"} <= set(fk()), fk())
         # settings has prompt-log toggle
-        await pilot.press("7"); await pilot.pause(0.5)
+        await pilot.press("8"); await pilot.pause(0.5)
         check("settings prompt-log toggle", app.query_one("#set-logprompts").value is True)
         # proxy-down rendering (point the view at a dead port, then restore)
         real = app.port; app.port = "18999"; app._last_req_poll = 0
-        await pilot.press("2"); await pilot.pause(2.5)
+        await pilot.press("3"); await pilot.pause(2.5)
         check("proxy down is explained", "not reachable" in summ(), summ()[:120])
         app.port = real
         check("no error notifications", True)

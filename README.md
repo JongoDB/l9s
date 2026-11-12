@@ -122,7 +122,7 @@ settings, profiles and history; `--remove-image` also deletes the vLLM Docker im
 ## Quick start
 
 ```bash
-l9s                                   # TUI: watch the server and requests; 4 = Hub, then / to search Hugging Face
+l9s                                   # TUI: watch the server and requests; 5 = Hub, then / to search Hugging Face
 
 l9s quickstart Qwen/Qwen3-8B-FP8      # pull + serve any model with its recommended settings
 l9s info Qwen/Qwen3-8B-FP8            # just the analysis: does it fit, how much context, settings
@@ -149,7 +149,7 @@ l9s connect opencode          # add l9s to OpenCode's config (shows the change, 
 l9s connect                   # every supported tool: installed? connected? how
 ```
 
-Or press `8` (or `c`) in the TUI: the **Connect** view lists the tools, shows exactly what each one's setup would
+Or press `2` (or `c`) in the TUI: the **Connect** view lists the tools, shows exactly what each one's setup would
 change, and connects it with `enter`.
 
 ![l9s Connect view: coding agents and editors, with the config change for the selected one](docs/img/connect.svg)

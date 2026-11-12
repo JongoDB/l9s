@@ -57,7 +57,10 @@ async def main():
     async with app.run_test(size=(200, 55)) as pilot:
         check("backend is mlx", app.backend == "mlx" and app.hw.vendor == "apple", app.hw.label())
         check("READY", await wait(pilot, lambda: app.state.get("ready"), 30), head()[:200])
-        check("head shows mlx-lm + proxy", "mlx-lm" in head() and "proxy ●" in head(), head()[:300])
+        hdr = str(app.query_one("#hdr-info").render())
+        check("server panel adds repo + uptime; header has mlx-lm (no repeats)",
+              "mlx-community/" in head() and " up " in head() and "mlx-lm" in hdr and "endpoint" not in head(),
+              head()[:300])
         check("uptime from launchd pid", "uptime -" not in head(), head()[:300])
         sysp = lambda: str(app.query_one("#st-sys", Static).render())  # noqa: E731
         check("memory panel mlx tree", "GPU (Metal) in use" in sysp() and "mlx-lm server" in sysp(), sysp())
@@ -72,7 +75,7 @@ async def main():
         check("metrics derived from proxy", await wait(pilot, lambda: re.search(r"requests\s+\d+", totals())
                                                        and "tokens" in totals(), 15), totals())
         check("KV line says not reported", "not reported by mlx-lm" in live(), live())
-        await pilot.press("2")
+        await pilot.press("3")
         rq = app.query_one("#reqs", DataTable)
         check("requests listed", await wait(pilot, lambda: rq.row_count >= 2, 10), rq.row_count)
         row = [str(c) for c in rq.get_row_at(0)]
@@ -98,11 +101,11 @@ async def main():
         await pilot.click("#yes")
         th.join(20)
         check("cancel ends stream", not th.is_alive())
-        await pilot.press("6")
+        await pilot.press("7")
         et = app.query_one("#events-t", DataTable)
         check("events present", await wait(pilot, lambda: et.row_count >= 1, 10), et.row_count)
         # hub: mlx filter
-        await pilot.press("4")
+        await pilot.press("5")
         await pilot.pause(0.4)
         await pilot.press("slash")
         await pilot.pause(0.3)
@@ -117,7 +120,7 @@ async def main():
         meta = lambda: str(app.query_one("#hub-meta", Static).render())  # noqa: E731
         check("hub detail analysis", await wait(pilot, lambda: "format" in meta() and "MLX" in meta(), 30), meta()[:200])
         # serve dialog for the served model
-        await pilot.press("3")
+        await pilot.press("4")
         mt = app.query_one("#models", DataTable)
         repo = tui.profile_repo(MODEL)
         await wait(pilot, lambda: repo in [k.value for k in mt.rows], 10)
@@ -140,7 +143,7 @@ async def main():
         check("i analysis modal", await wait(pilot, lambda: isinstance(app.screen, TextModal) and "mlx-lm" in app.screen.md, 30))
         await pilot.press("escape")
         # settings: vllm-only fields hidden
-        await pilot.press("7")
+        await pilot.press("8")
         await pilot.pause(0.5)
         check("vllm-only settings hidden", app.query_one("#vllm-settings").display is False)
         await pilot.press("1")
