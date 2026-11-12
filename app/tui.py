@@ -148,6 +148,30 @@ def est_bytes(params: float | None, fmt: str, repo: str = "") -> float | None:
     return params * FMT_BYTES[fmt]
 
 
+def short_repo(repo: str, n: int = 38) -> str:
+    """Long repo ids shortened to n chars: the org is trimmed first (lmstud…/Qwen3-…), the model name only if it
+    alone is too long (then in the middle, keeping the quant suffix)."""
+    if len(repo) <= n:
+        return repo
+    org, _, name = repo.rpartition("/")
+    if org and len(name) + 6 <= n:
+        return org[:n - len(name) - 2] + "…/" + name
+    if len(name) <= n:
+        return name
+    keep = n - 1
+    return name[:keep // 2] + "…" + name[-(keep - keep // 2):]
+
+
+def age(day: str) -> str:
+    """YYYY-MM-DD -> 3d / 5w / 4mo / 2y."""
+    try:
+        d = (time.time() - time.mktime(time.strptime(day, "%Y-%m-%d"))) / 86400
+    except (ValueError, TypeError):
+        return day or "?"
+    return "today" if d < 1 else f"{d:.0f}d" if d < 14 else f"{d / 7:.0f}w" if d < 60 else \
+        f"{d / 30.4:.0f}mo" if d < 365 else f"{d / 365:.0f}y"
+
+
 def fit_label(size_bytes: float | None, budget_gb: float) -> Text:
     if size_bytes is None:
         return Text("?", style="dim")
@@ -1036,8 +1060,8 @@ class LLMTui(App):
     #hub-sort { width: 22; }
     #hub-compat { width: auto; }
     #hub-body { height: 1fr; }
-    #hub-results { width: 3fr; }
-    #hub-detail { width: 2fr; border: solid #87CEFA; padding: 0 1; }
+    #hub-results { width: 2fr; }
+    #hub-detail { width: 1fr; border: solid #87CEFA; padding: 0 1; }
     #hub-btns { height: auto; }
     #hub-btns Button { margin-right: 1; }
     #settings-form { padding: 0 2; }
@@ -1348,7 +1372,7 @@ class LLMTui(App):
         self.query_one("#profiles", DataTable).add_columns("", "profile (model name)", "repo", "flags")
         self.query_one("#models", DataTable).add_columns("", "repo", "size", "used by profiles", "last used")
         h = self.query_one("#hub-results", DataTable)
-        for label, key in (("repo", "repo"), ("local", "local"), ("downloads", "dl"), ("likes", "likes"),
+        for label, key in (("", "local"), ("repo", "repo"), ("downloads", "dl"), ("likes", "likes"),
                            ("updated", "upd"), ("params", "params"), ("format", "fmt"), ("~size", "size"),
                            ("fit", "fit")):
             h.add_column(label, key=key)
@@ -2997,9 +3021,9 @@ Any OpenAI-compatible client works: pick the "OpenAI compatible" provider and en
             f = self.filters.get("hub-results", "")
             rows = [r for r in rows if match(f, r["repo"], r["fmt"])]
             for r in rows:
-                t.add_row(Text(r["repo"] + (" 🔒" if r["gated"] else "")),
-                          Text("✓", style="green") if r["local"] else "",
-                          human(r["dl"]), human(r["likes"]), r["upd"], human(r["params"]),
+                t.add_row(Text("✓", style="green") if r["local"] else "",
+                          Text(short_repo(r["repo"]) + (" 🔒" if r["gated"] else "")),
+                          human(r["dl"]), human(r["likes"]), age(r["upd"]), human(r["params"]),
                           Text(r["fmt"], style="green" if r["ok"] else "red"),
                           ("~" + gb(r["size"])) if r["size"] else "?", fit_label(r["size"], self.budget_gb),
                           key=r["repo"])

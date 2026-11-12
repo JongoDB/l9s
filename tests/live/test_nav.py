@@ -56,12 +56,13 @@ async def main():
         await pilot.press("up"); await pilot.pause(0.2)
         check("↑ from first model goes to profiles", fid() == "profiles", fid())
         p = app.query_one("#profiles", DataTable)
-        for _ in range(p.row_count + 1):
+        for _ in range(p.row_count):
             await pilot.press("down"); await pilot.pause(0.1)
         check("↓ past last profile goes to models", fid() == "models", fid())
         if m.row_count > 1:
+            r0 = m.cursor_row
             await pilot.press("down"); await pilot.pause(0.1)
-            check("↓ inside models moves the cursor", m.cursor_row == 1 and fid() == "models")
+            check("↓ inside models moves the cursor", m.cursor_row == r0 + 1 and fid() == "models", (r0, m.cursor_row))
         # modal: ←/→ between buttons
         app.push_screen(Confirm("test?", "OK", danger=False)); await pilot.pause(0.4)
         a = app.focused; await pilot.press("right"); await pilot.pause(0.2); b = app.focused
