@@ -64,9 +64,15 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
 
 ## Screenshots
 
-**Server** (vLLM on a GB10): state, context and KV capacity, live throughput, latency, memory breakdown, server log.
+**Server** (vLLM on a GB10): the header (always on screen) has the model, status, endpoint and memory; the view adds
+context and KV capacity, live throughput, latency, the memory breakdown and the server log.
 
 ![l9s server view](docs/img/server.svg)
+
+**Local** (mlx-lm on a Mac): profiles with how long each took to load, so you know what a switch will cost, and the
+downloaded weights.
+
+![l9s local view](docs/img/local-mlx.svg)
 
 **Hub** (mlx-lm on an Apple Silicon Mac): press `/` to search Hugging Face, see what fits and how to run it before
 downloading.
