@@ -778,6 +778,9 @@ def is_local(request: web.Request) -> bool:
     return request.remote in LOOPBACK and not any(h in request.headers for h in FWD_HEADERS)
 
 
+_relay_hinted: set = set()
+
+
 def client_ip(request: web.Request) -> str:
     if request.remote in LOOPBACK or request.remote in TRUST_PROXY:
         for h in ("CF-Connecting-IP", "X-Real-IP"):
@@ -786,6 +789,12 @@ def client_ip(request: web.Request) -> str:
         xff = request.headers.get("X-Forwarded-For")
         if xff:
             return xff.split(",")[0].strip()
+    elif request.remote and request.remote not in _relay_hinted and any(h in request.headers for h in FWD_HEADERS):
+        _relay_hinted.add(request.remote)
+        event("access", f"requests relayed by {request.remote} (a tunnel or reverse proxy) carry the real client "
+                        f"address, but l9s doesn't trust that machine yet, so it sees every client as {request.remote} "
+                        f"(and 10 wrong keys from anyone would block them all). Set TRUST_PROXY={request.remote} "
+                        "(Settings › Access) if that machine is yours.", "warn")
     return request.remote or "?"
 
 

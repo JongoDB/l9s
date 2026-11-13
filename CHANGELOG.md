@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2
+- Front ends on another machine (e.g. a Cloudflare Tunnel running on another box on the LAN): Settings › Access › trusted relay (`TRUST_PROXY`) makes l9s use the real client address the relay passes on, so the Requests view shows who's who and the wrong-key block hits the sender, not the relay (which would have locked everyone out). Events tells you when a relay needs trusting. Checked through Cloudflare at a real public URL: keys, limits, streaming, 401/403/404 for wrong keys, other models, the admin API and non-API routes.
+- l9s's own requests to remote servers (`l9s connect --server https://…`, `l9s expose` checks) identify as `l9s/<version>`: Cloudflare's bot rules block Python's default user agent.
+
 ## 0.8.1
 - Settings › Access sets up HTTPS too: pick Caddy + Let's Encrypt, a Cloudflare quick tunnel, a Cloudflare Tunnel on your domain or Tailscale Funnel, enter the host name if it needs one, and press Set up HTTPS (shows each step and the certificate result, and fills in the public URL). Check and Turn off sit next to it; the section links to Keys (9).
 

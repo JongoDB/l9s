@@ -348,7 +348,12 @@ def status() -> None:
         import ssl
         import urllib.request
         ctx = ssl.create_default_context()
-        with urllib.request.urlopen(url + "/health", timeout=10, context=ctx) as r:
+        try:
+            ver = (Path(__file__).with_name("VERSION")).read_text().strip()
+        except OSError:
+            ver = "dev"
+        req = urllib.request.Request(url + "/health", headers={"User-Agent": f"l9s/{ver}"})  # not Python-urllib:
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as r:  # Cloudflare's bot rules block that one
             print(f"reachable over HTTPS with a valid certificate (HTTP {r.status})")
     except Exception as ex:  # noqa: BLE001
         print(f"couldn't reach {url}/health from here ({str(ex)[:160]}); from inside your own network that can be "

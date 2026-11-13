@@ -379,6 +379,13 @@ Setting the public URL by hand (Settings › Access, `PUBLIC_URL`) works with an
 relays from this machine count as remote (the admin API and non-API routes stay closed to them), and
 `TRUST_PROXY=<ip>` trusts `X-Forwarded-For` from a proxy on another machine.
 
+**A front end on another machine** (e.g. `cloudflared` on another box on your LAN relaying to this one): l9s then
+sees every request as coming from that box, which also means 10 wrong keys from anyone would block everyone. The
+Events view says so when it happens; set Settings › Access › trusted relay (`TRUST_PROXY=<that box's LAN IP>`) and
+l9s uses the client address the relay passes on (`CF-Connecting-IP` / `X-Forwarded-For`). Cloudflare's bot rules
+block Python's default user agent (`Python-urllib`); coding tools and the OpenAI / Anthropic SDKs get through, and
+l9s's own requests identify as `l9s/<version>`.
+
 Long generations stream through all of these. Cloudflare closes a request that sends nothing for 100 seconds,
 which only matters for very long prompts on a cold cache.
 

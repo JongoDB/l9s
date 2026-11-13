@@ -95,13 +95,22 @@ def local_info() -> dict:
             **({"public_base": public} if public else {})}
 
 
+def version() -> str:
+    try:
+        return (Path(__file__).with_name("VERSION")).read_text().strip()
+    except OSError:
+        return "dev"
+
+
 def url_info(url: str, key: str) -> dict:
     """An l9s server known only by URL + API key (it may be on the internet behind HTTPS)."""
     url = url.rstrip("/")
     if url.endswith("/v1"):
         url = url[:-3]
     try:
-        req = urllib.request.Request(f"{url}/v1/models", headers={"Authorization": f"Bearer {key}"})
+        # an l9s user agent: Cloudflare's bot protection blocks Python's default one ("Python-urllib")
+        req = urllib.request.Request(f"{url}/v1/models", headers={"Authorization": f"Bearer {key}",
+                                                                  "User-Agent": f"l9s/{version()}"})
         data = json.load(urllib.request.urlopen(req, timeout=15)).get("data", [])
     except urllib.error.HTTPError as e:
         raise SystemExit(f"{url} answered {e.code}: " + ("the API key isn't valid there" if e.code == 401 else

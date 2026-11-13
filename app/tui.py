@@ -1416,11 +1416,13 @@ class LLMTui(App):
                         yield Button("Check", id="set-expose-check")
                         yield Button("Turn off", id="set-expose-off", variant="error")
                     yield Static("", id="set-expose-info")
-                    yield Static("[dim]Public URL (filled in by Set up HTTPS; set it by hand for any other reverse "
-                                 "proxy) and where l9s listens: \"this machine only\" when a tunnel or proxy on this "
-                                 "machine is the only way in.[/dim]")
+                    yield Static("[dim]Public URL (filled in by Set up HTTPS; set it by hand for any other front end) · "
+                                 "trusted relay: the LAN address of a tunnel / reverse proxy on another machine, so l9s "
+                                 "sees real client addresses (Events tells you if one is needed) · where l9s listens: "
+                                 "\"this machine only\" when a tunnel or proxy on this machine is the only way in.[/dim]")
                     with Horizontal(classes="frow"):
                         yield Input(id="set-public", placeholder="https://llm.example.com (optional)")
+                        yield Input(id="set-trust", placeholder="trusted relay IPs, e.g. 192.168.1.20 (optional)")
                     with Horizontal(classes="frow"):
                         yield Select([("all networks (LAN + anything forwarded to it)", "0.0.0.0"),
                                       ("this machine only (behind a tunnel / reverse proxy)", "127.0.0.1")],
@@ -2554,7 +2556,7 @@ class LLMTui(App):
 
     # ------------------------------------------------------------ settings
     SETTING_KEYS = {"HF_TOKEN": "#set-hf", "API_KEY": "#set-key", "GPU_MEM": "#set-mem", "PORT": "#set-port",
-                    "IMAGE": "#set-image", "PUBLIC_URL": "#set-public"}
+                    "IMAGE": "#set-image", "PUBLIC_URL": "#set-public", "TRUST_PROXY": "#set-trust"}
 
     def load_settings_form(self) -> None:
         self._settings_loaded = True
@@ -2605,12 +2607,15 @@ class LLMTui(App):
             probs.append("Hugging Face tokens start with hf_")
         if ":" not in v["IMAGE"]:
             probs.append("image needs a tag, e.g. vllm/vllm-openai:v0.33.0")
+        if v["TRUST_PROXY"] and not all(re.match(r"^[0-9a-fA-F:.]+$", x.strip())
+                                         for x in v["TRUST_PROXY"].split(",") if x.strip()):
+            probs.append("trusted relays are IP addresses, comma-separated")
         if v["PUBLIC_URL"] and not re.match(r"^https?://[^\s/]+(:\d+)?(/\S*)?$", v["PUBLIC_URL"]):
             probs.append("public URL must look like https://llm.example.com")
         return probs
 
     # What each setting needs before it is in effect. Everything else is read when used (HF token, update mode).
-    PROXY_KEYS = ("PORT", "API_KEY", "LOG_PROMPTS", "BIND")  # the request proxy reads these at start: restarted on Save
+    PROXY_KEYS = ("PORT", "API_KEY", "LOG_PROMPTS", "BIND", "TRUST_PROXY")  # the request proxy reads these at start: restarted on Save
 
     def server_keys(self) -> tuple:
         """Settings the model server reads at start (need a server restart)."""
