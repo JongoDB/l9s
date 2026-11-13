@@ -229,7 +229,52 @@ def host_ip() -> str:
                if not ip.startswith(("127.", "169.254.", "192.0.0."))]  # loopback, link-local, NAT64/hotspot
         private = [ip for ip in ips if re.match(r"^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", ip)]
         return (private or ips or ["localhost"])[0]
-    return (_run(["hostname", "-I"]).split() or ["localhost"])[0]
+    ips = [ip for ip in _run(["hostname", "-I"]).split() if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip)]
+    lan = [ip for ip in ips if re.match(r"^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", ip)
+           and not ip.startswith("172.17.")]  # not Docker's bridge
+    return (lan or ips or ["localhost"])[0]
+
+
+CGNAT = re.compile(r"^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.")  # 100.64.0.0/10: Tailscale, Headscale, NetBird, …
+VPN_IFACE = (("tailscale", "Tailscale"), ("wg", "WireGuard"), ("zt", "ZeroTier"), ("nebula", "Nebula"),
+             ("nb-", "NetBird"), ("tun", "VPN"), ("utun", "VPN"), ("ipsec", "VPN"), ("ppp", "VPN"))
+NOT_VPN = ("lo", "docker", "br-", "veth", "virbr", "cni", "flannel", "vmnet", "bridge", "awdl", "llw", "anpi", "en",
+           "eth", "wl", "ap")
+
+
+def _iface_ips() -> list[tuple[str, str]]:
+    """(interface, IPv4) for every interface that has one."""
+    if platform.system() == "Darwin":
+        out, cur = [], None
+        for line in _run(["ifconfig"]).splitlines():
+            m = re.match(r"^(\S+?):\s", line)
+            if m:
+                cur = m.group(1)
+            m = re.search(r"\binet (\d+\.\d+\.\d+\.\d+)", line)
+            if m and cur:
+                out.append((cur, m.group(1)))
+        return out
+    return [(m.group(1), m.group(2)) for m in
+            re.finditer(r"^\d+:\s+(\S+?)(?:@\S+)?\s+inet (\d+\.\d+\.\d+\.\d+)", _run(["ip", "-o", "-4", "addr", "show"]),
+                        re.M)]
+
+
+def vpn_addresses() -> list[dict]:
+    """This machine's addresses on VPNs (Tailscale, WireGuard, ZeroTier, …): [{ip, kind, iface}], Tailscale first."""
+    found = {}
+    ts = _run(["tailscale", "ip", "-4"], timeout=3).split() if shutil.which("tailscale") else []
+    for ip in ts:
+        found[ip] = {"ip": ip, "kind": "Tailscale", "iface": "tailscale"}
+    for iface, ip in _iface_ips():
+        if ip in found or ip.startswith(("127.", "169.254.")):
+            continue
+        kind = next((k for pre, k in VPN_IFACE if iface.startswith(pre)), None)
+        if CGNAT.match(ip) and (kind in (None, "VPN") or iface.startswith("utun")):
+            kind = "Tailscale / NetBird (100.64/10)" if kind in (None, "VPN") else kind
+        elif not kind or iface.startswith(NOT_VPN):
+            continue
+        found[ip] = {"ip": ip, "kind": kind, "iface": iface}
+    return sorted(found.values(), key=lambda d: (d["kind"] != "Tailscale", d["kind"], d["ip"]))
 
 
 def vllm_reserved(hw: Hardware) -> int:

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0
+- Setting up a personal or shared server now asks how other devices reach it, and nothing about that is fixed: **only this machine**, **this machine + your local network**, **your VPN** (WireGuard, ZeroTier, NetBird, …), **Tailscale (tailnet only)**, a **free temporary address** (Cloudflare quick tunnel), **Tailscale Funnel**, **your domain** via Cloudflare Tunnel or via Caddy + Let's Encrypt on your public IP, or **a tunnel / reverse proxy you already run**. The same choices are in Settings › Access (Apply, or Guided… for the popup) and `l9s expose local|lan|vpn|url|cloudflare|tailscale|caddy`.
+- l9s detects the addresses itself: the LAN address, this machine's VPN addresses (Tailscale, WireGuard, ZeroTier, NetBird, other tunnels), and a tunnel or reverse proxy on another machine that relays requests. It offers to trust that relay (Settings › Access › Trust relay, `l9s expose trust <ip>`) so per-person limits and the wrong-key block see real client addresses.
+- `l9s config` (list / get / set): every other setting from the command line, checked and applied like Settings › Save. No message tells you to edit `~/.l9s/env` any more; l9s writes it itself.
+- A plain-`http://` public address that isn't on your LAN or a VPN is refused (keys and prompts would cross the internet unencrypted). Key share text warns when the server only listens on its own machine.
+- Settings › Access replaces the separate Public URL and listen-address fields with the choices above. Switching to personal or shared in Settings › Mode walks through the same steps as the first-run setup.
+- The LAN address on Linux skips Docker's bridge network.
+
 ## 0.9.0
 - Three modes, picked the first time you run `l9s` (a short setup) or at install (`--mode`), and changeable any time in Settings › Mode or with `l9s mode`: **personal** (serve yourself), **shared** (serve many people: tuned for batching, then HTTPS and a key per person, each step offered in turn) and **client** (no model server; use other people's l9s servers).
 - `l9s link add <name> <url> --key <key>`, or Access (9) › Link a server: someone else's l9s server joins yours. Its models show up in your `/v1/models` as `<name>/<model>` (and `<name>/l9s`, whatever it has loaded), and l9s forwards requests for them with the key you were given, so every tool already connected to your l9s can use them. Checked end to end over the internet: models, chat, streaming, the Anthropic API and a Claude Code session (with a tool call) from a client-mode Mac through a GB10 behind Cloudflare.

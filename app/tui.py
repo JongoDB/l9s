@@ -750,6 +750,171 @@ class KeyDialog(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
+# How other devices reach this server: (id, group, title, what it means). Applied with `l9s expose …`.
+REACH = [
+    ("local", "Private", "Only this machine", "Tools on this computer only; nothing else on the network can connect."),
+    ("lan", "Private", "This machine + my local network",
+     "Other devices at home / work connect to http://{lan}:{port} (detected). Nothing on the internet."),
+    ("vpn", "VPN", "My VPN (WireGuard, ZeroTier, NetBird, …)",
+     "Devices on your VPN connect to this machine's VPN address ({vpn}). Nothing on the public internet."),
+    ("tailscale-private", "VPN", "Tailscale, my tailnet only",
+     "HTTPS at https://<machine>.<tailnet>.ts.net, for devices on your tailnet. Needs Tailscale signed in here."),
+    ("cloudflare-quick", "Internet", "Free temporary address (Cloudflare)",
+     "https://<random>.trycloudflare.com: no account, no domain, nothing to open on your router. The address changes "
+     "when the tunnel restarts: good for trying it out."),
+    ("tailscale", "Internet", "Tailscale Funnel (no domain needed)",
+     "https://<machine>.<tailnet>.ts.net from anywhere. Needs Tailscale, and Funnel allowed for your tailnet."),
+    ("cloudflare", "Internet", "My domain, via Cloudflare Tunnel",
+     "https://<host on your domain>: the domain must be on Cloudflare; nothing to open on your router."),
+    ("caddy", "Internet", "My domain, on this machine's public IP (Let's Encrypt)",
+     "Caddy gets a free certificate. Needs a DNS record for the host pointing at your public IP, and ports 80 + 443 "
+     "forwarded to this machine."),
+    ("own", "Internet", "I already run a tunnel / reverse proxy",
+     "You set up the way in yourself (nginx, Traefik, your own Cloudflare Tunnel, …): give its URL; l9s detects the "
+     "relay machine and offers to trust it."),
+]
+REACH_TITLE = {r[0]: r[2] for r in REACH}
+
+
+def reach_current(env: dict) -> str:
+    e = env.get("EXPOSE") or ""
+    if e in REACH_TITLE:
+        return e
+    if env.get("PUBLIC_URL"):
+        return "own"
+    return "local" if env.get("BIND") == "127.0.0.1" else "lan"
+
+
+def reach_needs(choice: str) -> list[tuple[str, str, str]]:
+    """Inputs a choice needs: (field, label, placeholder)."""
+    return {"vpn": [("addr", "VPN address", "this machine's address on the VPN, e.g. 10.8.0.2")],
+            "cloudflare": [("host", "Host name", "e.g. llm.example.com (on your Cloudflare domain)")],
+            "caddy": [("host", "Host name", "e.g. llm.example.com"),
+                      ("email", "Email", "for Let's Encrypt expiry notices (optional)")],
+            "own": [("url", "Its URL", "e.g. https://llm.example.com"),
+                    ("trust", "Relay address", "optional: the tunnel / proxy machine's LAN IP (found for you)")]
+            }.get(choice, [])
+
+
+def reach_check(choice: str, v: dict) -> str:
+    host_re = r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$"
+    if choice in ("caddy", "cloudflare") and not re.match(host_re, v.get("host", ""), re.I):
+        return "enter the host name, e.g. llm.example.com"
+    if choice == "own" and not re.match(r"^https?://[^\s/]+(:\d+)?/?$", v.get("url", "")):
+        return "enter the URL, e.g. https://llm.example.com"
+    if choice == "vpn" and not re.match(r"^(https?://)?[0-9a-zA-Z.:\[\]-]+$", v.get("addr", "")):
+        return "enter this machine's VPN address"
+    if v.get("trust") and not all(re.match(r"^[0-9a-fA-F:.]+$", x.strip()) for x in v["trust"].split(",") if x.strip()):
+        return "the relay address is an IP address, e.g. 192.168.1.20"
+    return ""
+
+
+def reach_args(choice: str, v: dict) -> list[str]:
+    return {"local": ["local"], "lan": ["lan"], "vpn": ["vpn"] + ([v["addr"]] if v.get("addr") else []),
+            "tailscale-private": ["tailscale", "--private"], "cloudflare-quick": ["cloudflare"],
+            "tailscale": ["tailscale"], "cloudflare": ["cloudflare", "--name", "l9s", "--host", v.get("host", "")],
+            "caddy": ["caddy", v.get("host", "")] + (["--email", v["email"]] if v.get("email") else []),
+            "own": ["url", v.get("url", "")] + (["--trust", v["trust"]] if v.get("trust") else [])}[choice]
+
+
+class ReachDialog(ModalScreen[dict | None]):
+    """How other devices reach this server (first-run setup; Settings › Access › Guided)."""
+    DEFAULT_CSS = """
+    ReachDialog { align: center middle; }
+    #box { width: 100; height: auto; max-height: 95%; border: thick $primary; padding: 1 2; background: $surface; }
+    .grp { margin-top: 1; color: $accent; text-style: bold; }
+    .opt { height: auto; }
+    .opt Button { width: 34; }
+    .opt Static { width: 1fr; padding: 0 0 0 2; }
+    .fld { height: auto; }
+    .fld Label { width: 16; padding-top: 1; }
+    .fld Input { width: 1fr; }
+    #rd-err { color: $error; height: auto; }
+    #rd-btns { dock: bottom; height: 2; align-horizontal: right; padding-top: 1; background: $surface; }
+    #rd-btns Button { margin-left: 2; }
+    """
+
+    def __init__(self, current: str, recommended: str, lan: str, port: str, vpn: list[dict], mode: str = ""):
+        super().__init__()
+        self.current, self.recommended, self.lan, self.port, self.vpn, self.mode = \
+            current, recommended, lan, port, vpn, mode
+        self.choice: str | None = None
+
+    def compose(self) -> ComposeResult:
+        vpn = ", ".join(f"{d['ip']} ({d['kind']})" for d in self.vpn) or "none found yet: connect the VPN, or type it"
+        with VerticalScroll(id="box"):
+            yield Static("[b]How should other devices reach this server?[/b]\n[dim]"
+                         + ("Shared server: people elsewhere usually come over the internet (pick an HTTPS option) or "
+                            "your VPN. " if self.mode == "shared" else "")
+                         + "Every request from another device still needs an API key. Change this any time in "
+                         "Settings › Access or with `l9s expose`.[/dim]")
+            group = None
+            for rid, grp, title, desc in REACH:
+                if grp != group:
+                    group = grp
+                    yield Static(grp, classes="grp")
+                with Horizontal(classes="opt"):
+                    yield Button(title + (" ✓" if rid == self.current else ""), id=f"rd-{rid}",
+                                 variant="primary" if rid == self.recommended else "default")
+                    yield Static(desc.format(lan=self.lan, port=self.port, vpn=vpn))
+            with Vertical(id="rd-fields"):
+                pass
+            yield Static("", id="rd-err")
+            with Horizontal(id="rd-btns"):
+                yield Button("Keep it as it is", id="rd-keep")
+                yield Button("Apply", id="rd-apply", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#rd-apply").display = False
+        self.query_one(f"#rd-{self.recommended}", Button).focus()
+
+    @on(Button.Pressed)
+    async def pressed(self, ev: Button.Pressed) -> None:
+        bid = ev.button.id or ""
+        if bid == "rd-keep":
+            self.dismiss(None)
+            return
+        if bid == "rd-apply":
+            self.submit()
+            return
+        if not bid.startswith("rd-"):
+            return
+        self.choice = bid[3:]
+        needs = reach_needs(self.choice)
+        if not needs:
+            self.dismiss({"choice": self.choice})
+            return
+        box = self.query_one("#rd-fields", Vertical)
+        await box.remove_children()
+        prefill = {"addr": self.vpn[0]["ip"] if self.vpn else ""}
+        rows = [Static(f"[b]{REACH_TITLE[self.choice]}[/b]", classes="grp")]
+        for fid, label, ph in needs:
+            rows.append(Horizontal(Label(label), Input(value=prefill.get(fid, ""), placeholder=ph, id=f"rd-f-{fid}"),
+                                   classes="fld"))
+        if self.choice == "vpn" and len(self.vpn) > 1:
+            rows.append(Static("[dim]this machine's VPN addresses: " + ", ".join(
+                f"{d['ip']} ({d['kind']}, {d['iface']})" for d in self.vpn) + "[/dim]"))
+        self.query_one("#rd-err", Static).update("")
+        await box.mount(*rows)
+        self.query_one("#rd-apply").display = True
+        box.query(Input).first().focus()
+        self.call_after_refresh(lambda: self.query_one("#rd-btns").scroll_visible())
+
+    @on(Input.Submitted)
+    def submit(self, *_) -> None:
+        if not self.choice:
+            return
+        v = {fid: self.query_one(f"#rd-f-{fid}", Input).value.strip() for fid, _, _ in reach_needs(self.choice)}
+        err = reach_check(self.choice, v)
+        if err:
+            self.query_one("#rd-err", Static).update(err)
+            return
+        self.dismiss({"choice": self.choice, **v})
+
+    def key_escape(self) -> None:
+        self.dismiss(None)
+
+
 class SetupWizard(ModalScreen[str | None]):
     """First run: what is this device for? personal / shared / client (change later: Settings › Mode, l9s mode)."""
     DEFAULT_CSS = """
@@ -1523,41 +1688,30 @@ class LLMTui(App):
                     with Horizontal(classes="frow"):
                         yield Input(id="set-port", restrict=r"[0-9]*")
                         yield Static("", id="set-port-info")
-                    yield Label("Access from other places", classes="section")
-                    yield Static("[dim]To serve people over the internet, put an HTTPS front end in front of l9s (l9s "
-                                 "itself is plain HTTP: never forward a router port straight to it). Pick one and press "
-                                 "Set up HTTPS: it installs what's needed, gets the certificate and fills in the public "
-                                 "URL. Runs right away (no Save needed). Then give each person their own key in "
-                                 + clk("tab('keys')", "Keys (9)") + ".[/dim]")
+                    yield Label("How other devices reach this server", classes="section")
+                    yield Static("[dim]Pick how, fill in what it asks for, and press Apply: l9s installs what's needed, "
+                                 "gets the certificate and works out the address to share (runs right away, no Save "
+                                 "needed). l9s itself is plain HTTP, so it never puts its own port on the internet. "
+                                 "Every request from another device needs a key: give each person their own in "
+                                 + clk("tab('keys')", "Access (9)") + ".[/dim]")
                     with Horizontal(classes="frow"):
-                        yield Select([("Caddy + Let's Encrypt (your domain; forward ports 80 + 443)", "caddy"),
-                                      ("Cloudflare quick tunnel (no domain, nothing to open; address changes)",
-                                       "cloudflare-quick"),
-                                      ("Cloudflare Tunnel on your domain (nothing to open)", "cloudflare"),
-                                      ("Tailscale Funnel: the internet (https://<machine>.<tailnet>.ts.net)",
-                                       "tailscale"),
-                                      ("Tailscale, your tailnet only (VPN; https://<machine>.<tailnet>.ts.net)",
-                                       "tailscale-private")],
-                                     value="caddy", allow_blank=False, id="set-expose-mode")
+                        yield Select([(f"{grp}: {title}", rid) for rid, grp, title, _ in REACH],
+                                     value="lan", allow_blank=False, id="set-expose-mode")
                     with Horizontal(classes="frow", id="set-expose-hostrow"):
-                        yield Input(id="set-expose-host", placeholder="host name, e.g. llm.example.com")
-                        yield Input(id="set-expose-email", placeholder="email for Let's Encrypt notices (optional)")
+                        yield Input(id="set-expose-host")
+                        yield Input(id="set-expose-email")
                     with Horizontal(classes="frow"):
-                        yield Button("Set up HTTPS", id="set-expose-go", variant="primary")
+                        yield Button("Apply", id="set-expose-go", variant="primary")
+                        yield Button("Guided…", id="set-expose-guide")
                         yield Button("Check", id="set-expose-check")
-                        yield Button("Turn off", id="set-expose-off", variant="error")
+                        yield Button("Trust relay", id="set-trust-relay", variant="warning")
                     yield Static("", id="set-expose-info")
-                    yield Static("[dim]Public URL (filled in by Set up HTTPS; set it by hand for any other front end) · "
-                                 "trusted relay: the LAN address of a tunnel / reverse proxy on another machine, so l9s "
-                                 "sees real client addresses (Events tells you if one is needed) · where l9s listens: "
-                                 "\"this machine only\" when a tunnel or proxy on this machine is the only way in.[/dim]")
+                    yield Static("[dim]Trusted relays: a tunnel or reverse proxy on [i]another[/i] machine that passes "
+                                 "requests on. Trusting it lets l9s see each client's real address (for limits and "
+                                 "blocking wrong keys). l9s spots one and offers Trust relay; or type its address "
+                                 "here and Save.[/dim]")
                     with Horizontal(classes="frow"):
-                        yield Input(id="set-public", placeholder="https://llm.example.com (optional)")
                         yield Input(id="set-trust", placeholder="trusted relay IPs, e.g. 192.168.1.20 (optional)")
-                    with Horizontal(classes="frow"):
-                        yield Select([("all networks (LAN + anything forwarded to it)", "0.0.0.0"),
-                                      ("this machine only (behind a tunnel / reverse proxy)", "127.0.0.1")],
-                                     value="0.0.0.0", allow_blank=False, id="set-bind")
                     with Vertical(id="vllm-settings"):
                         yield Label("Memory for vLLM (GPU_MEM)", classes="section")
                         yield Static("[dim]Fraction of the unified memory vLLM may use for weights + KV cache. Higher = more "
@@ -2644,9 +2798,13 @@ class LLMTui(App):
                 "models here instead: Settings › Mode.[/dim]")
             return
         self.query_one("#ky-head", Static).update(
-            f"People elsewhere use [b]{base}/v1[/b]" + ("" if env.get("PUBLIC_URL") else
-                                                       "  [dim](LAN address; set a public URL in Settings to serve "
-                                                       "people over the internet)[/dim]")
+            (f"[{K9['orangered']}]This server only listens on this machine[/]: nobody else can use these keys "
+             "until you change how it's reached (" + clk("tab('settings')", "Settings › Access") + ")."
+             if reach_current(env) == "local" else
+             f"People elsewhere use [b]{base}/v1[/b]" + ("" if env.get("PUBLIC_URL") else
+                                                        "  [dim](your local network only; to serve people over the "
+                                                        "internet or a VPN: " + clk("tab('settings')", "Settings › Access")
+                                                        + ")[/dim]"))
             + f"\n[dim]Your own key (Settings › API key) is the admin key: every model, switching, no limits. "
             "Keys here are for other people and apps: stored as hashes, shown once, revoked instantly. "
             + clk("key_add", "n new key") + " · usage counts per day[/dim]")
@@ -2811,7 +2969,7 @@ class LLMTui(App):
 
     # ------------------------------------------------------------ settings
     SETTING_KEYS = {"HF_TOKEN": "#set-hf", "API_KEY": "#set-key", "GPU_MEM": "#set-mem", "PORT": "#set-port",
-                    "IMAGE": "#set-image", "PUBLIC_URL": "#set-public", "TRUST_PROXY": "#set-trust"}
+                    "IMAGE": "#set-image", "TRUST_PROXY": "#set-trust"}
 
     def load_settings_form(self) -> None:
         self._settings_loaded = True
@@ -2824,14 +2982,9 @@ class LLMTui(App):
         self.query_one("#set-identity", Checkbox).value = env.get("IDENTITY_NOTE", "1") != "0"
         self.query_one("#set-switch", Select).value = "off" if env.get("MODEL_SWITCH") == "off" else "auto"
         self.query_one("#set-spec", Select).value = "off" if env.get("SPEC_DECODE") == "off" else "auto"
-        self.query_one("#set-bind", Select).value = "127.0.0.1" if env.get("BIND") == "127.0.0.1" else "0.0.0.0"
         self.query_one("#set-mode", Select).value = self.mode()
         self.mode_changed()
-        if env.get("EXPOSE") in ("caddy", "cloudflare-quick", "cloudflare", "tailscale", "tailscale-private"):
-            self.query_one("#set-expose-mode", Select).value = env["EXPOSE"]
-        if env.get("EXPOSE") in ("caddy", "cloudflare") and env.get("PUBLIC_URL", "").startswith("https://"):
-            self.query_one("#set-expose-host", Input).value = env["PUBLIC_URL"][8:]
-        self.expose_mode_changed()
+        self.load_reach_form()
         self.query_one("#set-expose-info", Static).update(self.expose_status_line())
         self.query_one("#set-update", Select).value = env.get("UPDATE_MODE", "notify") \
             if env.get("UPDATE_MODE", "notify") in ("notify", "auto", "off") else "notify"
@@ -2846,8 +2999,6 @@ class LLMTui(App):
         v["UPDATE_MODE"] = str(self.query_one("#set-update", Select).value)
         v["MODEL_SWITCH"] = str(self.query_one("#set-switch", Select).value)
         v["SPEC_DECODE"] = str(self.query_one("#set-spec", Select).value)
-        v["BIND"] = str(self.query_one("#set-bind", Select).value)
-        v["PUBLIC_URL"] = v["PUBLIC_URL"].rstrip("/")
         return v
 
     def settings_problems(self, v: dict) -> list[str]:
@@ -2869,8 +3020,6 @@ class LLMTui(App):
         if v["TRUST_PROXY"] and not all(re.match(r"^[0-9a-fA-F:.]+$", x.strip())
                                          for x in v["TRUST_PROXY"].split(",") if x.strip()):
             probs.append("trusted relays are IP addresses, comma-separated")
-        if v["PUBLIC_URL"] and not re.match(r"^https?://[^\s/]+(:\d+)?(/\S*)?$", v["PUBLIC_URL"]):
-            probs.append("public URL must look like https://llm.example.com")
         return probs
 
     # What each setting needs before it is in effect. Everything else is read when used (HF token, update mode).
@@ -2889,9 +3038,9 @@ class LLMTui(App):
             return []
         cur = load_env()
         defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0", "LOG_PROMPTS": "1",
-                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto", "SPEC_DECODE": "auto", "BIND": "0.0.0.0",
+                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto", "SPEC_DECODE": "auto",
                     "IDENTITY_NOTE": "1"}
-        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "BIND",
+        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE",
                                                       "IDENTITY_NOTE"]
                 if v[k] != cur.get(k, defaults.get(k, ""))]
 
@@ -2908,7 +3057,6 @@ class LLMTui(App):
     @on(Select.Changed, "#set-update")
     @on(Select.Changed, "#set-switch")
     @on(Select.Changed, "#set-spec")
-    @on(Select.Changed, "#set-bind")
     def settings_changed(self, *_) -> None:
         v = self.settings_values()
         try:
@@ -2918,15 +3066,12 @@ class LLMTui(App):
                 + (f", {self.pool * (1 - m) / 1e9:.0f} GB left for the system" if self.hw.unified else ""))
         except ValueError:
             self.query_one("#set-mem-info", Static).update("")
+        pub = load_env().get("PUBLIC_URL", "")
         self.query_one("#set-port-info", Static).update(
-            f"endpoint would be {v['PUBLIC_URL'] or f'http://{self.ip}:' + (v['PORT'] or '?')}/v1"
-            + (f"  (LAN: http://{self.ip}:{v['PORT'] or '?'}/v1)" if v["PUBLIC_URL"] else ""))
+            f"endpoint would be {pub or f'http://{self.ip}:' + (v['PORT'] or '?')}/v1"
+            + (f"  (LAN: http://{self.ip}:{v['PORT'] or '?'}/v1)" if pub else ""))
         dirty, probs, pending = self.settings_dirty(), self.settings_problems(v), self.server_pending()
         lines = [f"[{K9['orangered']}]✗ {p}[/]" for p in probs]
-        if v["PUBLIC_URL"].startswith("http://") and not re.match(
-                r"^http://(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)", v["PUBLIC_URL"]):
-            lines.append(f"[{K9['orangered']}]! the public URL is plain HTTP: keys and prompts would cross the internet "
-                         "unencrypted. Use `l9s expose` (Let's Encrypt via Caddy, Cloudflare Tunnel or Tailscale)[/]")
         if dirty:
             lines.append(f"[{K9['gold']}]● unsaved changes: {', '.join(dirty)}[/]")
         if pending:
@@ -3019,7 +3164,7 @@ class LLMTui(App):
         applied = dict(running)
         done = []
         # no restart needed: read whenever they're used
-        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "PUBLIC_URL", "IDENTITY_NOTE"):
+        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "IDENTITY_NOTE"):
             applied[k] = v[k]
         proxy = [k for k in changed if k in self.PROXY_KEYS]
         if proxy:
@@ -3101,43 +3246,32 @@ class LLMTui(App):
                     self._ln_add(res)
             self.push_screen(LinkDialog(), linked)
             return
+        self.setup_reach(mode, then=lambda: self.set_timer(0.4, lambda: self.setup_model(mode)))
+
+    def setup_model(self, mode: str) -> None:
         if not active_profile():
             def model(ok):
                 if ok:
                     self.goto_tab("hub")
                 if mode == "shared":
-                    self.set_timer(0.5, self.setup_shared)
+                    self.set_timer(0.5, self.setup_keys)
             self.push_screen(Confirm("[b]Serve a model[/b]\n\nNo model is set up yet. Open the Hub to pick one? (Enter "
                                      "on a model shows the recommended settings for this machine; or run `l9s "
                                      "quickstart` for a good default.)", "Open the Hub", danger=False, cancel="Later"),
                              model)
         elif mode == "shared":
-            self.setup_shared()
+            self.setup_keys()
         else:
             self.notify("Personal mode: tools on this machine connect in Connect (2).", title="All set", timeout=8)
 
-    def setup_shared(self) -> None:
-        def https(ok):
+    def setup_keys(self) -> None:
+        def go(ok):
             if ok:
-                self.goto_tab("settings")
-                self.set_timer(0.6, lambda: self.query_one("#set-expose-mode").focus())
-            self.set_timer(0.5, keys)
-
-        def keys():
-            def go(ok):
-                if ok:
-                    self.goto_tab("keys")
-                    self.set_timer(0.6, self.action_key_add)
-            self.push_screen(Confirm("[b]A key per person[/b]\n\nCreate a key for someone now? Each gets their own "
-                                     "(shown once), with optional limits, and you can revoke it any time. Manage them "
-                                     "in Access (9).", "Create a key", danger=False, cancel="Later"), go)
-        if load_env().get("PUBLIC_URL"):
-            keys()
-            return
-        self.push_screen(Confirm("[b]HTTPS for people elsewhere[/b]\n\nSet it up now? Settings › Access offers Caddy "
-                                 "with a Let's Encrypt certificate (your domain), a Cloudflare Tunnel or Tailscale. "
-                                 "l9s itself is plain HTTP, so don't forward a router port straight to it.",
-                                 "Set up HTTPS", danger=False, cancel="Later"), https)
+                self.goto_tab("keys")
+                self.set_timer(0.6, self.action_key_add)
+        self.push_screen(Confirm("[b]A key per person[/b]\n\nCreate a key for someone now? Each gets their own "
+                                 "(shown once), with optional limits, and you can revoke it any time. Manage them "
+                                 "in Access (9).", "Create a key", danger=False, cancel="Later"), go)
 
     # ------------------------------------------------------------ mode
     MODE_HELP = {
@@ -3184,11 +3318,11 @@ class LLMTui(App):
         warn = {"client": "The local model server stops (anyone using it loses access until you switch back).",
                 "personal": "The local model server starts again." if cur == "client" else "",
                 "shared": ("The local model server starts again. " if cur == "client" else "")
-                          + "Next: HTTPS (Settings › Access) and a key per person (Access, 9)."}[want]
+                          + "Next: how people reach it, and a key per person."}[want]
 
         def cb(ok):
             if ok:
-                self._switch_mode(want)
+                self._switch_mode(want, then=None if want == "client" else lambda: self.setup_next(want))
         self.push_screen(Confirm(f"Switch from [b]{cur}[/b] to [b]{want}[/b] mode?\n\n{self.MODE_HELP[want]}\n\n{warn}",
                                  "Switch", danger=want == "client"), cb)
 
@@ -3216,90 +3350,186 @@ class LLMTui(App):
                 self.goto_tab("keys")
         self.call_from_thread(done)
 
-    # ------------------------------------------------------------ access: HTTPS front end (l9s expose)
+    # ------------------------------------------------------------ access: how other devices reach it (l9s expose)
+    def load_reach_form(self) -> None:
+        env = load_env()
+        cur = reach_current(env)
+        self.query_one("#set-expose-mode", Select).value = cur
+        pub = env.get("PUBLIC_URL", "")
+        val = {"own": pub, "vpn": re.sub(r"^https?://", "", pub).rsplit(":", 1)[0],
+               "caddy": pub[8:], "cloudflare": pub[8:]}.get(cur, "")
+        self.query_one("#set-expose-host", Input).value = val
+        self.expose_mode_changed()
+        self.query_one("#set-expose-info", Static).update(self.expose_status_line())
+        self.query_one("#set-trust-relay").display = False
+        self.check_relays()
+
     @on(Select.Changed, "#set-expose-mode")
     def expose_mode_changed(self, *_) -> None:
-        mode = str(self.query_one("#set-expose-mode", Select).value)
-        self.query_one("#set-expose-hostrow").display = mode in ("caddy", "cloudflare")
-        self.query_one("#set-expose-email").display = mode == "caddy"
-        hints = {"caddy": "Needs: a DNS A/AAAA record for the host pointing at your public IP, and ports 80 and 443 on "
-                          "your router forwarded to this machine. Caddy renews the certificate on its own.",
-                 "cloudflare-quick": "No account or domain: you get a random https://….trycloudflare.com address. It "
-                                     "changes when the tunnel restarts (Check picks up the new one).",
-                 "cloudflare": "Your domain must be on Cloudflare, and `cloudflared tunnel login` must have been run "
-                               "once in a terminal (it opens a browser).",
-                 "tailscale": "Needs Tailscale installed and signed in on this machine, and Funnel allowed for your "
-                              "tailnet in the Tailscale admin console.",
-                 "tailscale-private": "Only devices on your tailnet reach it (a VPN). Needs Tailscale installed and "
-                                      "signed in. Other VPNs (WireGuard, ZeroTier, …): just put this machine's VPN "
-                                      "address in Public URL below."}
-        self.query_one("#set-expose-info", Static).update(f"[dim]{hints.get(mode, '')}[/dim]")
+        choice = str(self.query_one("#set-expose-mode", Select).value)
+        needs = reach_needs(choice)
+        host, email = self.query_one("#set-expose-host", Input), self.query_one("#set-expose-email", Input)
+        self.query_one("#set-expose-hostrow").display = bool(needs)
+        if needs:
+            host.placeholder = f"{needs[0][1]}: {needs[0][2]}"
+            if choice == "vpn" and not host.value:
+                vpn = hw.vpn_addresses()
+                host.value = vpn[0]["ip"] if vpn else ""
+        email.display = choice == "caddy"
+        email.placeholder = "email for Let's Encrypt notices (optional)"
+        desc = next(d for r, _, _, d in REACH if r == choice)
+        vpn = ", ".join(f"{d['ip']} ({d['kind']})" for d in hw.vpn_addresses()) if choice == "vpn" else ""
+        self.query_one("#set-expose-info", Static).update(
+            f"[dim]{desc.format(lan=self.ip, port=self.port, vpn=vpn or 'none found: connect the VPN, or type it')}"
+            "[/dim]\n" + self.expose_status_line())
 
     def expose_status_line(self) -> str:
         env = load_env()
-        if not env.get("PUBLIC_URL"):
-            return "[dim]now: not exposed (this machine and your LAN only)[/dim]"
-        return (f"now: [b]{env['PUBLIC_URL']}/v1[/b] via {env.get('EXPOSE') or 'your own front end'}")
+        cur = reach_current(env)
+        if cur == "local":
+            return f"now: [b]this machine only[/b] (http://localhost:{self.port}/v1)"
+        if cur == "lan":
+            return f"now: [b]this machine + local network[/b] (http://{self.ip}:{self.port}/v1)"
+        return f"now: [b]{env.get('PUBLIC_URL', '')}/v1[/b] · {REACH_TITLE[cur]}"
+
+    def reach_values(self, choice: str) -> dict:
+        host = self.query_one("#set-expose-host", Input).value.strip()
+        email = self.query_one("#set-expose-email", Input).value.strip()
+        key = (reach_needs(choice) or [("host",)])[0][0]
+        v = {key: host}
+        if choice == "caddy" and email:
+            v["email"] = email
+        if choice == "own" and load_env().get("TRUST_PROXY"):
+            v["trust"] = load_env()["TRUST_PROXY"]
+        return v
 
     @on(Button.Pressed, "#set-expose-go")
     def expose_go(self) -> None:
-        mode = str(self.query_one("#set-expose-mode", Select).value)
-        host = self.query_one("#set-expose-host", Input).value.strip()
-        email = self.query_one("#set-expose-email", Input).value.strip()
-        if mode in ("caddy", "cloudflare") and not re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", host, re.I):
-            self.notify("enter the host name first, e.g. llm.example.com", severity="warning")
+        choice = str(self.query_one("#set-expose-mode", Select).value)
+        v = self.reach_values(choice)
+        err = reach_check(choice, v)
+        if err:
+            self.notify(err, severity="warning")
             return
-        args = {"caddy": ["caddy", host] + (["--email", email] if email else []),
-                "cloudflare-quick": ["cloudflare"], "cloudflare": ["cloudflare", "--name", "l9s", "--host", host],
-                "tailscale": ["tailscale"], "tailscale-private": ["tailscale", "--private"]}[mode]
-        what = {"caddy": f"https://{host} with a Let's Encrypt certificate (Caddy)",
-                "cloudflare-quick": "a Cloudflare quick tunnel", "cloudflare": f"https://{host} via Cloudflare Tunnel",
-                "tailscale": "Tailscale Funnel", "tailscale-private": "Tailscale (your tailnet only)"}[mode]
+        self.confirm_reach({"choice": choice, **v})
+
+    def confirm_reach(self, res: dict, then=None) -> None:
+        choice = res["choice"]
+        internet = next(g for r, g, _, _ in REACH if r == choice) == "Internet"
+        what = REACH_TITLE[choice] + (f": {res.get('host') or res.get('url') or res.get('addr')}"
+                                      if res.get("host") or res.get("url") or res.get("addr") else "")
 
         def cb(ok):
             if ok:
-                self._run_expose(args)
-        self.push_screen(Confirm(f"Make this server reachable at {what}?\n\nAnyone who reaches it still needs an "
-                                 "API key: yours, or one you give them in Keys. The request proxy restarts briefly "
-                                 "(running requests are cut off).", "Set up HTTPS", danger=False), cb)
+                self.goto_tab("settings")
+                self._run_expose(reach_args(choice, res), then)
+            elif then:
+                then()
+        self.push_screen(Confirm(f"[b]{what}[/b]\n\n" + next(d for r, _, _, d in REACH if r == choice).format(
+            lan=self.ip, port=self.port, vpn=res.get("addr", "")) + "\n\n"
+            + ("Anyone who reaches it still needs an API key: yours, or one you give them in Access (9). "
+               if internet else "")
+            + "The request proxy restarts briefly (running requests are cut off).", "Apply", danger=False), cb)
+
+    @on(Button.Pressed, "#set-expose-guide")
+    def expose_guide(self) -> None:
+        self.setup_reach(self.mode())
+
+    def setup_reach(self, mode: str, then=None) -> None:
+        env = load_env()
+        cur = reach_current(env)
+        rec = cur if (env.get("EXPOSE") or env.get("PUBLIC_URL") or env.get("BIND")) else \
+            ("cloudflare-quick" if mode == "shared" else "lan")
+
+        def picked(res):
+            if not res:
+                if then:
+                    then()
+                return
+            self.confirm_reach(res, then)
+        self.push_screen(ReachDialog(cur, rec, self.ip, str(self.port), hw.vpn_addresses(), mode), picked)
 
     @on(Button.Pressed, "#set-expose-check")
     def expose_check(self) -> None:
         self._run_expose([])
 
-    @on(Button.Pressed, "#set-expose-off")
-    def expose_off(self) -> None:
+    @on(Button.Pressed, "#set-trust-relay")
+    def trust_relay(self) -> None:
+        ips = getattr(self, "_relays", [])
+        if ips:
+            self.ask_trust(ips)
+
+    def ask_trust(self, ips: list[str], then=None) -> None:
         def cb(ok):
             if ok:
-                self._run_expose(["off"])
-        self.push_screen(Confirm("Stop serving over the internet? The front end stops and the public URL is cleared; "
-                                 "your LAN keeps working.", "Turn off"), cb)
+                cur = [x for x in load_env().get("TRUST_PROXY", "").split(",") if x]
+                self._run_expose(["trust", ",".join(cur + [i for i in ips if i not in cur])], then)
+            elif then:
+                then()
+        self.push_screen(Confirm(
+            f"[b]Requests reach l9s through {', '.join(ips)}[/b]\n\nThat's a tunnel or reverse proxy on another "
+            "machine. l9s currently sees every client as that machine, so per-person limits can't tell people apart "
+            "and 10 wrong keys from anyone would block everyone.\n\nIs that machine yours? Trusting it lets l9s "
+            "read each client's real address from what it passes on.", "Trust it", cancel="Not mine", danger=False),
+            cb)
+
+    @work(thread=True, exclusive=True, group="relays")
+    def check_relays(self) -> None:
+        try:
+            r = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/relays", timeout=3))
+            ips = r.get("untrusted", [])
+        except Exception:  # noqa: BLE001
+            ips = []
+        self._relays = ips
+
+        def show():
+            b = self.query_one("#set-trust-relay", Button)
+            b.display = bool(ips)
+            b.label = f"Trust relay {ips[0]}" if len(ips) == 1 else "Trust relays"
+        self.call_from_thread(show)
 
     @work(thread=True, exclusive=True, group="expose")
-    def _run_expose(self, args: list[str]) -> None:
+    def _run_expose(self, args: list[str], then=None) -> None:
         info = self.query_one("#set-expose-info", Static)
         lines = [f"[dim]$ l9s expose {' '.join(args)}[/dim]"]
         self.call_from_thread(info.update, "\n".join(lines + ["[dim]working…[/dim]"]))
         p = subprocess.Popen([LLM_BIN, "expose", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                              stdin=subprocess.DEVNULL, errors="replace")
         for line in p.stdout:
-            if line.strip() and "Usage:" not in line:
+            if line.strip() and "Usage:" not in line and not line.startswith("relay: "):
                 lines.append(rich_escape(line.rstrip()))
                 self.call_from_thread(info.update, "\n".join(lines[-14:]))
         rc = p.wait()
         if rc != 0 and any("password is required" in l or "terminal is required" in l for l in lines):
-            lines.append("[yellow]this needs sudo with a password: run it in a terminal instead: "
-                         f"l9s expose {' '.join(args)}[/yellow]")
+            lines.append("[yellow]this step needs your password for sudo, which the TUI can't ask for: run it once "
+                         f"in a terminal: l9s expose {' '.join(args)}[/yellow]")
         lines.append(self.expose_status_line())
         self.call_from_thread(info.update, "\n".join(lines[-15:]))
+        try:
+            relays = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/relays", timeout=3)) \
+                .get("untrusted", [])
+        except Exception:  # noqa: BLE001
+            relays = []
+        self._relays = relays
 
-        def sync():  # the public URL changed underneath the form: show it, without counting it as an unsaved edit
+        def sync():
             env = load_env()
-            self.query_one("#set-public", Input).value = env.get("PUBLIC_URL", "")
-            if hasattr(self, "_applied_env"):
-                self._applied_env.update({"PUBLIC_URL": env.get("PUBLIC_URL", "")})
+            if hasattr(self, "_applied_env"):  # changed underneath the form: not an unsaved edit
+                self._applied_env.update({k: env.get(k, "") for k in ("PUBLIC_URL", "TRUST_PROXY", "BIND")})
+            self.query_one("#set-trust", Input).value = env.get("TRUST_PROXY", "")
+            self.query_one("#set-expose-mode", Select).value = reach_current(env)
+            b = self.query_one("#set-trust-relay", Button)
+            b.display = bool(relays)
+            b.label = f"Trust relay {relays[0]}" if len(relays) == 1 else "Trust relays"
             self.settings_changed()
             self.refresh_keys()
+            self.notify(("done: " if rc == 0 else "failed: ") + self.expose_status_line().replace("[b]", "")
+                        .replace("[/b]", "") + ("" if rc == 0 else " (see Settings › Access)"),
+                        severity="information" if rc == 0 else "error", timeout=8)
+            if relays and args and args[0] != "trust":
+                self.ask_trust(relays, then)
+            elif then:
+                then()
         self.call_from_thread(sync)
 
     @on(Button.Pressed, "#set-update-check")
@@ -4304,7 +4534,7 @@ class LLMTui(App):
         plan = A["plan"]
         expected = plan["download_bytes"]
         if not expected:
-            self.call_from_thread(self.notify, f"can't list files of {repo} (gated? set HF_TOKEN in ~/.l9s/env)",
+            self.call_from_thread(self.notify, f"can't list files of {repo} (gated? add your Hugging Face token in Settings)",
                                   severity="error")
             return
         free = shutil.disk_usage(HF_HUB).free

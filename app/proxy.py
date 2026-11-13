@@ -9,7 +9,7 @@
   so token counts are exact without changing what clients receive.
 * Cancelling a request (from the TUI) closes the upstream connection, which makes the server abort the generation.
 * Watches the container (docker events + readiness polling) and writes a persistent event timeline.
-* Admin API (localhost only): GET /_l9s/requests, GET /_l9s/events, GET /_l9s/pins, POST /_l9s/requests/<id>/cancel, GET /_l9s/health
+* Admin API (localhost only): GET /_l9s/requests, GET /_l9s/events, GET /_l9s/pins, GET /_l9s/relays, POST /_l9s/requests/<id>/cancel, GET /_l9s/health
 """
 from __future__ import annotations
 
@@ -864,8 +864,8 @@ def client_ip(request: web.Request) -> str:
         _relay_hinted.add(request.remote)
         event("access", f"requests relayed by {request.remote} (a tunnel or reverse proxy) carry the real client "
                         f"address, but l9s doesn't trust that machine yet, so it sees every client as {request.remote} "
-                        f"(and 10 wrong keys from anyone would block them all). Set TRUST_PROXY={request.remote} "
-                        "(Settings › Access) if that machine is yours.", "warn")
+                        f"(and 10 wrong keys from anyone would block them all). If that machine is yours, trust it: "
+                        f"Settings › Access › Trust relay, or `l9s expose trust {request.remote}`.", "warn")
     return request.remote or "?"
 
 
@@ -1298,6 +1298,8 @@ async def admin(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "uptime": time.time() - started_at, "upstream": UPSTREAM,
                                   "active": len(active), "switching": dict(switching) or None,
                                   "waiting": len([r for r in active.values() if r.get("_waiting")])})
+    if path == "/_l9s/relays":  # tunnels / reverse proxies on other machines that relay clients, not trusted yet
+        return web.json_response({"untrusted": sorted(_relay_hinted - TRUST_PROXY), "trusted": sorted(TRUST_PROXY)})
     if path == "/_l9s/pins":  # clients that asked for a model by name recently (they'd undo a manual switch)
         return web.json_response({"pins": pinned_clients(request.query.get("away_from") or None,
                                                          float(request.query.get("within", "900")))})

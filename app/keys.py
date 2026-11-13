@@ -1,7 +1,7 @@
 """API keys for the people who use this server, and what each one may do.
 
-Keys live in ~/.l9s/keys.json, stored only as SHA-256 hashes (a key is shown once, when it's created). The key in
-~/.l9s/env (API_KEY) stays the owner's admin key: every model, model switching, no limits.
+Keys live in ~/.l9s/keys.json, stored only as SHA-256 hashes (a key is shown once, when it's created). Your own
+key (Settings › API key, `l9s key`) stays the owner's admin key: every model, model switching, no limits.
 
 usage:  keys.py list [--json]
         keys.py add <name> [--switch] [--rpm N] [--concurrent N] [--models a,b] [--note TEXT] [--json]
@@ -148,6 +148,8 @@ def endpoint() -> str:
     env = _env()
     if env.get("PUBLIC_URL"):
         return env["PUBLIC_URL"].rstrip("/")
+    if env.get("BIND") == "127.0.0.1":
+        return f"http://localhost:{env.get('PORT', '8000')}"
     sys.path.insert(0, str(Path(__file__).parent))
     try:
         import hw
@@ -159,7 +161,9 @@ def endpoint() -> str:
 
 def share_text(name: str, key: str) -> str:
     base = endpoint()
-    return (f"l9s access for {name}\n"
+    note = ("  (!) this server only listens on its own machine right now: change how it's reached first "
+            "(Settings › Access, or l9s expose)\n" if _env().get("BIND") == "127.0.0.1" else "")
+    return (f"l9s access for {name}\n{note}"
             f"  OpenAI-compatible base URL: {base}/v1\n"
             f"  Anthropic base URL (Claude Code): {base}\n"
             f"  API key: {key}\n"
@@ -189,7 +193,7 @@ def main(argv: list[str]) -> int:
                               for n, x in d.items()]))
             return 0
         if not d:
-            print("no keys yet: the admin key in ~/.l9s/env is the only one.  add one: l9s keys add <name>")
+            print("no keys yet: your own admin key (l9s key) is the only one.  add one: l9s keys add <name>")
             return 0
         for n, x in sorted(d.items()):
             u = use.get(n, {})

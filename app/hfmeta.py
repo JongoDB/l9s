@@ -935,7 +935,7 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
     if not plan["weight_files"] and meta.get("files"):
         A["blockers"].append("no safetensors/bin weight files in the repo")
     if no_access:
-        A["warnings"].append("gated: accept the license on huggingface.co and put HF_TOKEN in ~/.l9s/env (or Settings). "
+        A["warnings"].append("gated: accept the license on huggingface.co and add your token in Settings (or: l9s config set HF_TOKEN hf_…). "
                              "Until then config/template can't be read, so the analysis below is partial")
     elif not cfg and loadable:
         A["warnings"].append("no config.json found: limited analysis")

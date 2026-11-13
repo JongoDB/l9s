@@ -6,7 +6,7 @@
 #         such as the NVIDIA GB10 / DGX Spark; works on discrete and multi-GPU machines too.
 #   mlx   Apple Silicon Macs: mlx-lm's OpenAI-compatible server, run as a launchd agent.
 #
-# Config:   ~/.l9s/env              (BACKEND, API_KEY, HF_TOKEN, PORT, BACKEND_PORT, GPU_MEM, IMAGE, ...)
+# Config:   ~/.l9s/env, written by l9s itself (TUI Settings, l9s config / mode / expose): not meant for hand edits
 # Profiles: ~/.l9s/profiles/<name>  (line 1: HF repo id, `ENV K=V` lines, then one server flag per line)
 set -euo pipefail
 
@@ -31,7 +31,7 @@ PROXY_LABEL="dev.l9s.proxy"
 LOG="$L9S_HOME/logs/backend.log"
 
 die() { echo "error: $*" >&2; exit 1; }
-need_key() { [[ -n "${API_KEY:-}" ]] || die "API_KEY not set in $L9S_HOME/env"; }
+need_key() { [[ -n "${API_KEY:-}" ]] || die "no API key yet: set one in the TUI (Settings) or with: l9s config set API_KEY <key>"; }
 active_profile() { [[ -L "$L9S_HOME/active" ]] && basename "$(readlink "$L9S_HOME/active")" || true; }
 
 usage() {
@@ -50,8 +50,10 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
   keys [add <name>|revoke <name>|usage]  API keys for other people, with limits and usage (l9s keys --help)
   mode [personal|shared|client]          what this device is for: serve you, serve many people, or use others' servers
   link [add <name> <url> --key K|rm]     use someone else's l9s server: its models join yours as <name>/<model>
-  expose [caddy <host>|cloudflare|tailscale|off]
-                                         serve over the internet with HTTPS (Let's Encrypt / Cloudflare / Tailscale)
+  expose [local|lan|vpn|cloudflare|tailscale|caddy <host>|url <URL>]
+                                         how other devices reach this server: this machine only, your network, a VPN,
+                                         or the internet over HTTPS (l9s expose --help)
+  config [get|set NAME value]            every other setting (same as the TUI's Settings tab)
   ls | rm <org/repo>                     downloaded models / delete one
   status | logs [-f] | test              health, server log, test request
   stop | start | restart                 control the model server
@@ -263,6 +265,7 @@ case "$cmd" in
   expose) exec "$PY" "$APP/expose.py" "$@" ;;
   mode) exec "$PY" "$APP/mode.py" "$@" ;;
   link|links) exec "$PY" "$APP/links.py" "$@" ;;
+  config) exec "$PY" "$APP/config.py" "$@" ;;
   quickstart)
     repo="${1:-}"
     if [[ -z "$repo" ]]; then

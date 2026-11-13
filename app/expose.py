@@ -1,6 +1,17 @@
-"""Put this l9s server on the internet over HTTPS, with a real certificate.
+"""How other devices reach this l9s server: this machine only, your network, a VPN, or the internet over HTTPS.
 
   l9s expose                         what's set up now (public URL, front end, certificate)
+  l9s expose local                   this machine only (nothing else on the network can connect)
+  l9s expose lan                     this machine and your local network (http://<LAN address>:<port>; the default)
+  l9s expose vpn [<address>]         your VPN (WireGuard, ZeroTier, Tailscale, NetBird, …): l9s finds this machine's
+                                     VPN address itself (give one when it has several) and shares http://<it>:<port>
+  l9s expose url <URL> [--trust <relay IP>] [--vpn]
+                                     you already have a way in (a tunnel, a reverse proxy, a VPN address): l9s just
+                                     uses <URL> in what it shows and shares. --trust: the tunnel / proxy runs on another
+                                     machine at that address (l9s finds it for you if you leave it out).
+                                     --vpn: <URL> is this machine's VPN address (WireGuard, ZeroTier, …; http is fine)
+  l9s expose trust <IP>[,<IP>] | trust off
+                                     trust a relay on another machine, so l9s sees each client's real address
   l9s expose caddy <host> [--email <you@x>]
                                      Caddy in front of l9s with a Let's Encrypt certificate (renewed on its own).
                                      Needs: <host>'s DNS A/AAAA record pointing at your public IP, and ports 80 and
@@ -13,13 +24,13 @@
   l9s expose tailscale [--private]   Tailscale: https://<machine>.<tailnet>.ts.net, certificate by Tailscale
                                      (Let's Encrypt). Funnel = the internet (Funnel must be allowed for the
                                      tailnet); --private = only devices on your tailnet (a VPN; Tailscale Serve).
-                                     Other VPNs (WireGuard, ZeroTier, …): set the public URL to this machine's VPN
-                                     address in Settings › Access; nothing else is needed.
-  l9s expose off                     stop the front end and clear the public URL
+                                     Other VPNs (WireGuard, ZeroTier, …): l9s expose vpn
+  l9s expose off                     stop the front end and clear the public URL (same as: l9s expose lan)
 
 l9s itself speaks plain HTTP: never forward a router port straight to it (API keys and prompts would cross the
 internet unencrypted). Every mode above keeps l9s's own port for this machine and your LAN only, and every public
-request still needs an API key (give each person their own: l9s keys add <name>).
+request still needs an API key (give each person their own: l9s keys add <name>). The same choices are in the TUI:
+Settings › Access, and the first-run setup.
 """
 from __future__ import annotations
 
@@ -82,6 +93,32 @@ def run(cmd: list[str], sudo: bool = False, check: bool = True, **kw) -> subproc
 
 def restart_proxy() -> None:
     subprocess.run([str(L9S_HOME / "bin" / "l9s"), "proxy", "restart"], capture_output=True)
+    import urllib.request
+    for _ in range(40):  # wait until it answers again, so a check right after doesn't hit a closed port
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port()}/_l9s/health", timeout=1)
+            return
+        except Exception:  # noqa: BLE001
+            time.sleep(0.25)
+
+
+PRIVATE_HOST = re.compile(r"^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|"
+                          r"100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|\[?f[cd][0-9a-f]{2}:|[^.]+$|.+\.(local|lan|home|internal|ts\.net)$)",
+                          re.I)  # LAN, CGNAT / Tailscale 100.64/10, IPv6 ULA, bare names, .local / .ts.net
+
+
+def host_of(url: str) -> str:
+    from urllib.parse import urlsplit
+    return urlsplit(url).hostname or ""
+
+
+def relays() -> list[str]:
+    """Machines relaying requests with forwarded headers that l9s doesn't trust yet (seen by the running proxy)."""
+    import urllib.request
+    try:
+        return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port()}/_l9s/relays", timeout=3)).get("untrusted", [])
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def port() -> str:
@@ -333,7 +370,8 @@ def status() -> None:
     e = env()
     url, mode = e.get("PUBLIC_URL"), e.get("EXPOSE", "")
     if not url:
-        print("not exposed: l9s is reachable on this machine and your LAN only.")
+        print("this machine only (other devices can't connect)." if mode == "local" or e.get("BIND") == "127.0.0.1"
+              else "not on the internet: l9s is reachable on this machine and your local network.")
         if sys.stdout.isatty():
             print("\n" + __doc__)
         return
@@ -344,9 +382,12 @@ def status() -> None:
             restart_proxy()
             print(f"(the quick tunnel restarted with a new address; PUBLIC_URL updated: {url} → {new})")
             url = new
-    print(f"public URL: {url}/v1   front end: {mode or 'your own (PUBLIC_URL set by hand)'}")
-    if url.startswith("http://") and not re.match(r"^http://(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)",
-                                                  url):
+    names = {"own": "your own tunnel / reverse proxy", "vpn": "your VPN", "": "your own tunnel / reverse proxy",
+             "cloudflare-quick": "Cloudflare quick tunnel", "cloudflare": "Cloudflare Tunnel",
+             "tailscale": "Tailscale Funnel", "tailscale-private": "Tailscale (your tailnet only)",
+             "caddy": "Caddy + Let's Encrypt"}
+    print(f"public URL: {url}/v1   via: {names.get(mode, mode)}")
+    if url.startswith("http://") and not PRIVATE_HOST.match(host_of(url)):
         print("!! this public URL is plain HTTP: keys and prompts cross the internet unencrypted. Use one of the "
               "modes above.")
     try:
@@ -359,13 +400,17 @@ def status() -> None:
             ver = "dev"
         req = urllib.request.Request(url + "/health", headers={"User-Agent": f"l9s/{ver}"})  # not Python-urllib:
         with urllib.request.urlopen(req, timeout=10, context=ctx) as r:  # Cloudflare's bot rules block that one
-            print(f"reachable over HTTPS with a valid certificate (HTTP {r.status})")
+            print(f"reachable{' over HTTPS with a valid certificate' if url.startswith('https') else ''} (HTTP {r.status})")
     except Exception as ex:  # noqa: BLE001
         print(f"couldn't reach {url}/health from here ({str(ex)[:160]}); from inside your own network that can be "
               "normal (routers often don't loop back), so check from a phone off Wi-Fi.")
+    for ip in relays():
+        print(f"relay: requests reach l9s through {ip} (a tunnel or reverse proxy on another machine). If that machine "
+              f"is yours, trust it so l9s sees each client's real address: l9s expose trust {ip}")
 
 
-def off() -> None:
+def stop_front_end() -> None:
+    """Undo what an earlier `l9s expose` set up (tunnel, Funnel / Serve, the Caddy site); leaves the config alone."""
     e = env()
     mode = e.get("EXPOSE", "")
     if mode.startswith("cloudflare"):
@@ -383,9 +428,83 @@ def off() -> None:
                 run(["systemctl", "reload-or-restart", "caddy"], sudo=True, check=False)
         except SystemExit:
             pass
-    set_env(PUBLIC_URL=None, EXPOSE=None)
+
+
+def off() -> None:
+    expose_lan()
+
+
+def expose_lan() -> None:
+    stop_front_end()
+    set_env(PUBLIC_URL=None, EXPOSE=None, BIND=None)
     restart_proxy()
-    print("no longer exposed: l9s is reachable on this machine and your LAN only")
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        import hw
+        ip = hw.host_ip()
+    except Exception:  # noqa: BLE001
+        ip = "<this machine's address>"
+    print(f"==> reachable on this machine and your local network: http://{ip}:{port()}/v1 (nothing on the internet)")
+
+
+def expose_local() -> None:
+    stop_front_end()
+    set_env(PUBLIC_URL=None, EXPOSE="local", BIND="127.0.0.1")
+    restart_proxy()
+    print(f"==> this machine only: http://localhost:{port()}/v1 (other devices can't connect)")
+
+
+def expose_url(url: str, trust: str | None, vpn: bool) -> None:
+    url = url.strip().rstrip("/")
+    url = url[:-3] if url.endswith("/v1") else url
+    if not re.match(r"^https?://[^\s/]+(:\d+)?$", url):
+        raise SystemExit("the URL looks like https://llm.example.com (or http://100.101.102.103:8000 for a VPN address)")
+    if url.startswith("http://") and not PRIVATE_HOST.match(host_of(url)):
+        raise SystemExit(f"{url} is plain HTTP on a public address: keys and prompts would cross the internet "
+                         "unencrypted. Use an https:// URL (a tunnel or reverse proxy with a certificate: see the other "
+                         "choices in `l9s expose --help`), or a VPN address.")
+    if trust and not all(re.match(r"^[0-9a-fA-F:.]+$", x.strip()) for x in trust.split(",") if x.strip()):
+        raise SystemExit("--trust takes IP addresses, comma-separated")
+    if env().get("EXPOSE") not in (None, "", "own", "vpn"):
+        stop_front_end()  # replacing a front end l9s set up
+    kv = {"PUBLIC_URL": url, "EXPOSE": "vpn" if vpn else "own", "BIND": None}
+    if trust is not None:
+        kv["TRUST_PROXY"] = trust or None
+    set_env(**kv)
+    restart_proxy()
+    print(f"==> l9s now gives out {url}/v1 ({'your VPN' if vpn else 'your own tunnel / reverse proxy'})")
+    status()
+
+
+def vpn_addresses() -> list[dict]:
+    sys.path.insert(0, str(Path(__file__).parent))
+    import hw
+    return hw.vpn_addresses()
+
+
+def expose_vpn(addr: str | None) -> None:
+    found = vpn_addresses()
+    if not addr:
+        if not found:
+            raise SystemExit("no VPN address found on this machine (Tailscale, WireGuard, ZeroTier, …). Connect the VPN "
+                             "first, or give the address: l9s expose vpn <address>")
+        addr = found[0]["ip"]
+        if len(found) > 1:
+            print("this machine has several VPN addresses: " + ", ".join(f"{d['ip']} ({d['kind']})" for d in found)
+                  + f"; using {addr} (pick another: l9s expose vpn <address>)")
+        else:
+            print(f"found this machine's {found[0]['kind']} address: {addr}")
+    url = addr if addr.startswith(("http://", "https://")) else f"http://{addr}:{port()}"
+    expose_url(url, None, vpn=True)
+
+
+def set_trust(ips: str) -> None:
+    ips = "" if ips in ("off", "none", "") else ips
+    if ips and not all(re.match(r"^[0-9a-fA-F:.]+$", x.strip()) for x in ips.split(",") if x.strip()):
+        raise SystemExit("usage: l9s expose trust <IP>[,<IP>]  |  l9s expose trust off")
+    set_env(TRUST_PROXY=ips or None)
+    restart_proxy()
+    print(f"==> trusted relays: {ips or 'none'}" + (" (l9s now records each client's real address)" if ips else ""))
 
 
 def main(argv: list[str]) -> int:
@@ -396,6 +515,10 @@ def main(argv: list[str]) -> int:
 
     def opt(flag):
         return rest[rest.index(flag) + 1] if flag in rest and rest.index(flag) + 1 < len(rest) else None
+    cur = env().get("EXPOSE") or ""
+    if cmd in ("caddy", "cloudflare", "tailscale") and cur not in ("", "own", "vpn", "local") and \
+            not cur.startswith(cmd):
+        stop_front_end()  # switching from one front end to another: don't leave the old one running
     if cmd == "caddy":
         if not rest or rest[0].startswith("-"):
             raise SystemExit("usage: l9s expose caddy <host> [--email you@example.com]")
@@ -407,6 +530,25 @@ def main(argv: list[str]) -> int:
         expose_tailscale("--private" in rest)
     elif cmd == "off":
         off()
+    elif cmd == "lan":
+        expose_lan()
+    elif cmd == "local":
+        expose_local()
+    elif cmd == "url":
+        if not rest or rest[0].startswith("-"):
+            raise SystemExit("usage: l9s expose url <URL> [--trust <relay IP>] [--vpn]")
+        expose_url(rest[0], opt("--trust"), "--vpn" in rest)
+    elif cmd == "vpn":
+        if "--list" in rest or "--json" in rest:
+            print(json.dumps(vpn_addresses()))
+            return 0
+        expose_vpn(rest[0] if rest and not rest[0].startswith("-") else None)
+    elif cmd == "trust":
+        set_trust(rest[0] if rest else "")
+    elif cmd == "relays":
+        print(json.dumps({"untrusted": relays(), "trusted": [x for x in env().get("TRUST_PROXY", "").split(",") if x]}))
+    elif cmd in ("-h", "--help", "help"):
+        print(__doc__)
     else:
         print(__doc__)
         return 2

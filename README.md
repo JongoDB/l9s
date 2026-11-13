@@ -213,15 +213,17 @@ updated automatically when you add or remove profiles; `l9s connect <tool> --rem
 ## Share it: one server, many people
 
 ```bash
-l9s expose caddy llm.example.com    # HTTPS with a Let's Encrypt certificate (auto-renewed) via Caddy
-l9s expose cloudflare               # or: a Cloudflare Tunnel (nothing opened on your router)
-l9s expose tailscale                # or: Tailscale Funnel (https://<machine>.<tailnet>.ts.net)
+l9s expose cloudflare               # a free https://….trycloudflare.com address (no account, nothing to open)
+l9s expose caddy llm.example.com    # or: your domain, Let's Encrypt certificate via Caddy
+l9s expose vpn                      # or: only your VPN (l9s finds this machine's VPN address)
 l9s keys add alice --concurrent 2   # a key per person; shown once, stored as a hash
 l9s keys usage                      # who used how much
 ```
 
-l9s itself speaks plain HTTP, so it never goes on the internet directly: `l9s expose` puts an HTTPS front end with
-a real certificate in front of it and sets the public URL that l9s shows and hands out. Each person gets their own
+The setup that opens the first time you run `l9s` asks how people reach the server (this machine only, your
+network, a VPN, a free temporary address, Tailscale, or your own domain), and Settings › Access changes it later; l9s
+detects the addresses itself (`l9s expose --help` lists every choice). l9s itself speaks plain HTTP, so it never goes
+on the internet directly: the internet choices put an HTTPS front end with a real certificate in front of it. Each person gets their own
 key, which you can rate-limit (requests per minute, requests at once), restrict to certain models, and revoke
 instantly. By default other people's keys use whatever model is loaded and can't switch it (only you, or keys you
 allow, can make the server load another model). vLLM batches everyone's requests together, so a GB10 serves one

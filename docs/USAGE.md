@@ -5,7 +5,7 @@ One OpenAI-compatible endpoint for a local model, plus a CLI (`l9s`) and a k9s-s
 | | |
 |---|---|
 | Endpoint | `http://<host>:8000/v1` (l9s-proxy → model server on localhost:8001) |
-| API key | `l9s key` (stored in `~/.l9s/env`) |
+| API key | `l9s key` (change it in Settings or with `l9s config set API_KEY …`) |
 | Model name | the active profile name (`l9s status`) |
 | Deployment | `BACKEND=vllm` (Linux + GPU, vLLM in Docker) or `BACKEND=mlx` (Apple Silicon, mlx-lm) |
 
@@ -123,7 +123,7 @@ Re-running the one-liner updates l9s in place (code in `~/.l9s/src`).
 ### Updates
 - A daily job (systemd `l9s-update.timer` on Linux, launchd `dev.l9s.update` on macOS) checks for a newer l9s, a newer
   mlx-lm (Mac) and newer vLLM releases (Linux), and caches the result in `~/.l9s/cache/update.json`.
-- `UPDATE_MODE` in `~/.l9s/env` (or Settings → Updates): `notify` (default) shows it in the TUI header and as a one-line
+- Settings › Updates (or `l9s config set UPDATE_MODE …`): `notify` (default) shows it in the TUI header and as a one-line
   notice on CLI commands; `auto` also installs l9s + mlx-lm updates in the background (a running model isn't
   restarted: the header shows "restart pending" until you restart it); `off` disables checks.
 - `l9s update` checks and installs (asks first; `-y` skips the question; `--check` only reports). On a Mac, if mlx-lm
@@ -182,10 +182,8 @@ l9s serve Qwen/Qwen3.6-35B-A3B-FP8 --name qwen \
   experts are read for each token.
 
 ### Gated models (Llama, some Gemma, etc.)
-Accept the license on huggingface.co, then put your token in `~/.l9s/env`:
-```
-HF_TOKEN=hf_xxx
-```
+Accept the license on huggingface.co, then add your token in Settings › Hugging Face token (Test token checks it),
+or `l9s config set HF_TOKEN hf_xxx`.
 
 ## Useful vLLM flags (vllm deployment)
 
@@ -209,25 +207,32 @@ HF_TOKEN=hf_xxx
 | `--draft-model <repo>` | speculative decoding with a small draft model |
 | `--chat-template-args '{"enable_thinking": false}'` | template switches, e.g. turn off thinking |
 
-## Config: `~/.l9s/env`
+## Settings
 
+Everything is set from the TUI's Settings tab (Save applies each change, restarting what has to restart, and asks
+before restarting the model server) or from the command line:
+
+```bash
+l9s config                        # every setting, its value and what it does
+l9s config set MODEL_SWITCH off   # checked, saved and applied (asks before restarting the model server; -y: don't ask)
+l9s mode shared                   # what the device is for
+l9s expose vpn                    # how other devices reach it
+l9s keys add alice                # keys for other people
 ```
-BACKEND=vllm                 # vllm | mlx (set by install.sh from the hardware)
-API_KEY=...                  # bearer token clients must send
-HF_TOKEN=                    # for gated models
-PORT=8000                    # public endpoint (l9s-proxy)
-BACKEND_PORT=8001            # model server, localhost only
-LOG_PROMPTS=1                # keep short prompt/response previews in the request log
-MODEL_SWITCH=auto            # auto: a request for another model loads it (like Ollama) · off: it gets an error
-IDENTITY_NOTE=1              # coding agents (Claude Code, OpenCode, Codex, …) get one line telling the model which model it really is
-UPDATE_MODE=notify           # notify | auto | off
-# vllm only
-IMAGE=vllm/vllm-openai:v0.33.0
-GPU_ARGS="--gpus all"        # how Docker gets the GPUs (AMD: --device=/dev/kfd --device=/dev/dri ...)
-GPU_MEM=0.85                 # fraction of GPU memory vLLM may use (per GPU)
-CONTAINER=l9s
-```
-Edit it in the TUI's Settings tab (Save applies each change and asks before restarting the model server), or by hand and then `l9s use <profile>`.
+
+| setting | what it does |
+|---|---|
+| `API_KEY` | your own (admin) key: every model, switching, no limits |
+| `HF_TOKEN` | Hugging Face token, for gated models |
+| `PORT` | the port clients connect to (8000) |
+| `MODEL_SWITCH` | `auto`: a request for another model loads it (like Ollama) · `off`: it gets an error |
+| `SPEC_DECODE` | `auto`: draft models / MTP · `off`: none (better for many users at once) |
+| `IDENTITY_NOTE` | coding agents get one line telling the model which model it really is (`1`/`0`) |
+| `LOG_PROMPTS` | keep short prompt / reply previews in the request log (`1`/`0`) |
+| `UPDATE_MODE` | `notify` · `auto` · `off` |
+| `GPU_MEM`, `IMAGE` | (vLLM) memory fraction, vLLM image (`l9s upgrade <image>` also pulls it) |
+
+l9s keeps these in `~/.l9s/env` (readable only by you) and writes that file itself; there's no need to edit it.
 
 ## Using it from clients
 
@@ -367,7 +372,7 @@ it takes to load.
 
 - **personal**: the model server serves you; draft models on (fastest single conversation).
 - **shared**: the model server serves many people; on a Mac, draft models off so mlx-lm batches (`l9s optimize`
-  takes them out of existing profiles). Then HTTPS (below) and a key per person.
+  takes them out of existing profiles). Then how people reach it (below) and a key per person.
 - **client**: no model server (`BACKEND=remote`; switching to client stops the local one and keeps its profiles and
   downloads; switching back starts it again). Linked servers only.
 
@@ -388,32 +393,36 @@ key); list them explicitly with `l9s keys set <name> --models gb1/l9s` if you me
 link's status; Events notes when one goes down or comes back. Links are kept in `~/.l9s/links.json` (readable only
 by you).
 
-### HTTPS: `l9s expose`
+### How other devices reach it: `l9s expose`
 
-l9s speaks plain HTTP. Forwarding a router port straight to it would send API keys and prompts across the internet
-unencrypted, so `l9s expose` sets up a front end that terminates HTTPS with a real certificate and relays to l9s on
-`127.0.0.1`:
+The setup that opens the first time you run `l9s` asks this for personal and shared servers; change it later in
+Settings › Access (pick one and press Apply, or Guided… for the same step-by-step popup) or with `l9s expose`. l9s
+works out the addresses itself: the LAN address, this machine's VPN address, the tunnel's URL, the relay machine.
 
-| | certificate | your network | notes |
+| | `l9s expose …` | what people use | what it needs |
 |---|---|---|---|
-| `l9s expose caddy llm.example.com [--email you@x]` | Let's Encrypt, renewed by Caddy | DNS A/AAAA record → your public IP; router forwards **80 and 443** (not l9s's port) | installs Caddy from its official package; your other Caddy sites are kept |
-| `l9s expose cloudflare` | Cloudflare's | nothing to open | free quick tunnel at a random `https://….trycloudflare.com` (changes when the tunnel restarts) |
-| `l9s expose cloudflare --name l9s --host llm.example.com` | Cloudflare's | nothing to open | your domain on Cloudflare; `cloudflared tunnel login` once |
-| `l9s expose tailscale` | Let's Encrypt via Tailscale | nothing to open | `https://<machine>.<tailnet>.ts.net` for the internet; Funnel must be allowed for the tailnet |
-| `l9s expose tailscale --private` | Let's Encrypt via Tailscale | nothing to open | the same address, **only for devices on your tailnet** (a VPN) |
-| any other VPN (WireGuard, ZeroTier, …) | (the VPN encrypts) | nothing to open | put this machine's VPN address in Settings › Access › Public URL |
+| Only this machine | `local` | `http://localhost:8000/v1` | nothing (l9s listens on 127.0.0.1 only) |
+| This machine + local network | `lan` (the default) | `http://<LAN address>:8000/v1` | nothing |
+| My VPN (WireGuard, ZeroTier, NetBird, …) | `vpn [<address>]` | `http://<this machine's VPN address>:8000/v1` | the VPN connected; l9s finds the address (the VPN encrypts) |
+| Tailscale, my tailnet only | `tailscale --private` | `https://<machine>.<tailnet>.ts.net/v1` | Tailscale signed in |
+| Free temporary address | `cloudflare` | `https://<random>.trycloudflare.com/v1` | nothing: no account, nothing opened on your router; the address changes when the tunnel restarts |
+| Tailscale Funnel | `tailscale` | `https://<machine>.<tailnet>.ts.net/v1`, from anywhere | Funnel allowed for the tailnet |
+| My domain via Cloudflare Tunnel | `cloudflare --name l9s --host llm.example.com` | `https://llm.example.com/v1` | the domain on Cloudflare; `cloudflared tunnel login` once |
+| My domain on this machine's public IP | `caddy llm.example.com [--email you@x]` | `https://llm.example.com/v1` (Let's Encrypt, renewed by Caddy) | DNS A/AAAA record → your public IP; router forwards **80 and 443** (not l9s's port); your other Caddy sites are kept |
+| I already run a tunnel / reverse proxy | `url https://llm.example.com` | that URL | your front end relays to this machine's port |
 
-`l9s expose` shows the public URL and checks it's reachable with a valid certificate; `l9s expose off` undoes it.
-Setting the public URL by hand (Settings › Access, `PUBLIC_URL`) works with any other reverse proxy; requests it
-relays from this machine count as remote (the admin API and non-API routes stay closed to them), and
-`TRUST_PROXY=<ip>` trusts `X-Forwarded-For` from a proxy on another machine.
+`l9s expose` alone shows what's set up and checks the URL is reachable (with a valid certificate). l9s itself speaks
+plain HTTP, so it refuses a plain-`http://` public address that isn't on your LAN or a VPN: keys and prompts would
+cross the internet unencrypted. Requests relayed from this machine count as remote (the admin API and non-API
+routes stay closed to them).
 
-**A front end on another machine** (e.g. `cloudflared` on another box on your LAN relaying to this one): l9s then
-sees every request as coming from that box, which also means 10 wrong keys from anyone would block everyone. The
-Events view says so when it happens; set Settings › Access › trusted relay (`TRUST_PROXY=<that box's LAN IP>`) and
-l9s uses the client address the relay passes on (`CF-Connecting-IP` / `X-Forwarded-For`). Cloudflare's bot rules
-block Python's default user agent (`Python-urllib`); coding tools and the OpenAI / Anthropic SDKs get through, and
-l9s's own requests identify as `l9s/<version>`.
+**A front end on another machine** (e.g. `cloudflared` on another box on your LAN relaying to this one): l9s would
+see every request as coming from that box, so per-person limits couldn't tell people apart and 10 wrong keys from
+anyone would block everyone. l9s notices requests relayed by a machine it doesn't trust and asks whether to trust it
+(Settings › Access › Trust relay, or `l9s expose trust <ip>`); it then uses the client address the relay passes on
+(`CF-Connecting-IP` / `X-Forwarded-For`). Cloudflare's bot rules block Python's default user agent
+(`Python-urllib`); coding tools and the OpenAI / Anthropic SDKs get through, and l9s's own requests identify as
+`l9s/<version>`.
 
 Long generations stream through all of these. Cloudflare closes a request that sends nothing for 100 seconds,
 which only matters for very long prompts on a cold cache.
@@ -428,7 +437,7 @@ l9s keys revoke alice          # 401 from the next request on; `enable` undoes i
 l9s keys usage [--days 30]
 ```
 
-- The key in `~/.l9s/env` (`API_KEY`) is the owner's admin key: every model, switching, no limits.
+- Your own key (Settings › API key, `l9s key`) is the owner's admin key: every model, switching, no limits.
 - Other keys use the loaded model (and `l9s`, the follow id) and **can't make the server switch models** unless
   added with `--switch`, so one person can't unload the model everyone else is using. `/v1/models` (and Codex's
   catalog) only list what a key may use.
