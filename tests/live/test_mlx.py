@@ -1,5 +1,7 @@
 """TUI checks for the mlx deployment (Apple Silicon). Needs a model being served (l9s serve ...).
 Run: ~/.l9s/app/.venv/bin/python tests/test_mlx.py   (results in /tmp/test_mlx.out)"""
+import os as _os
+_os.environ.setdefault("L9S_SKIP_SETUP", "1")  # no first-run setup prompt in tests
 import asyncio
 import re
 import json

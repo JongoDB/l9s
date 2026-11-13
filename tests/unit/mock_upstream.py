@@ -102,6 +102,9 @@ app = web.Application()
 app.router.add_post("/v1/chat/completions", chat)
 app.router.add_post("/v1/messages", messages)
 app.router.add_post("/v1/responses", responses)
-app.router.add_get("/v1/models", lambda r: web.json_response({"data": [{"id": "org/model"}]}))
+app.router.add_get("/v1/models", lambda r: web.json_response({"data": [
+    {"id": "org/model"},  # (ids with a slash aren't offered through links: that's how loops are avoided)
+    {"id": "l9s", "loaded": True, "follows": "theirmodel", "context_window": 32768},
+    {"id": "theirmodel", "loaded": True, "context_window": 32768}]}))
 app.router.add_get("/_mock/state", state)
 web.run_app(app, host="127.0.0.1", port=int(sys.argv[1]), print=None)

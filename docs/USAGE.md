@@ -361,6 +361,33 @@ it takes to load.
 
 ## Serving people elsewhere
 
+### Modes
+
+`l9s mode` (or Settings › Mode, or the setup that opens the first time you run `l9s`):
+
+- **personal**: the model server serves you; draft models on (fastest single conversation).
+- **shared**: the model server serves many people; on a Mac, draft models off so mlx-lm batches (`l9s optimize`
+  takes them out of existing profiles). Then HTTPS (below) and a key per person.
+- **client**: no model server (`BACKEND=remote`; switching to client stops the local one and keeps its profiles and
+  downloads; switching back starts it again). Linked servers only.
+
+### Using someone else's server: `l9s link`
+
+```bash
+l9s link add gb1 https://llm.example.com --key sk-l9s-…   # checks the URL and key first
+l9s link                                                  # status, models (as gb1/<model>), what's loaded
+l9s link rm gb1
+```
+
+A linked server's models appear in **your** `/v1/models` as `<link>/<model>`, including `<link>/l9s` (whatever that
+server has loaded), and your l9s forwards requests for them with the key you were given (the linked server does its
+own model switching, Anthropic / Responses translation and limits). So every tool already connected to your l9s,
+`l9s claude` included, can use them without being reconfigured; in client mode `l9s claude` starts on the first
+link's follow id. Keys you give other people don't include your linked servers (you'd be re-sharing someone else's
+key); list them explicitly with `l9s keys set <name> --models gb1/l9s` if you mean to. The Access view (9) shows each
+link's status; Events notes when one goes down or comes back. Links are kept in `~/.l9s/links.json` (readable only
+by you).
+
 ### HTTPS: `l9s expose`
 
 l9s speaks plain HTTP. Forwarding a router port straight to it would send API keys and prompts across the internet
@@ -372,7 +399,9 @@ unencrypted, so `l9s expose` sets up a front end that terminates HTTPS with a re
 | `l9s expose caddy llm.example.com [--email you@x]` | Let's Encrypt, renewed by Caddy | DNS A/AAAA record → your public IP; router forwards **80 and 443** (not l9s's port) | installs Caddy from its official package; your other Caddy sites are kept |
 | `l9s expose cloudflare` | Cloudflare's | nothing to open | free quick tunnel at a random `https://….trycloudflare.com` (changes when the tunnel restarts) |
 | `l9s expose cloudflare --name l9s --host llm.example.com` | Cloudflare's | nothing to open | your domain on Cloudflare; `cloudflared tunnel login` once |
-| `l9s expose tailscale` | Let's Encrypt via Tailscale | nothing to open | `https://<machine>.<tailnet>.ts.net`; Funnel must be allowed for the tailnet |
+| `l9s expose tailscale` | Let's Encrypt via Tailscale | nothing to open | `https://<machine>.<tailnet>.ts.net` for the internet; Funnel must be allowed for the tailnet |
+| `l9s expose tailscale --private` | Let's Encrypt via Tailscale | nothing to open | the same address, **only for devices on your tailnet** (a VPN) |
+| any other VPN (WireGuard, ZeroTier, …) | (the VPN encrypts) | nothing to open | put this machine's VPN address in Settings › Access › Public URL |
 
 `l9s expose` shows the public URL and checks it's reachable with a valid certificate; `l9s expose off` undoes it.
 Setting the public URL by hand (Settings › Access, `PUBLIC_URL`) works with any other reverse proxy; requests it

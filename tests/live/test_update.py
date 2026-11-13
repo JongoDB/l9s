@@ -1,6 +1,8 @@
 """End-to-end update test: pretends the install is older, then updates from the TUI (U → confirm → l9s update -y →
 relaunch prompt → exit code 75). Run on a test machine: it really updates l9s from GitHub.
   echo 0.0.9 > ~/.l9s/app/VERSION && ~/.l9s/app/.venv/bin/python tests/test_update.py"""
+import os as _os
+_os.environ.setdefault("L9S_SKIP_SETUP", "1")  # no first-run setup prompt in tests
 import asyncio, sys, time
 from pathlib import Path
 sys.path.insert(0, str(Path.home() / ".l9s/app"))

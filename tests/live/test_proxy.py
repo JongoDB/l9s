@@ -1,5 +1,7 @@
 """Run on the server: starts a throwaway proxy on :18000 in front of the running model server.
    LLMPROXY_PORT=18000 LLMPROXY_DATA=/tmp/proxytest python ~/.l9s/app/proxy.py &  then  python tests/test_proxy.py"""
+import os as _os
+_os.environ.setdefault("L9S_SKIP_SETUP", "1")  # no first-run setup prompt in tests
 import os, subprocess
 LAN_IP = subprocess.run(['hostname', '-I'], capture_output=True, text=True).stdout.split()[0]
 import json, time, urllib.request, threading, sys

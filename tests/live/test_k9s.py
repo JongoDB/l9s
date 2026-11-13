@@ -1,3 +1,5 @@
+import os as _os
+_os.environ.setdefault("L9S_SKIP_SETUP", "1")  # no first-run setup prompt in tests
 import asyncio, json, sys, threading, time, urllib.request
 from pathlib import Path
 sys.path.insert(0, str(Path.home() / ".l9s/app"))

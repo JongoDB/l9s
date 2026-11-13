@@ -28,6 +28,7 @@ import aiohttp
 from aiohttp import web
 
 import keys as keystore
+import links as linkstore
 import translate
 
 HOME = Path.home()
@@ -349,6 +350,76 @@ def codex_catalog() -> dict:
     return {"models": out}
 
 
+# ------------------------------------------------------------------ linked servers (l9s link)
+VERSION = (Path(__file__).with_name("VERSION").read_text().strip() if Path(__file__).with_name("VERSION").exists()
+           else "dev")
+_links: dict = {"mtime": None, "cfg": {}}
+remote_models: dict = {}  # link -> {"ok", "error", "models": [...], "at"}
+
+
+def links_cfg() -> dict:
+    try:
+        m = linkstore.LINKS.stat().st_mtime
+    except OSError:
+        m = None
+    if m != _links["mtime"]:
+        _links["mtime"], _links["cfg"] = m, linkstore.load()
+    return _links["cfg"]
+
+
+def remote_target(model: str | None) -> dict | None:
+    if not model or "/" not in model:
+        return None
+    link, _, inner = model.partition("/")
+    return {"link": link, "model": inner} if link in links_cfg() and inner else None
+
+
+async def poll_links(app: web.Application) -> None:
+    """Keep each linked server's model list fresh (every 20 s, and right after `l9s link add`)."""
+    seen = None
+    last = 0.0
+    while True:
+        cfg = links_cfg()
+        if _links["mtime"] != seen or time.time() - last > 20:
+            seen, last = _links["mtime"], time.time()
+            for name in list(remote_models):
+                if name not in cfg:
+                    remote_models.pop(name, None)
+            for name, link in cfg.items():
+                try:
+                    async with app["session"].get(f"{link['url']}/v1/models", timeout=aiohttp.ClientTimeout(total=8),
+                                                  headers={"Authorization": f"Bearer {link['key']}",
+                                                           "User-Agent": f"l9s/{VERSION}"}) as r:
+                        if r.status != 200:
+                            raise RuntimeError({401: "key not valid there"}.get(r.status, f"HTTP {r.status}"))
+                        data = (await r.json()).get("data", [])
+                    was = remote_models.get(name, {}).get("ok")
+                    remote_models[name] = {"ok": True, "models": [m for m in data if "/" not in m["id"]],
+                                           "at": time.time()}
+                    if was is False:
+                        event("link", f"linked server {name} is reachable again")
+                except Exception as e:  # noqa: BLE001
+                    if remote_models.get(name, {}).get("ok") is not False:
+                        event("link", f"linked server {name} ({link['url']}) unreachable: {str(e)[:120]}", "warn")
+                    remote_models[name] = {**remote_models.get(name, {}), "ok": False, "error": str(e)[:160],
+                                           "at": time.time()}
+        await asyncio.sleep(2)
+
+
+def remote_entries() -> list[dict]:
+    out = []
+    for name, st in sorted(remote_models.items()):
+        for m in st.get("models", []) if st.get("ok") else []:
+            e = {**m, "id": f"{name}/{m['id']}", "owned_by": name, "remote": name}
+            if m.get("follows"):
+                e["follows"] = f"{name}/{m['follows']}"
+                e["display_name"] = f"{name}/{m['id']} (whatever {name} has loaded, now {m['follows']})"
+            else:
+                e["display_name"] = f"{name}/{m.get('display_name') or m['id']}"
+            out.append(e)
+    return out
+
+
 def models_list() -> dict:
     """/v1/models: every saved profile plus every downloaded model that fits, so tools that list models see all
     of them. One is loaded; asking for another loads it (like Ollama), unless MODEL_SWITCH=off."""
@@ -377,7 +448,7 @@ def models_list() -> dict:
         if lim["context_window"]:
             fol["max_model_len"] = lim["context_window"]
         data.insert(0, fol)
-    return {"object": "list", "data": data}
+    return {"object": "list", "data": data + remote_entries()}
 
 
 _switch_lock = asyncio.Lock()
@@ -939,6 +1010,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
         except json.JSONDecodeError:
             return web.json_response({"input_tokens": 1})
     pre = None  # a streaming response already started while a model loaded
+    remote = None  # {"link", "model"}: a model on a linked server
     inject_usage = False
     if record:
         rec = {"id": uuid.uuid4().hex[:8], "start": time.time(), "client": ip, "user": who["name"],
@@ -949,120 +1021,135 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 j = json.loads(body)
                 if isinstance(j, dict):
                     inspect_request(rec, j)
-                    follow = j.get("model") == FOLLOW and request.path.startswith("/v1/")
-                    ok = allowed_models(who)
-                    if j.get("model") and request.path.startswith("/v1/") and ok is not None:
-                        want = active_model()[0] if follow else (resolve(j["model"]) or (j["model"],))[0]
-                        if want not in ok:
-                            act = active_model()[0]
-                            msg = (f"your key can't use `{j['model']}`. " + (
-                                f"It can use: {', '.join(sorted(ok))} (or `{FOLLOW}`)." if ok else
-                                f"The server has `{act}` loaded, which your key isn't allowed to use."
-                            ) + ("" if who.get("switch") else " Switching models is up to the server owner."))
-                            rec["status"], rec["error"] = 403, msg[:300]
+                    remote = remote_target(j.get("model")) if request.path.startswith("/v1/") else None
+                    if remote:
+                        # a linked server's model: forward as is (that l9s does its own switching / translation)
+                        ok = allowed_models(who)
+                        if ok is not None and j["model"] not in ok:
+                            msg = f"your key can't use `{j['model']}` (a model on a server linked to this one)"
+                            rec["status"], rec["error"] = 403, msg
                             finish(rec, "error")
                             return api_error(403, msg, "permission_error")
-                    if j.get("model") and not follow and request.path.startswith("/v1/") and resolve(j["model"]):
-                        note_pin(rec, resolve(j["model"])[0])
-                    if follow and (switching or pending):
-                        # a switch is running or queued: it goes first, then this follows to whatever loaded
-                        name, new_repo = switching.get("to") or next(iter(pending.values())), None
-                    if (follow and (switching or pending)) or (
-                            j.get("model") and not follow and request.path.startswith("/v1/") and needs_switch(j["model"])):
-                        if not follow:
-                            name, new_repo = resolve(j["model"])
-                        rec["_waiting"] = True
-                        active[rec["id"]] = rec
-                        task = asyncio.ensure_future(settled() if follow else ensure_model(name, new_repo, rec["id"]))
-                        if j.get("stream"):
-                            # streaming clients: answer now and send SSE comments while the model loads, so they
-                            # don't time out (a vLLM load can take minutes)
-                            pre = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream",
-                                                                          "Cache-Control": "no-cache"})
-                            await pre.prepare(request)
-                        gone, last_ka = False, 0.0
-                        while not task.done():
-                            tr = request.transport
-                            if tr is None or tr.is_closing():
-                                gone = True
-                            elif pre is not None and time.time() - last_ka >= 5:
-                                last_ka = time.time()
-                                est = load_times().get(name)
-                                try:
-                                    await pre.write((f": l9s is loading {name}"
-                                                     + (f" (usually ~{human_secs(est)})" if est else "")
-                                                     + f", {time.time() - rec['start']:.0f}s so far…\n\n").encode())
-                                except (ConnectionResetError, RuntimeError):
+                        if int(request.headers.get("X-L9s-Hop", "0") or 0) >= 3:
+                            return api_error(508, "linked servers point at each other in a loop", "loop_detected")
+                        rec["remote"] = remote["link"]
+                        j["model"] = remote["model"]
+                        body = json.dumps(j).encode()
+                    else:
+                        follow = j.get("model") == FOLLOW and request.path.startswith("/v1/")
+                        ok = allowed_models(who)
+                        if j.get("model") and request.path.startswith("/v1/") and ok is not None:
+                            want = active_model()[0] if follow else (resolve(j["model"]) or (j["model"],))[0]
+                            if want not in ok:
+                                act = active_model()[0]
+                                msg = (f"your key can't use `{j['model']}`. " + (
+                                    f"It can use: {', '.join(sorted(ok))} (or `{FOLLOW}`)." if ok else
+                                    f"The server has `{act}` loaded, which your key isn't allowed to use."
+                                ) + ("" if who.get("switch") else " Switching models is up to the server owner."))
+                                rec["status"], rec["error"] = 403, msg[:300]
+                                finish(rec, "error")
+                                return api_error(403, msg, "permission_error")
+                        if j.get("model") and not follow and request.path.startswith("/v1/") and resolve(j["model"]):
+                            note_pin(rec, resolve(j["model"])[0])
+                        if follow and (switching or pending):
+                            # a switch is running or queued: it goes first, then this follows to whatever loaded
+                            name, new_repo = switching.get("to") or next(iter(pending.values())), None
+                        if (follow and (switching or pending)) or (
+                                j.get("model") and not follow and request.path.startswith("/v1/") and needs_switch(j["model"])):
+                            if not follow:
+                                name, new_repo = resolve(j["model"])
+                            rec["_waiting"] = True
+                            active[rec["id"]] = rec
+                            task = asyncio.ensure_future(settled() if follow else ensure_model(name, new_repo, rec["id"]))
+                            if j.get("stream"):
+                                # streaming clients: answer now and send SSE comments while the model loads, so they
+                                # don't time out (a vLLM load can take minutes)
+                                pre = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream",
+                                                                              "Cache-Control": "no-cache"})
+                                await pre.prepare(request)
+                            gone, last_ka = False, 0.0
+                            while not task.done():
+                                tr = request.transport
+                                if tr is None or tr.is_closing():
                                     gone = True
-                            if gone:
-                                # the client gave up while queued: drop its switch, unless it's already under way
-                                # (stopping a half-done switch would leave no model loaded)
-                                if follow:
-                                    task.cancel()
-                                elif switching.get("to") != name:
-                                    task.cancel()
-                                    event("switch", f"a client waiting for {name} disconnected: its switch was "
-                                                    f"dropped", profile=name)
+                                elif pre is not None and time.time() - last_ka >= 5:
+                                    last_ka = time.time()
+                                    est = load_times().get(name)
+                                    try:
+                                        await pre.write((f": l9s is loading {name}"
+                                                         + (f" (usually ~{human_secs(est)})" if est else "")
+                                                         + f", {time.time() - rec['start']:.0f}s so far…\n\n").encode())
+                                    except (ConnectionResetError, RuntimeError):
+                                        gone = True
+                                if gone:
+                                    # the client gave up while queued: drop its switch, unless it's already under way
+                                    # (stopping a half-done switch would leave no model loaded)
+                                    if follow:
+                                        task.cancel()
+                                    elif switching.get("to") != name:
+                                        task.cancel()
+                                        event("switch", f"a client waiting for {name} disconnected: its switch was "
+                                                        f"dropped", profile=name)
+                                    active.pop(rec["id"], None)
+                                    rec["status"], rec["error"] = 499, f"client disconnected while waiting for {name}"
+                                    finish(rec, "cancelled")
+                                    return pre or web.Response(status=499)
+                                await asyncio.wait([task], timeout=1)
+                            err = task.result()
+                            rec.pop("_waiting", None)
+                            if err:
                                 active.pop(rec["id"], None)
-                                rec["status"], rec["error"] = 499, f"client disconnected while waiting for {name}"
-                                finish(rec, "cancelled")
-                                return pre or web.Response(status=499)
-                            await asyncio.wait([task], timeout=1)
-                        err = task.result()
-                        rec.pop("_waiting", None)
-                        if err:
-                            active.pop(rec["id"], None)
-                            rec["status"], rec["error"] = err["status"], err["error"]["message"][:300]
-                            finish(rec, "error")
-                            if pre is not None:
-                                await pre.write(b"data: " + json.dumps({"error": err["error"]}).encode() + b"\n\n")
-                                await pre.write_eof()
-                                return pre
-                            return web.json_response({"error": err["error"]}, status=err["status"])
-                        if not follow and j["model"] != name:  # sent as a repo id: the server knows the profile name
-                            j["model"] = name
+                                rec["status"], rec["error"] = err["status"], err["error"]["message"][:300]
+                                finish(rec, "error")
+                                if pre is not None:
+                                    await pre.write(b"data: " + json.dumps({"error": err["error"]}).encode() + b"\n\n")
+                                    await pre.write_eof()
+                                    return pre
+                                return web.json_response({"error": err["error"]}, status=err["status"])
+                            if not follow and j["model"] != name:  # sent as a repo id: the server knows the profile name
+                                j["model"] = name
+                                body = json.dumps(j).encode()
+                        if follow:
+                            j["model"] = rec["model"] = active_model()[0]
+                            rec["follow"] = True
                             body = json.dumps(j).encode()
-                    if follow:
-                        j["model"] = rec["model"] = active_model()[0]
-                        rec["follow"] = True
-                        body = json.dumps(j).encode()
-                    if request.path == "/v1/messages" and strip_billing_header(j):
-                        body = json.dumps(j).encode()
-                    api = {"/v1/messages": "anthropic", "/v1/responses": "responses",
-                           "/v1/chat/completions": "chat"}.get(request.path)
-                    if (api and j.get("model") and load_env().get("IDENTITY_NOTE", "1") != "0"
-                            and (api == "anthropic" or AGENT_UA.search(request.headers.get("User-Agent", "")))):
-                        add_identity(j, resolve(j["model"])[0] if resolve(j["model"]) else j["model"], api)
-                        body = json.dumps(j).encode()
-                    if BACKEND == "mlx" and request.path in ("/v1/messages", "/v1/responses"):
-                        # mlx-lm only speaks chat completions: translate (Claude Code, Codex, …)
-                        xlate = "anthropic" if request.path == "/v1/messages" else "responses"
-                        xreq = j
-                        j = translate.anthropic_to_chat(j) if xlate == "anthropic" else translate.responses_to_chat(j)
-                        if wants_no_thinking(xreq):
-                            thinking_off(j)
-                        body = json.dumps(j).encode()
-                        upath = "/v1/chat/completions"
-                    elif request.path == "/v1/responses" and str((j.get("reasoning") or {}).get("effort")) == "minimal":
-                        # vLLM turns thinking off for "none" but not "minimal" (Codex's lowest setting)
-                        j["reasoning"] = {**j["reasoning"], "effort": "none"}
-                        body = json.dumps(j).encode()
-                    elif request.path == "/v1/chat/completions" and wants_no_thinking(j):
-                        thinking_off(j)  # (vLLM's own Anthropic endpoint maps `thinking: disabled` itself)
-                        body = json.dumps(j).encode()
-                    if BACKEND == "mlx" and "model" in j:
-                        # mlx-lm loads whatever `model` names; map the profile name to the loaded repo
-                        name, repo = active_model()
-                        if j["model"] in (name, repo, "", None) and repo:
-                            j["model"] = repo
+                        if request.path == "/v1/messages" and strip_billing_header(j):
                             body = json.dumps(j).encode()
-                        else:
-                            finish_early = {"error": {"message": f"The model `{j['model']}` does not exist. "
-                                                                 f"This server serves `{name}`.", "type": "NotFoundError",
-                                                      "code": 404}}
-                            rec["status"], rec["error"] = 404, f"unknown model {j['model']}"
-                            finish(rec, "error")
-                            return web.json_response(finish_early, status=404)
+                        api = {"/v1/messages": "anthropic", "/v1/responses": "responses",
+                               "/v1/chat/completions": "chat"}.get(request.path)
+                        if (api and j.get("model") and load_env().get("IDENTITY_NOTE", "1") != "0"
+                                and (api == "anthropic" or AGENT_UA.search(request.headers.get("User-Agent", "")))):
+                            add_identity(j, resolve(j["model"])[0] if resolve(j["model"]) else j["model"], api)
+                            body = json.dumps(j).encode()
+                        if BACKEND == "mlx" and request.path in ("/v1/messages", "/v1/responses"):
+                            # mlx-lm only speaks chat completions: translate (Claude Code, Codex, …)
+                            xlate = "anthropic" if request.path == "/v1/messages" else "responses"
+                            xreq = j
+                            j = translate.anthropic_to_chat(j) if xlate == "anthropic" else translate.responses_to_chat(j)
+                            if wants_no_thinking(xreq):
+                                thinking_off(j)
+                            body = json.dumps(j).encode()
+                            upath = "/v1/chat/completions"
+                        elif request.path == "/v1/responses" and str((j.get("reasoning") or {}).get("effort")) == "minimal":
+                            # vLLM turns thinking off for "none" but not "minimal" (Codex's lowest setting)
+                            j["reasoning"] = {**j["reasoning"], "effort": "none"}
+                            body = json.dumps(j).encode()
+                        elif request.path == "/v1/chat/completions" and wants_no_thinking(j):
+                            thinking_off(j)  # (vLLM's own Anthropic endpoint maps `thinking: disabled` itself)
+                            body = json.dumps(j).encode()
+                        if BACKEND == "mlx" and "model" in j:
+                            # mlx-lm loads whatever `model` names; map the profile name to the loaded repo
+                            name, repo = active_model()
+                            if j["model"] in (name, repo, "", None) and repo:
+                                j["model"] = repo
+                                body = json.dumps(j).encode()
+                            else:
+                                finish_early = {"error": {"message": f"The model `{j['model']}` does not exist. "
+                                                                     f"This server serves `{name}`.", "type": "NotFoundError",
+                                                          "code": 404}}
+                                rec["status"], rec["error"] = 404, f"unknown model {j['model']}"
+                                finish(rec, "error")
+                                return web.json_response(finish_early, status=404)
                     if j.get("stream") and request.path.endswith(("/chat/completions", "/completions")):
                         so = j.get("stream_options") or {}
                         if not so.get("include_usage"):
@@ -1073,12 +1160,27 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 pass
         active[rec["id"]] = rec
     headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP | {"authorization", "x-api-key"}}
-    if API_KEY:  # users' keys are checked here; the model server only knows the owner's key
+    target = UPSTREAM
+    if BACKEND == "remote" and not remote and request.path.startswith("/v1/"):
+        avail = [m["id"] for m in remote_entries() if not m.get("follows")]
+        msg = ("this l9s has no model server of its own (remote-only); use a model from a linked server: "
+               + (", ".join(f"`{m}`" for m in avail[:8]) or "none linked yet (l9s link add <name> <url> --key <key>)"))
+        if rec:
+            rec["status"], rec["error"] = 404, msg[:300]
+            finish(rec, "error")
+        return api_error(404, msg, "model_not_found")
+    if remote:
+        link = links_cfg().get(remote["link"], {})
+        target = link.get("url", "")
+        headers["Authorization"] = f"Bearer {link.get('key', '')}"
+        headers["X-L9s-Hop"] = str(int(request.headers.get("X-L9s-Hop", "0") or 0) + 1)
+        headers["User-Agent"] = f"{request.headers.get('User-Agent', '')} via-l9s/{VERSION}".strip()
+    elif API_KEY:  # users' keys are checked here; the model server only knows the owner's key
         headers["Authorization"] = f"Bearer {API_KEY}"
     sess: aiohttp.ClientSession = request.app["session"]
     state = "error"
     try:
-        async with sess.request(request.method, UPSTREAM + upath, data=body, headers=headers,
+        async with sess.request(request.method, target + upath, data=body, headers=headers,
                                 allow_redirects=False) as up:
             out_headers = {k: v for k, v in up.headers.items() if k.lower() not in HOP | {"content-encoding"}}
             if rec:
@@ -1282,7 +1384,9 @@ async def on_startup(app: web.Application) -> None:
                                            connector=aiohttp.TCPConnector(limit=0))
     _load_history()
     event("proxy", f"request proxy started on :{PORT} → {BACKEND} server {UPSTREAM}")
-    app["tasks"] = [asyncio.create_task(watch_ready(app)), asyncio.create_task(flush_usage())]
+    app["tasks"] = [asyncio.create_task(flush_usage()), asyncio.create_task(poll_links(app))]
+    if BACKEND != "remote":
+        app["tasks"].append(asyncio.create_task(watch_ready(app)))
     if BACKEND == "vllm":
         app["tasks"].append(asyncio.create_task(watch_docker()))
 

@@ -1,5 +1,7 @@
 """Settings save flow + 'no buried buttons' audit at several terminal sizes.
 Only touches UPDATE_MODE (no restart needed) and restores it. Run: ~/.l9s/app/.venv/bin/python tests/live/test_settings.py"""
+import os as _os
+_os.environ.setdefault("L9S_SKIP_SETUP", "1")  # no first-run setup prompt in tests
 import asyncio
 import sys
 from pathlib import Path

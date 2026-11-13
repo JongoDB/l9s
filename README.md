@@ -79,6 +79,25 @@ downloading.
 
 ![l9s hub view](docs/img/hub-mlx.svg)
 
+## Three ways to use it
+
+| Mode | For | What l9s sets up |
+|---|---|---|
+| **personal** | a GPU box or Apple Silicon Mac that serves **you** | the model server, tuned for one conversation at a time; your tools on this machine and your LAN / VPN |
+| **shared** | a server for **many people** | the model server tuned for many at once, HTTPS (`l9s expose`: Let's Encrypt via Caddy, Cloudflare Tunnel, Tailscale) and a key per person with limits |
+| **client** | any machine that should **use someone else's l9s** | no model server: link their server with the URL + key they gave you; its models show up for every tool on this machine as `<link>/<model>` |
+
+The first time you open `l9s` it asks which one; change it any time in Settings › Mode or with `l9s mode`.
+Linking works in every mode, so a personal server can add a friend's models next to its own. A machine without a
+GPU l9s can use (an Intel Mac, a laptop) installs as a client.
+
+```bash
+# client: use a server someone shared with you
+curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --mode client \
+  --link gb1 https://llm.example.com sk-l9s-their-key-for-you
+l9s claude      # Claude Code on gb1's model (gb1/l9s: whatever gb1 has loaded)
+```
+
 ## Install
 
 One line, on the GPU box or Mac that will serve the model:
@@ -97,6 +116,8 @@ curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -
 ```
 
 Or from a clone: `git clone https://github.com/JongoDB/l9s.git && cd l9s && ./install.sh [--model <repo>|--no-model]`.
+`--mode personal|shared|client` picks the mode without asking (an interactive install asks); `--link <name> <url>
+<key>` links a server right away.
 
 The installer detects your hardware and deployment, sets up [uv](https://github.com/astral-sh/uv) and a private Python
 environment in `~/.l9s`, installs the `l9s` command, the request proxy as a service (systemd / launchd) and

@@ -1,5 +1,7 @@
 """Connect view: lists the tools, shows details / the change, connect asks first. Never writes (cancels).
 Run: ~/.l9s/app/.venv/bin/python tests/live/test_connect_view.py"""
+import os as _os
+_os.environ.setdefault("L9S_SKIP_SETUP", "1")  # no first-run setup prompt in tests
 import asyncio
 import sys
 from pathlib import Path

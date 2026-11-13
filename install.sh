@@ -2,17 +2,24 @@
 # l9s installer.
 #   Linux + NVIDIA (or AMD ROCm) GPU  -> "vllm" deployment: vLLM in Docker (auto-tuned for GB10 / DGX Spark).
 #   macOS on Apple Silicon             -> "mlx" deployment: mlx-lm server as a launchd agent.
+#   anything else (or --mode client)   -> client mode: no model server; use other people's l9s servers (l9s link).
+# Modes: personal (serve yourself) · shared (serve many people) · client (use linked servers). Asked on a new
+# interactive install; --mode personal|shared|client (or L9S_MODE=…) sets it.
 # Safe to re-run: updates the code and keeps ~/.l9s/env, profiles and history.
 set -euo pipefail
 cd "$(dirname "$0")"
 # options: --model <org/repo>  serve this model when done
 #          --no-model          don't serve a starter model
-MODEL="" NO_MODEL=0 UPDATE=0
+#          --mode personal|shared|client
+#          --link <name> <url> <key>   link a server you were given access to (client mode's starting point)
+MODEL="" NO_MODEL=0 UPDATE=0 MODE="${L9S_MODE:-}" LINK=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model) MODEL="${2:?--model needs an org/repo}"; shift 2 ;;
     --no-model) NO_MODEL=1; shift ;;
     --update) UPDATE=1; NO_MODEL=1; shift ;;   # used by `l9s update` (no starter model)
+    --mode) MODE="${2:?--mode needs personal, shared or client}"; shift 2 ;;
+    --link) LINK=("${2:?}" "${3:?}" "${4:?--link needs <name> <url> <key>}"); shift 4 ;;
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -37,10 +44,9 @@ launchd_load() {
 }
 die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-if [[ "$OS" == "Darwin" ]]; then
-  [[ "$(uname -m)" == "arm64" ]] || die "the mlx deployment needs an Apple Silicon Mac"
-elif [[ "$OS" != "Linux" ]]; then
-  die "unsupported OS: $OS (Linux with a GPU, or macOS on Apple Silicon)"
+[[ -z "$MODE" || "$MODE" =~ ^(personal|shared|client)$ ]] || die "--mode is personal, shared or client"
+if [[ "$OS" != "Darwin" && "$OS" != "Linux" ]]; then
+  die "unsupported OS: $OS (Linux or macOS; on Windows, use WSL)"
 fi
 for c in curl openssl; do command -v "$c" >/dev/null || die "missing: $c"; done
 
@@ -91,6 +97,40 @@ if [[ ! -f "$L9S_HOME/env" ]]; then
 fi
 grep -q '^BACKEND=' "$L9S_HOME/env" || echo "BACKEND=$BACKEND" >> "$L9S_HOME/env"
 envget() { ( set +u; source "$L9S_HOME/env"; eval "echo \"\${$1:-}\"" ); }
+envset() { grep -v "^$1=" "$L9S_HOME/env" > "$L9S_HOME/env.tmp" || true; [[ -n "$2" ]] && echo "$1=$2" >> "$L9S_HOME/env.tmp"
+           mv "$L9S_HOME/env.tmp" "$L9S_HOME/env"; chmod 600 "$L9S_HOME/env"; }
+DETECTED="$BACKEND"   # what this hardware can serve with: vllm | mlx | remote (nothing)
+
+# ---------------------------------------------------------------- mode
+CUR_MODE="$(envget MODE)"; [[ "$(envget BACKEND)" == "remote" ]] && CUR_MODE=client
+if [[ -z "$MODE" && $UPDATE -eq 0 && -z "$CUR_MODE" && -z "${L9S_NO_SERVICES:-}" ]] && [[ -r /dev/tty ]] && [[ -t 1 ]]; then
+  if [[ "$DETECTED" == "remote" ]]; then
+    say "this device has no GPU l9s can serve models with: installing in client mode (use other l9s servers)"
+    MODE=client
+  else
+    echo
+    echo "What is this device for?"
+    echo "  1) personal  serve models for yourself (this machine, your LAN / VPN)          [default]"
+    echo "  2) shared    serve models for many people (HTTPS + a key per person)"
+    echo "  3) client    don't serve models here; use someone else's l9s server"
+    read -r -p "choose 1-3: " ans < /dev/tty || ans=""
+    case "$ans" in 2|shared) MODE=shared ;; 3|client) MODE=client ;; *) MODE=personal ;; esac
+  fi
+fi
+MODE="${MODE:-${CUR_MODE:-}}"
+[[ -z "$MODE" ]] && { [[ "$DETECTED" == "remote" ]] && MODE=client || MODE=personal; }
+if [[ "$MODE" == "client" ]]; then
+  [[ "$(envget BACKEND)" != "remote" ]] && envset SERVER_BACKEND "$(envget BACKEND | grep -v remote || true)"
+  envset BACKEND remote
+  envset MODE client
+else
+  if [[ "$(envget BACKEND)" == "remote" ]]; then
+    [[ "$DETECTED" != "remote" ]] || die "this device has no GPU l9s can serve models with (NVIDIA / AMD, or Apple Silicon): use --mode client"
+    envset BACKEND "$DETECTED"
+  fi
+  envset MODE "$MODE"
+  [[ "$MODE" == "shared" && "$DETECTED" == "mlx" ]] && envset SPEC_DECODE off   # mlx-lm batches only without a draft model
+fi
 BACKEND="$(envget BACKEND)"
 
 if [[ -n "${L9S_NO_SERVICES:-}" ]]; then   # CI / containers: files and Python environment only
@@ -149,6 +189,23 @@ else
   sudo systemctl enable --now l9s-update.timer >/dev/null 2>&1
 fi
 
+# ---------------------------------------------------------------- client mode: no model server
+if [[ "$BACKEND" == "remote" ]]; then
+  if [[ ${#LINK[@]} -eq 3 ]]; then
+    "$L9S_HOME/bin/l9s" link add "${LINK[0]}" "${LINK[1]}" --key "${LINK[2]}" || echo "    (couldn't link ${LINK[1]}: check the URL and key)"
+  fi
+  cat <<MSG
+
+l9s is installed ($BIN_NOTE) in client mode: this device uses other people's l9s servers.
+Your own endpoint (for the tools on this device): http://127.0.0.1:$(envget PORT)/v1     API key: l9s key
+
+  l9s link add <name> https://their.host --key <key>   link a server you were given access to
+  l9s claude / l9s connect <tool>                      use its models (they show up as <name>/<model>)
+  l9s                                                  the terminal UI (Access view: linked servers)
+MSG
+  exit 0
+fi
+
 # ---------------------------------------------------------------- model server prerequisites
 if [[ "$BACKEND" == "vllm" ]]; then
   command -v docker >/dev/null || die "the vllm deployment needs Docker (with the NVIDIA container toolkit or ROCm)"
@@ -189,12 +246,20 @@ fi
 IP="$("$PY" -c "import sys; sys.path.insert(0, '$L9S_HOME/app'); import hw; print(hw.host_ip())")"
 cat <<MSG
 
-l9s is installed ($BIN_NOTE).  Deployment: $BACKEND
+l9s is installed ($BIN_NOTE).  Mode: $MODE   Deployment: $BACKEND
 Endpoint: http://$IP:$(envget PORT)/v1     API key: l9s key
 
   l9s                     open the terminal UI (Hub tab: search, pull and serve a model)
   l9s info <org/repo>     what a model needs and the recommended settings
   l9s help                all commands
 MSG
+if [[ "$MODE" == "shared" && $UPDATE -eq 0 ]]; then
+  cat <<MSG
+
+Shared mode, next:
+  l9s expose caddy <host> | cloudflare | tailscale    HTTPS for people elsewhere (Let's Encrypt / Cloudflare / Tailscale)
+  l9s keys add <name> [--concurrent 2]                a key per person (shown once; limits; revoke any time)
+MSG
+fi
 [[ "$OS" == "Darwin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && echo "Add ~/.local/bin to your PATH to use 'l9s'."
 exit 0

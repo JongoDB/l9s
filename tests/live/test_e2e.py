@@ -1,6 +1,8 @@
 """End-to-end test of llm_tui: drives every tab, key binding, button and dialog through Textual's pilot.
 Serves a small model through the UI, exercises Test/Stop/Start/Restart, switches back to the original
 profile, and cleans up. Output: /tmp/e2e.out"""
+import os as _os
+_os.environ.setdefault("L9S_SKIP_SETUP", "1")  # no first-run setup prompt in tests
 import asyncio
 import os
 import json

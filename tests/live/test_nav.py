@@ -1,5 +1,7 @@
 """Arrow-key navigation, settings click from every view, columns spread across the table.
 Run with any server running: ~/.l9s/app/.venv/bin/python tests/live/test_nav.py"""
+import os as _os
+_os.environ.setdefault("L9S_SKIP_SETUP", "1")  # no first-run setup prompt in tests
 import asyncio, sys
 from pathlib import Path
 sys.path.insert(0, str(Path.home() / ".l9s/app"))
@@ -35,7 +37,7 @@ async def main():
         order = []
         for _ in range(6):
             await pilot.press("down"); await pilot.pause(0.15); order.append(fid())
-        check("↓ walks settings fields", order[0] == "set-hf" and len(set(order)) == 6 and tab() == "settings", order)
+        check("↓ walks settings fields", order[0] == "set-mode" and "set-hf" in order and len(set(order)) == 6 and tab() == "settings", order)
         await pilot.press("up"); await pilot.pause(0.15)
         check("↑ goes back a field", fid() == order[-2], fid())
         app.query_one("#set-key", Input).focus(); await pilot.pause(0.1)

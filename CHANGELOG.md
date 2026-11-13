@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+- Three modes, picked the first time you run `l9s` (a short setup) or at install (`--mode`), and changeable any time in Settings › Mode or with `l9s mode`: **personal** (serve yourself), **shared** (serve many people: tuned for batching, then HTTPS and a key per person, each step offered in turn) and **client** (no model server; use other people's l9s servers).
+- `l9s link add <name> <url> --key <key>`, or Access (9) › Link a server: someone else's l9s server joins yours. Its models show up in your `/v1/models` as `<name>/<model>` (and `<name>/l9s`, whatever it has loaded), and l9s forwards requests for them with the key you were given, so every tool already connected to your l9s can use them. Checked end to end over the internet: models, chat, streaming, the Anthropic API and a Claude Code session (with a tool call) from a client-mode Mac through a GB10 behind Cloudflare.
+- Client-mode install for machines without a GPU l9s can serve with (Intel Macs, laptops): just the proxy and the TUI, no model server. `--link <name> <url> <key>` links a server during install. The Server view, header and Access view explain client mode; commands that need a local model server say so.
+- `l9s expose tailscale --private` (and in Settings): HTTPS only inside your tailnet, as a VPN. Other VPNs work by putting the VPN address in Public URL.
+- Everything the CLI does is in the TUI: editing a key's limits (Access › Edit limits), the "which model am I" note (Settings › Coding agents), uninstall instructions (Settings › Remove l9s), `:setup` to run the setup again.
+- View 9 is now Access: who can use this server (keys) and which servers this device uses (links).
+
 ## 0.8.2
 - Front ends on another machine (e.g. a Cloudflare Tunnel running on another box on the LAN): Settings › Access › trusted relay (`TRUST_PROXY`) makes l9s use the real client address the relay passes on, so the Requests view shows who's who and the wrong-key block hits the sender, not the relay (which would have locked everyone out). Events tells you when a relay needs trusting. Checked through Cloudflare at a real public URL: keys, limits, streaming, 401/403/404 for wrong keys, other models, the admin API and non-API routes.
 - l9s's own requests to remote servers (`l9s connect --server https://…`, `l9s expose` checks) identify as `l9s/<version>`: Cloudflare's bot rules block Python's default user agent.

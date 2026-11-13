@@ -578,3 +578,33 @@ def test_reverse_proxied_requests_are_not_local(stack):
         as_user(px, KEY, "/v1/models", headers=fwd)
     assert e.value.code == 429  # that address is blocked for a while, even with a good key
     assert json.load(call(px, "/v1/models"))["data"]  # others (here: local) are unaffected
+
+
+# ---------------------------------------------------------------- linked servers (l9s link)
+def test_linked_server_models_merge_and_route(stack):
+    px, up = stack
+    import json as _j
+    (HOMEDIR / "links.json").write_text(_j.dumps({"friend": {"url": f"http://127.0.0.1:{up}", "key": "their-key"}}))
+    t0 = time.time()
+    while time.time() - t0 < 10:  # the proxy picks up links.json within ~2 s
+        ids = [m["id"] for m in json.load(call(px, "/v1/models"))["data"]]
+        if "friend/theirmodel" in ids:
+            break
+        time.sleep(0.5)
+    assert "friend/l9s" in ids and "friend/theirmodel" in ids and "friend/org/model" not in ids
+    fol = next(m for m in json.load(call(px, "/v1/models"))["data"] if m["id"] == "friend/l9s")
+    assert fol["follows"] == "friend/theirmodel" and fol["remote"] == "friend"
+    r = json.load(call(px, "/v1/chat/completions", chat_body("friend/theirmodel")))
+    assert r["choices"]
+    st = json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))
+    assert st["last"]["model"] == "theirmodel" and st["last_auth"] == "Bearer their-key"  # their key, not ours
+    rec = admin(px, "/_l9s/requests")["recent"][-1]
+    assert rec["model"] == "friend/theirmodel" and rec["remote"] == "friend"
+    assert active_name() == "mymodel"  # never touches the local model
+    # people with keys on this server don't get the linked server by default
+    k = keys_cli("add", "erin")["key"]
+    assert not [m for m in json.load(as_user(px, k, "/v1/models"))["data"] if m.get("remote")]
+    with pytest.raises(urllib.error.HTTPError) as e:
+        as_user(px, k, "/v1/chat/completions", chat_body("friend/theirmodel"))
+    assert e.value.code == 403
+    (HOMEDIR / "links.json").unlink()

@@ -10,8 +10,11 @@
                                      Without --host: a free quick tunnel at a random https://….trycloudflare.com
                                      address (no account; the address changes when the tunnel restarts).
                                      With --host: your own domain on Cloudflare (run `cloudflared tunnel login` once).
-  l9s expose tailscale               Tailscale Funnel: https://<machine>.<tailnet>.ts.net, certificate by Tailscale
-                                     (Let's Encrypt). Needs Tailscale installed and Funnel allowed for the tailnet.
+  l9s expose tailscale [--private]   Tailscale: https://<machine>.<tailnet>.ts.net, certificate by Tailscale
+                                     (Let's Encrypt). Funnel = the internet (Funnel must be allowed for the
+                                     tailnet); --private = only devices on your tailnet (a VPN; Tailscale Serve).
+                                     Other VPNs (WireGuard, ZeroTier, …): set the public URL to this machine's VPN
+                                     address in Settings › Access; nothing else is needed.
   l9s expose off                     stop the front end and clear the public URL
 
 l9s itself speaks plain HTTP: never forward a router port straight to it (API keys and prompts would cross the
@@ -307,20 +310,22 @@ def expose_cloudflare(name: str | None, host: str | None) -> None:
 
 
 # ---------------------------------------------------------------- Tailscale Funnel
-def expose_tailscale() -> None:
+def expose_tailscale(private: bool = False) -> None:
     if not shutil.which("tailscale"):
         raise SystemExit("install Tailscale first (https://tailscale.com/download), sign in, then run this again")
     st = json.loads(run(["tailscale", "status", "--json"]).stdout)
     dns = (st.get("Self") or {}).get("DNSName", "").rstrip(".")
     if not dns:
         raise SystemExit("Tailscale isn't signed in: tailscale up")
-    r = run(["tailscale", "funnel", "--bg", port()], sudo=True, check=False)
+    r = run(["tailscale", "serve" if private else "funnel", "--bg", port()], sudo=True, check=False)
     if r.returncode != 0:
-        raise SystemExit("Tailscale refused Funnel: " + (r.stderr or r.stdout).strip()[-400:] +
-                         "\n(allow Funnel for this tailnet in the Tailscale admin console, then run this again)")
-    set_env(PUBLIC_URL=f"https://{dns}", EXPOSE="tailscale")
+        raise SystemExit(f"Tailscale refused {'Serve' if private else 'Funnel'}: " + (r.stderr or r.stdout).strip()[-400:]
+                         + ("" if private else "\n(allow Funnel for this tailnet in the Tailscale admin console, then "
+                                               "run this again)"))
+    set_env(PUBLIC_URL=f"https://{dns}", EXPOSE="tailscale-private" if private else "tailscale")
     restart_proxy()
-    print(f"==> https://{dns}/v1 → Tailscale Funnel → l9s (certificate by Tailscale / Let's Encrypt)")
+    print(f"==> https://{dns}/v1 → Tailscale {'Serve (your tailnet only)' if private else 'Funnel (the internet)'} → "
+          "l9s (certificate by Tailscale / Let's Encrypt)")
 
 
 # ---------------------------------------------------------------- status / off
@@ -367,6 +372,8 @@ def off() -> None:
         stop_tunnel()
     elif mode == "tailscale" and shutil.which("tailscale"):
         run(["tailscale", "funnel", "--bg", "off"], sudo=True, check=False)
+    elif mode == "tailscale-private" and shutil.which("tailscale"):
+        run(["tailscale", "serve", "--bg", "off"], sudo=True, check=False)
     elif mode == "caddy" or (e.get("PUBLIC_URL", "").startswith("https://") and shutil.which("caddy")):
         try:
             write_caddyfile(None)
@@ -397,7 +404,7 @@ def main(argv: list[str]) -> int:
     elif cmd == "cloudflare":
         expose_cloudflare(opt("--name"), opt("--host"))
     elif cmd == "tailscale":
-        expose_tailscale()
+        expose_tailscale("--private" in rest)
     elif cmd == "off":
         off()
     else:

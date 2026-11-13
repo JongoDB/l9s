@@ -48,6 +48,8 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
   profiles                               list saved profiles (* = active)
   optimize [<profile>|--all] [-y]        give saved profiles the fastest settings l9s knows (drafters, MTP, …)
   keys [add <name>|revoke <name>|usage]  API keys for other people, with limits and usage (l9s keys --help)
+  mode [personal|shared|client]          what this device is for: serve you, serve many people, or use others' servers
+  link [add <name> <url> --key K|rm]     use someone else's l9s server: its models join yours as <name>/<model>
   expose [caddy <host>|cloudflare|tailscale|off]
                                          serve over the internet with HTTPS (Let's Encrypt / Cloudflare / Tailscale)
   ls | rm <org/repo>                     downloaded models / delete one
@@ -236,6 +238,14 @@ case "$cmd" in
        echo "l9s: an update is available (run: l9s update)" >&2
      fi ;;
 esac
+# client mode: there is no local model server to start, stop or serve with
+if [[ "${BACKEND:-}" == "remote" ]]; then
+  case "$cmd" in
+    quickstart|serve|use|start|restart|stop|upgrade|test|logs|optimize)
+      die "client mode: this device has no model server of its own (it uses linked servers: l9s link).
+       To serve models here: l9s mode personal" ;;
+  esac
+fi
 case "$cmd" in
   pull)
     [[ $# -ge 1 ]] || die "usage: l9s pull <org/repo>"
@@ -251,6 +261,8 @@ case "$cmd" in
   optimize) "$PY" "$APP/hfmeta.py" optimize "$@" ;;
   keys) exec "$PY" "$APP/keys.py" "$@" ;;
   expose) exec "$PY" "$APP/expose.py" "$@" ;;
+  mode) exec "$PY" "$APP/mode.py" "$@" ;;
+  link|links) exec "$PY" "$APP/links.py" "$@" ;;
   quickstart)
     repo="${1:-}"
     if [[ -z "$repo" ]]; then
@@ -283,6 +295,8 @@ case "$cmd" in
   ls) "$HF" cache ls 2>/dev/null || "$HF" cache scan ;;
   rm) [[ $# -eq 1 ]] || die "usage: l9s rm <org/repo>"; "$HF" cache rm "model/$1" -y ;;
   status)
+    echo "mode: $("$PY" -c "import sys; sys.path.insert(0, '$APP'); import mode; print(mode.current())" 2>/dev/null)   endpoint: $(endpoint)/v1"
+    if [[ "${BACKEND:-}" == "remote" ]]; then "$PY" "$APP/links.py" list; exit 0; fi
     echo "deployment: $BACKEND   profile: $(active_profile)"
     backend_running && echo "server: running" || echo "server: stopped"
     proxy_ctl status | head -2

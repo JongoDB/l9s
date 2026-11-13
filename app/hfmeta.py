@@ -1254,7 +1254,15 @@ def optimize_profile(text: str, A: dict, caps: dict | None) -> tuple[str, list[s
     have = {f: v for f, v in pairs}
     rec = A["presets"][0]["flags"] if A.get("presets") else {}
     changes = []
-    if "--speculative-config" in have:
+    if spec_off():  # SPEC_DECODE=off (e.g. a shared Mac): batching beats one fast conversation
+        for f, why in (("--draft-model", "mlx-lm batches requests only without a draft model"),
+                       ("--speculative-config", "speculative decoding is off in Settings")):
+            if f in have:
+                have.pop(f)
+                have.pop("--num-draft-tokens", None)
+                changes.append(f"remove {f}  ({why})")
+        pairs = [(f, v) for f, v in pairs if f in have]
+    elif "--speculative-config" in have:
         try:
             spec = json.loads(have["--speculative-config"] or "{}")
             tuned = dynamic_schedule(spec, caps)

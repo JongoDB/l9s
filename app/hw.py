@@ -105,8 +105,9 @@ class Hardware:
 
     @property
     def backend(self) -> str:
-        """Default deployment for this machine: vLLM in Docker on Linux, mlx-lm on Apple Silicon."""
-        return "mlx" if self.vendor == "apple" else "vllm"
+        """Default deployment for this machine: vLLM in Docker with an NVIDIA / AMD GPU, mlx-lm on Apple Silicon, and
+        "remote" (client mode: use other l9s servers, no local model server) on anything else."""
+        return "mlx" if self.vendor == "apple" else "vllm" if self.vendor in ("nvidia", "amd") else "remote"
 
     def docker_gpu_args(self) -> list[str]:
         if self.vendor == "nvidia":

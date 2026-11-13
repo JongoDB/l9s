@@ -678,7 +678,7 @@ class Confirm(ModalScreen[bool]):
 
 
 class KeyDialog(ModalScreen[dict | None]):
-    """New API key: who it's for and what it may do."""
+    """New API key (or an existing key's limits): who it's for and what it may do."""
     DEFAULT_CSS = """
     KeyDialog { align: center middle; }
     #box { width: 90; height: auto; max-height: 90%; border: thick $primary; padding: 1 2; background: $surface; }
@@ -690,10 +690,29 @@ class KeyDialog(ModalScreen[dict | None]):
     #kd-err { color: $error; height: auto; }
     """
 
+    def __init__(self, existing: dict | None = None):
+        super().__init__()
+        self.existing = existing
+
+    def on_mount(self) -> None:
+        x = self.existing
+        if x:
+            self.query_one("#kd-name", Input).value = x["name"]
+            self.query_one("#kd-name", Input).disabled = True
+            self.query_one("#kd-switch", Checkbox).value = bool(x.get("switch"))
+            self.query_one("#kd-rpm", Input).value = str(x.get("rpm") or "")
+            self.query_one("#kd-conc", Input).value = str(x.get("concurrent") or "")
+            self.query_one("#kd-models", Input).value = ",".join(x.get("models") or [])
+            self.query_one("#yes", Button).label = "Save"
+            self.query_one("#kd-rpm", Input).focus()
+        else:
+            self.query_one("#kd-name", Input).focus()
+
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="box"):
-            yield Static("[b]New API key[/b]\n[dim]Each person (or app) gets their own key: you see who uses what, can "
-                         "limit it, and can revoke it without affecting anyone else. The key is shown once.[/dim]")
+            yield Static(f"[b]{'Limits for ' + self.existing['name'] if self.existing else 'New API key'}[/b]\n[dim]"
+                         "Each person (or app) gets their own key: you see who uses what, can limit it, and can revoke "
+                         "it without affecting anyone else. A new key is shown once.[/dim]")
             with Horizontal(classes="row"):
                 yield Label("Name (who it's for)", classes="lbl")
                 yield Input(placeholder="alice, ci-bot, …", id="kd-name")
@@ -713,9 +732,6 @@ class KeyDialog(ModalScreen[dict | None]):
                 yield Button("Cancel", id="no")
                 yield Button("Create key", id="yes", variant="primary")
 
-    def on_mount(self) -> None:
-        self.query_one("#kd-name", Input).focus()
-
     @on(Button.Pressed)
     def pressed(self, ev: Button.Pressed) -> None:
         if ev.button.id != "yes":
@@ -729,6 +745,107 @@ class KeyDialog(ModalScreen[dict | None]):
         models = [m.strip() for m in self.query_one("#kd-models", Input).value.split(",") if m.strip()]
         self.dismiss({"name": name, "switch": self.query_one("#kd-switch", Checkbox).value,
                       "rpm": num("#kd-rpm"), "concurrent": num("#kd-conc"), "models": models or None})
+
+    def key_escape(self) -> None:
+        self.dismiss(None)
+
+
+class SetupWizard(ModalScreen[str | None]):
+    """First run: what is this device for? personal / shared / client (change later: Settings › Mode, l9s mode)."""
+    DEFAULT_CSS = """
+    SetupWizard { align: center middle; }
+    #box { width: 96; height: auto; max-height: 95%; border: thick $primary; padding: 1 2; background: $surface; }
+    .opt { height: auto; margin-top: 1; }
+    .opt Button { width: 26; }
+    .opt Static { width: 1fr; padding: 0 0 0 2; }
+    #later { dock: bottom; height: 2; align-horizontal: right; padding-top: 1; background: $surface; }
+    """
+
+    def __init__(self, can_serve: bool, current: str | None, why_not: str = ""):
+        super().__init__()
+        self.can_serve, self.current, self.why_not = can_serve, current, why_not
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="box"):
+            yield Static("[b]Welcome to l9s.[/b] What is this device for?\n[dim]You can change this any time in "
+                         "Settings › Mode or with `l9s mode`.[/dim]")
+            opts = [("personal", "Personal server", "Serve models for yourself: tools on this machine and your other "
+                                                    "devices (LAN / VPN) use it. Tuned for one conversation at a time."),
+                    ("shared", "Shared server", "Serve models for many people, over the internet with HTTPS and a key "
+                                                "per person (with limits you set). Tuned for many requests at once."),
+                    ("client", "Client", "Don't serve models here: use someone else's l9s server with the URL and key "
+                                         "they gave you. Every tool on this device can use its models.")]
+            for mode, title, desc in opts:
+                with Horizontal(classes="opt"):
+                    off = mode != "client" and not self.can_serve
+                    yield Button(title + (" ✓" if mode == self.current else ""), id=f"wz-{mode}",
+                                 variant="primary" if mode == (self.current or ("personal" if self.can_serve else
+                                                                                "client")) else "default",
+                                 disabled=off)
+                    yield Static(desc + (f"\n[{K9['orangered']}]{self.why_not}[/]" if off else ""))
+            with Horizontal(id="later"):
+                yield Button("Ask me later", id="wz-later")
+
+    def on_mount(self) -> None:
+        self.query_one(f"#wz-{self.current or ('personal' if self.can_serve else 'client')}", Button).focus()
+
+    @on(Button.Pressed)
+    def pressed(self, ev: Button.Pressed) -> None:
+        self.dismiss(None if ev.button.id == "wz-later" else ev.button.id[3:])
+
+    def key_escape(self) -> None:
+        self.dismiss(None)
+
+
+class LinkDialog(ModalScreen[dict | None]):
+    """Link someone else's l9s server: its models join this one as <name>/<model>."""
+    DEFAULT_CSS = """
+    LinkDialog { align: center middle; }
+    #box { width: 90; height: auto; max-height: 90%; border: thick $primary; padding: 1 2; background: $surface; }
+    #box Input { width: 1fr; }
+    #box .row { height: auto; }
+    #box .lbl { width: 14; padding-top: 1; }
+    #btns { dock: bottom; height: 2; align-horizontal: right; padding-top: 1; background: $surface; }
+    #btns Button { margin-left: 2; }
+    #ld-err { color: $error; height: auto; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="box"):
+            yield Static("[b]Link a server[/b]\n[dim]The URL and key its owner gave you (from their `l9s keys add`). "
+                         "Its models then show up in this l9s as <name>/<model>, for every tool on this device.[/dim]")
+            with Horizontal(classes="row"):
+                yield Label("Name", classes="lbl")
+                yield Input(placeholder="short, e.g. gb1 (becomes the model prefix)", id="ld-name")
+            with Horizontal(classes="row"):
+                yield Label("URL", classes="lbl")
+                yield Input(placeholder="https://llm.example.com", id="ld-url")
+            with Horizontal(classes="row"):
+                yield Label("API key", classes="lbl")
+                yield Input(placeholder="sk-l9s-…", id="ld-key", password=True)
+            yield Static("", id="ld-err")
+            with Horizontal(id="btns"):
+                yield Button("Cancel", id="no")
+                yield Button("Link", id="yes", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#ld-name", Input).focus()
+
+    @on(Button.Pressed)
+    def pressed(self, ev: Button.Pressed) -> None:
+        if ev.button.id != "yes":
+            self.dismiss(None)
+            return
+        name = self.query_one("#ld-name", Input).value.strip().lower()
+        url = self.query_one("#ld-url", Input).value.strip()
+        key = self.query_one("#ld-key", Input).value.strip()
+        err = ("name: lowercase letters, digits, - and _" if not re.match(r"^[a-z0-9][a-z0-9_-]{0,31}$", name) else
+               "the URL starts with https:// (or http:// on your LAN / VPN)" if not url.startswith(("http://", "https://"))
+               else "paste the API key" if not key else "")
+        if err:
+            self.query_one("#ld-err", Static).update(err)
+            return
+        self.dismiss({"name": name, "url": url, "key": key})
 
     def key_escape(self) -> None:
         self.dismiss(None)
@@ -835,7 +952,7 @@ COMMANDS = [
     ("settings", "HF token, API key, memory, port, image"), ("serve <profile>", "switch the server to a profile"),
     ("stop", "stop the server"), ("start", "start the server"), ("restart", "restart the server"),
     ("test", "send a test request"), ("pull <org/repo>", "download a model"), ("info <org/repo>", "full model analysis"),
-    ("search <text>", "search Hugging Face"), ("connect", "coding agents & editors"), ("update", "update l9s"),
+    ("search <text>", "search Hugging Face"), ("connect", "coding agents & editors"), ("update", "update l9s"), ("setup", "what this device is for (setup)"),
     ("help", "keys and concepts"),
     ("quit", "exit (server keeps running)"),
 ]
@@ -1206,9 +1323,11 @@ class LLMTui(App):
     .hint { color: $text-muted; padding: 1 0; }
     #cx-head { height: auto; padding: 0 1; border: solid #87CEFA; }
     #ky-head { height: auto; padding: 0 1; border: solid #87CEFA; }
+    #ky-keys { height: 1fr; }
     #ky-table { height: 1fr; border: solid #87CEFA; }
-    #ky-btns { height: 3; }
-    #ky-btns Button { margin-right: 2; }
+    #ky-btns, #ln-btns { height: 3; }
+    #ky-btns Button, #ln-btns Button { margin-right: 2; }
+    #ln-table { height: 1fr; border: solid #87CEFA; }
     #cx-body { height: 1fr; }
     #cx-tools { width: 3fr; border: solid #87CEFA; }
     #cx-detail { width: 2fr; border: solid #87CEFA; padding: 0 1; }
@@ -1376,6 +1495,15 @@ class LLMTui(App):
                                  "bottom, or ctrl+s) applies each change the way it needs: most take effect at once; "
                                  "memory, vLLM image and (vLLM) API key need the model server restarted, and Save "
                                  "asks before doing that.", classes="hint")
+                    yield Label("Mode: what this device is for", classes="section")
+                    yield Static("", id="set-mode-info")
+                    with Horizontal(classes="frow"):
+                        yield Select([("personal: serve models for yourself", "personal"),
+                                      ("shared: serve models for many people (HTTPS + a key each)", "shared"),
+                                      ("client: use someone else's l9s server (no model server here)", "client")],
+                                     value="personal", allow_blank=False, id="set-mode")
+                        yield Button("Switch mode", id="set-mode-go")
+                        yield Button("Run setup again", id="set-mode-wizard")
                     yield Label("Hugging Face token", classes="section")
                     yield Static("[dim]Needed for gated models (Llama, Gemma, …) and faster downloads. Create one at "
                                  "huggingface.co/settings/tokens; read access is enough.[/dim]")
@@ -1406,7 +1534,10 @@ class LLMTui(App):
                                       ("Cloudflare quick tunnel (no domain, nothing to open; address changes)",
                                        "cloudflare-quick"),
                                       ("Cloudflare Tunnel on your domain (nothing to open)", "cloudflare"),
-                                      ("Tailscale Funnel (https://<machine>.<tailnet>.ts.net)", "tailscale")],
+                                      ("Tailscale Funnel: the internet (https://<machine>.<tailnet>.ts.net)",
+                                       "tailscale"),
+                                      ("Tailscale, your tailnet only (VPN; https://<machine>.<tailnet>.ts.net)",
+                                       "tailscale-private")],
                                      value="caddy", allow_blank=False, id="set-expose-mode")
                     with Horizontal(classes="frow", id="set-expose-hostrow"):
                         yield Input(id="set-expose-host", placeholder="host name, e.g. llm.example.com")
@@ -1471,6 +1602,13 @@ class LLMTui(App):
                     yield Label("Request log", classes="section")
                     yield Checkbox("Record short prompt/response previews (first ~400 chars) for the Requests view",
                                    True, id="set-logprompts")
+                    yield Label("Coding agents", classes="section")
+                    yield Checkbox("Tell the model which model it really is (Claude Code's prompt says it's Claude; "
+                                   "agents carry over other models' names). One line at the end of the system prompt.",
+                                   True, id="set-identity")
+                    yield Label("Remove l9s", classes="section")
+                    with Horizontal(classes="frow"):
+                        yield Button("Uninstall…", id="set-uninstall", variant="error")
                 with Horizontal(id="set-bar"):
                     yield Static("", id="set-changes")
                     yield Button("Save (ctrl+s)", id="set-save", variant="primary")
@@ -1487,14 +1625,21 @@ class LLMTui(App):
                             yield Button("Copy for another machine", id="cx-copy")
                         with VerticalScroll(id="cx-scroll"):
                             yield Static("", id="cx-info")
-            with TabPane("9 Keys", id="keys"):
+            with TabPane("9 Access", id="keys"):
                 yield Static("loading…", id="ky-head")
-                yield KTable(id="ky-table", cursor_type="row", zebra_stripes=False)
-                with Horizontal(id="ky-btns"):
-                    yield Button("Add key", id="ky-add", variant="primary")
-                    yield Button("Revoke", id="ky-revoke", variant="warning")
-                    yield Button("Enable", id="ky-enable")
-                    yield Button("Delete", id="ky-delete", variant="error")
+                with Vertical(id="ky-keys"):
+                    yield KTable(id="ky-table", cursor_type="row", zebra_stripes=False)
+                    with Horizontal(id="ky-btns"):
+                        yield Button("Add key", id="ky-add", variant="primary")
+                        yield Button("Edit limits", id="ky-edit")
+                        yield Button("Revoke", id="ky-revoke", variant="warning")
+                        yield Button("Enable", id="ky-enable")
+                        yield Button("Delete", id="ky-delete", variant="error")
+                yield KTable(id="ln-table", cursor_type="row", zebra_stripes=False)
+                with Horizontal(id="ln-btns"):
+                    yield Button("Link a server", id="ln-add", variant="primary")
+                    yield Button("Check", id="ln-check")
+                    yield Button("Unlink", id="ln-rm", variant="error")
         with Horizontal(id="crumbs"):
             for t in TABS:
                 yield Label(f"<{t}>", id=f"crumb-{t}", classes="crumb")
@@ -1546,6 +1691,7 @@ class LLMTui(App):
         val = lambda v, c=K9["gold"]: f"[{c}]{v}[/]"  # noqa: E731
         st = s.get("status", "?")
         badge, color = ("READY", K9["greenyellow"]) if s.get("ready") else \
+            ("CLIENT", K9["sky"]) if self.backend == "remote" else \
             ("STARTING", K9["sky"]) if st == "running" else ("NO SERVER", K9["gray"]) if st == "absent" else \
             (("CRASHED", K9["orangered"]) if s.get("exit") not in (0, None, 137, 143) else ("STOPPED", K9["gray"]))
         if self.serving:
@@ -1563,7 +1709,8 @@ class LLMTui(App):
         mode = "unified" if self.hw.unified else f"{self.hw.n_gpus}× GPU" if self.hw.n_gpus > 1 else "GPU"
         lines = [
             lab("Model:") + clk("tab('local')", val(active_profile() or "-")),
-            lab("Deploy:") + val(f"{self.backend} · {self.hw.gpus[0].name if self.hw.gpus else 'cpu'} ({mode})"),
+            lab("Deploy:") + val(f"{self.mode()} · {self.backend} · {self.hw.gpus[0].name if self.hw.gpus else 'cpu'}"
+                                 + ("" if self.backend == "remote" else f" ({mode})")),
             lab("Endpoint:") + clk("connect", val(self.endpoint)),
             lab("Status:") + clk("tab('server')", val(f"● {badge}", color)) + (f" {val('in flight ' + str(px['active']))}" if px and px.get("active") else ""),
             lab("Server:") + clk("tab('settings')", val(s.get("image") or self.server_name())),
@@ -1612,8 +1759,10 @@ class LLMTui(App):
             cx.add_column(label, key=key)
         self.query_one("#cx-tools").border_title = "Coding agents & editors"
         self.query_one("#cx-head").border_title = "Connect"
-        self.query_one("#ky-head").border_title = "Keys"
-        self.query_one("#ky-table").border_title = "API keys"
+        self.query_one("#ky-head").border_title = "Access"
+        self.query_one("#ky-table").border_title = "Who can use this server (API keys)"
+        self.query_one("#ln-table").border_title = "Servers this device uses (linked)"
+        self.query_one("#ln-table", DataTable).add_columns("link", "URL", "status", "models (use as)", "loaded")
         self.query_one("#ky-table", DataTable).add_columns("name", "key", "access", "today", "last used", "status")
         self.query_one("#cx-detail").border_title = "Details"
         self.set_interval(1, self.poll_requests)
@@ -1633,6 +1782,8 @@ class LLMTui(App):
         self.update_info = updater.cached(max_age=10 ** 9)
         self.check_updates()
         self.set_timer(20, self.check_optimizable)
+        if not load_env().get("SETUP_DONE") and not os.environ.get("L9S_SKIP_SETUP"):
+            self.set_timer(0.6, self.action_setup)
         self.set_interval(6 * 3600, self.check_updates)
 
     @work(thread=True, exclusive=True, group="optimize-check")
@@ -1834,6 +1985,7 @@ class LLMTui(App):
                 self.call_after_refresh(lambda: lg.scroll_end(animate=False))
         elif pid == "keys":
             self.refresh_keys()
+            self.refresh_links()
             self.query_one("#ky-table", DataTable).focus()
         elif pid == "settings":
             if not self.settings_dirty():
@@ -2039,6 +2191,8 @@ class LLMTui(App):
             q = self.query_one("#hub-q", Input)
             q.value = arg
             self.hub_search()
+        elif word == "setup":
+            self.action_setup()
         elif word == "update":
             self.action_update()
         elif word == "connect":
@@ -2478,9 +2632,17 @@ class LLMTui(App):
     # ------------------------------------------------------------ keys
     def refresh_keys(self) -> None:
         import keys as ks
+        self.query_one("#ky-keys").display = self.mode() != "client"
         d, use = ks.load(), ks.summarize(ks.load_usage(), 1)
         env = load_env()
         base = env.get("PUBLIC_URL") or f"http://{self.ip}:{self.port}"
+        if self.mode() == "client":
+            self.query_one("#ky-head", Static).update(
+                f"[b]Client mode[/b]: this device uses the servers linked below (no model server of its own). Tools on "
+                f"this device use [b]http://127.0.0.1:{self.port}/v1[/b] with your key (l9s claude, l9s connect "
+                "<tool> set that up); the linked servers' models show up there as <link>/<model>.\n[dim]To serve "
+                "models here instead: Settings › Mode.[/dim]")
+            return
         self.query_one("#ky-head", Static).update(
             f"People elsewhere use [b]{base}/v1[/b]" + ("" if env.get("PUBLIC_URL") else
                                                        "  [dim](LAN address; set a public URL in Settings to serve "
@@ -2502,6 +2664,82 @@ class LLMTui(App):
                       key="-")
         if t.row_count:
             t.move_cursor(row=min(max(row, 0), t.row_count - 1))
+
+    # ------------------------------------------------------------ linked servers
+    @work(thread=True, exclusive=True, group="links")
+    def refresh_links(self) -> None:
+        try:
+            out = subprocess.run([sys.executable, str(Path(__file__).with_name("links.py")), "list", "--json"],
+                                 capture_output=True, text=True, timeout=60, env={**os.environ, "L9S_HOME": str(LLM_HOME)})
+            rows = json.loads(out.stdout or "[]")
+        except Exception:  # noqa: BLE001
+            rows = []
+
+        def fill():
+            t = self.query_one("#ln-table", DataTable)
+            row = t.cursor_row
+            t.clear()
+            for r in rows:
+                t.add_row(r["name"], r["url"], Text("✓ reachable", style="green") if r["ok"] else
+                          Text("✗ " + r.get("error", "?"), style="red"),
+                          ", ".join(f"{r['name']}/{m}" for m in r.get("models", []))[:90] or "-",
+                          r.get("loaded") or "-", key=r["name"])
+            if not rows:
+                t.add_row(Text("none: Link a server to use someone else's l9s (URL + the key they gave you)",
+                               style="dim"), "", "", "", "", key="-")
+            if t.row_count:
+                t.move_cursor(row=min(max(row, 0), t.row_count - 1))
+        self.call_from_thread(fill)
+
+    def ln_selected(self) -> str | None:
+        t = self.query_one("#ln-table", DataTable)
+        if not t.row_count:
+            return None
+        k = t.coordinate_to_cell_key(t.cursor_coordinate).row_key.value
+        return None if k == "-" else k
+
+    @on(Button.Pressed, "#ln-add")
+    def ln_add(self) -> None:
+        def cb(res):
+            if res:
+                self._ln_add(res)
+        self.push_screen(LinkDialog(), cb)
+
+    @work(thread=True, group="links-add")
+    def _ln_add(self, res: dict) -> None:
+        import links as lk
+        self.call_from_thread(self.notify, f"checking {res['url']}…", timeout=4)
+        try:
+            ms = lk.add(res["name"], res["url"], res["key"])
+        except ValueError as e:
+            self.call_from_thread(self.notify, str(e), severity="error", timeout=10)
+            return
+        ids = [m["id"] for m in ms if "/" not in m["id"]]
+        self.call_from_thread(self.notify, f"{len(ids)} models now available as " + ", ".join(
+            f"{res['name']}/{i}" for i in ids[:4]) + ("…" if len(ids) > 4 else ""), title=f"Linked {res['name']}",
+                              timeout=10)
+        self.call_from_thread(self.refresh_links)
+
+    @on(Button.Pressed, "#ln-check")
+    def ln_check(self) -> None:
+        self.refresh_links()
+
+    @on(Button.Pressed, "#ln-rm")
+    def ln_rm(self) -> None:
+        name = self.ln_selected()
+        if not name:
+            return
+
+        def go(ok):
+            if ok:
+                import links as lk
+                d = lk.load()
+                d.pop(name, None)
+                lk.save(d)
+                self.refresh_links()
+                self.notify(f"unlinked {name}")
+        self.push_screen(Confirm(f"Unlink [b]{name}[/b]? Its models disappear from this l9s; tools set to one of them "
+                                 "get an error until you pick another model.", "Unlink"), go)
 
     def ky_selected(self) -> str | None:
         t = self.query_one("#ky-table", DataTable)
@@ -2528,6 +2766,23 @@ class LLMTui(App):
                                        "[b]Shown only now[/b] (l9s keeps only a hash). Copied to the clipboard; send "
                                        "it to them privately:\n\n```\n" + share + "\n```"))
         self.push_screen(KeyDialog(), cb)
+
+    @on(Button.Pressed, "#ky-edit")
+    def ky_edit(self) -> None:
+        import keys as ks
+        name = self.ky_selected()
+        if not name:
+            return
+
+        def cb(res):
+            if not res:
+                return
+            d = ks.load()
+            d[name].update(switch=res["switch"], rpm=res["rpm"], concurrent=res["concurrent"], models=res["models"])
+            ks.save(d)
+            self.refresh_keys()
+            self.notify(f"{name}: {ks.describe(d[name])} (applies from the next request)")
+        self.push_screen(KeyDialog({**ks.load()[name], "name": name}), cb)
 
     @on(Button.Pressed, "#ky-revoke")
     @on(Button.Pressed, "#ky-enable")
@@ -2566,10 +2821,13 @@ class LLMTui(App):
         for k, sel in self.SETTING_KEYS.items():
             self.query_one(sel, Input).value = env.get(k, defaults.get(k, ""))
         self.query_one("#set-logprompts", Checkbox).value = env.get("LOG_PROMPTS", "1") != "0"
+        self.query_one("#set-identity", Checkbox).value = env.get("IDENTITY_NOTE", "1") != "0"
         self.query_one("#set-switch", Select).value = "off" if env.get("MODEL_SWITCH") == "off" else "auto"
         self.query_one("#set-spec", Select).value = "off" if env.get("SPEC_DECODE") == "off" else "auto"
         self.query_one("#set-bind", Select).value = "127.0.0.1" if env.get("BIND") == "127.0.0.1" else "0.0.0.0"
-        if env.get("EXPOSE") in ("caddy", "cloudflare-quick", "cloudflare", "tailscale"):
+        self.query_one("#set-mode", Select).value = self.mode()
+        self.mode_changed()
+        if env.get("EXPOSE") in ("caddy", "cloudflare-quick", "cloudflare", "tailscale", "tailscale-private"):
             self.query_one("#set-expose-mode", Select).value = env["EXPOSE"]
         if env.get("EXPOSE") in ("caddy", "cloudflare") and env.get("PUBLIC_URL", "").startswith("https://"):
             self.query_one("#set-expose-host", Input).value = env["PUBLIC_URL"][8:]
@@ -2584,6 +2842,7 @@ class LLMTui(App):
     def settings_values(self) -> dict:
         v = {k: self.query_one(sel, Input).value.strip() for k, sel in self.SETTING_KEYS.items()}
         v["LOG_PROMPTS"] = "1" if self.query_one("#set-logprompts", Checkbox).value else "0"
+        v["IDENTITY_NOTE"] = "1" if self.query_one("#set-identity", Checkbox).value else "0"
         v["UPDATE_MODE"] = str(self.query_one("#set-update", Select).value)
         v["MODEL_SWITCH"] = str(self.query_one("#set-switch", Select).value)
         v["SPEC_DECODE"] = str(self.query_one("#set-spec", Select).value)
@@ -2630,8 +2889,10 @@ class LLMTui(App):
             return []
         cur = load_env()
         defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0", "LOG_PROMPTS": "1",
-                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto", "SPEC_DECODE": "auto", "BIND": "0.0.0.0"}
-        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "BIND"]
+                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto", "SPEC_DECODE": "auto", "BIND": "0.0.0.0",
+                    "IDENTITY_NOTE": "1"}
+        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "BIND",
+                                                      "IDENTITY_NOTE"]
                 if v[k] != cur.get(k, defaults.get(k, ""))]
 
     def server_pending(self) -> list[str]:
@@ -2643,6 +2904,7 @@ class LLMTui(App):
 
     @on(Input.Changed, "#settings-form Input")
     @on(Checkbox.Changed, "#set-logprompts")
+    @on(Checkbox.Changed, "#set-identity")
     @on(Select.Changed, "#set-update")
     @on(Select.Changed, "#set-switch")
     @on(Select.Changed, "#set-spec")
@@ -2757,7 +3019,7 @@ class LLMTui(App):
         applied = dict(running)
         done = []
         # no restart needed: read whenever they're used
-        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "PUBLIC_URL"):
+        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "PUBLIC_URL", "IDENTITY_NOTE"):
             applied[k] = v[k]
         proxy = [k for k in changed if k in self.PROXY_KEYS]
         if proxy:
@@ -2807,6 +3069,153 @@ class LLMTui(App):
                 self.run_llm(["use", act], f"{act} restarted with the new settings")
         self.push_screen(Confirm(msg, "Restart now", cancel="Later", danger=False), cb)
 
+    # ------------------------------------------------------------ first-run setup
+    def action_setup(self) -> None:
+        """The setup wizard (first run; also `:setup` and Settings › Mode › Run setup again)."""
+        env = load_env()
+        cur = self.mode() if env.get("SETUP_DONE") or env.get("MODE") or env.get("BACKEND") == "remote" else None
+        can = self.hw.backend in ("vllm", "mlx")
+
+        def picked(mode):
+            if not mode:
+                return
+            self.write_env({"SETUP_DONE": "1"})
+            if mode != self.mode():
+                self._switch_mode(mode, then=lambda: self.setup_next(mode))
+            else:
+                self.setup_next(mode)
+        self.push_screen(SetupWizard(can, cur, "this device has no GPU l9s can serve models with (NVIDIA / AMD, or "
+                                               "Apple Silicon)"), picked)
+
+    def setup_next(self, mode: str) -> None:
+        """The steps each mode needs, as prompts the user can skip."""
+        if mode == "client":
+            import links as lk
+            if lk.load():
+                self.goto_tab("keys")
+                return
+
+            def linked(res):
+                self.goto_tab("keys")
+                if res:
+                    self._ln_add(res)
+            self.push_screen(LinkDialog(), linked)
+            return
+        if not active_profile():
+            def model(ok):
+                if ok:
+                    self.goto_tab("hub")
+                if mode == "shared":
+                    self.set_timer(0.5, self.setup_shared)
+            self.push_screen(Confirm("[b]Serve a model[/b]\n\nNo model is set up yet. Open the Hub to pick one? (Enter "
+                                     "on a model shows the recommended settings for this machine; or run `l9s "
+                                     "quickstart` for a good default.)", "Open the Hub", danger=False, cancel="Later"),
+                             model)
+        elif mode == "shared":
+            self.setup_shared()
+        else:
+            self.notify("Personal mode: tools on this machine connect in Connect (2).", title="All set", timeout=8)
+
+    def setup_shared(self) -> None:
+        def https(ok):
+            if ok:
+                self.goto_tab("settings")
+                self.set_timer(0.6, lambda: self.query_one("#set-expose-mode").focus())
+            self.set_timer(0.5, keys)
+
+        def keys():
+            def go(ok):
+                if ok:
+                    self.goto_tab("keys")
+                    self.set_timer(0.6, self.action_key_add)
+            self.push_screen(Confirm("[b]A key per person[/b]\n\nCreate a key for someone now? Each gets their own "
+                                     "(shown once), with optional limits, and you can revoke it any time. Manage them "
+                                     "in Access (9).", "Create a key", danger=False, cancel="Later"), go)
+        if load_env().get("PUBLIC_URL"):
+            keys()
+            return
+        self.push_screen(Confirm("[b]HTTPS for people elsewhere[/b]\n\nSet it up now? Settings › Access offers Caddy "
+                                 "with a Let's Encrypt certificate (your domain), a Cloudflare Tunnel or Tailscale. "
+                                 "l9s itself is plain HTTP, so don't forward a router port straight to it.",
+                                 "Set up HTTPS", danger=False, cancel="Later"), https)
+
+    # ------------------------------------------------------------ mode
+    MODE_HELP = {
+        "personal": "This device serves models for you: one conversation at a time as fast as possible (draft models "
+                    "on), your key only, reachable from this machine and your LAN / VPN.",
+        "shared": "This device serves models for many people: tuned for many requests at once (on a Mac: batching "
+                  "instead of a draft model). Then: Set up HTTPS below, and a key per person in Access (9).",
+        "client": "This device uses other people's l9s servers and runs no model server itself (the local one is "
+                  "stopped; profiles and downloads are kept). Link servers in Access (9); their models appear to "
+                  "every tool on this device as <link>/<model>."}
+
+    def mode(self) -> str:
+        env = load_env()
+        if env.get("BACKEND") == "remote":
+            return "client"
+        return env.get("MODE") if env.get("MODE") in ("personal", "shared") else "personal"
+
+    @on(Select.Changed, "#set-mode")
+    def mode_changed(self, *_) -> None:
+        want, cur = str(self.query_one("#set-mode", Select).value), self.mode()
+        self.query_one("#set-mode-info", Static).update(
+            f"[dim]{self.MODE_HELP[want]}[/dim]" + ("" if want == cur else
+                                                     f"\n[{K9['gold']}]now: {cur}. Press Switch mode to change.[/]"))
+        self.query_one("#set-mode-go", Button).display = want != cur
+
+    @on(Button.Pressed, "#set-uninstall")
+    def settings_uninstall(self) -> None:
+        self.push_screen(TextModal("Uninstall l9s",
+                                   "l9s can't remove itself while this window is open. Quit (q), then in a terminal:\n\n"
+                                   "```\nl9s uninstall                   # services, model server, ~/.l9s; keeps models\n"
+                                   "l9s uninstall --remove-models   # also deletes the downloaded models your profiles "
+                                   "use\n```\n\nIt asks before deleting anything, and undoes `l9s connect` changes to "
+                                   "your tools' configs only if you run `l9s connect <tool> --remove` first."))
+
+    @on(Button.Pressed, "#set-mode-wizard")
+    def mode_wizard(self) -> None:
+        self.action_setup()
+
+    @on(Button.Pressed, "#set-mode-go")
+    def mode_go(self) -> None:
+        want, cur = str(self.query_one("#set-mode", Select).value), self.mode()
+        if want == cur:
+            return
+        warn = {"client": "The local model server stops (anyone using it loses access until you switch back).",
+                "personal": "The local model server starts again." if cur == "client" else "",
+                "shared": ("The local model server starts again. " if cur == "client" else "")
+                          + "Next: HTTPS (Settings › Access) and a key per person (Access, 9)."}[want]
+
+        def cb(ok):
+            if ok:
+                self._switch_mode(want)
+        self.push_screen(Confirm(f"Switch from [b]{cur}[/b] to [b]{want}[/b] mode?\n\n{self.MODE_HELP[want]}\n\n{warn}",
+                                 "Switch", danger=want == "client"), cb)
+
+    @work(thread=True, exclusive=True, group="llm")
+    def _switch_mode(self, want: str, then=None) -> None:
+        self.call_from_thread(self.slog, f"$ l9s mode {want}")
+        p = subprocess.Popen([LLM_BIN, "mode", want], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             stdin=subprocess.DEVNULL, errors="replace")
+        for line in p.stdout:
+            self.call_from_thread(self.slog, line.rstrip())
+        ok = p.wait() == 0
+
+        def done():
+            self.env = load_env()
+            self.backend = self.env.get("BACKEND", self.backend)
+            if hasattr(self, "_applied_env"):
+                self._applied_env = load_env()
+            self.mode_changed()
+            self.render_chrome()
+            self.notify(f"{want} mode" + (" (see the Server log)" if ok else ": failed, see the Server log"),
+                        severity="information" if ok else "error")
+            if then:
+                then()
+            elif want == "client":
+                self.goto_tab("keys")
+        self.call_from_thread(done)
+
     # ------------------------------------------------------------ access: HTTPS front end (l9s expose)
     @on(Select.Changed, "#set-expose-mode")
     def expose_mode_changed(self, *_) -> None:
@@ -2820,7 +3229,10 @@ class LLMTui(App):
                  "cloudflare": "Your domain must be on Cloudflare, and `cloudflared tunnel login` must have been run "
                                "once in a terminal (it opens a browser).",
                  "tailscale": "Needs Tailscale installed and signed in on this machine, and Funnel allowed for your "
-                              "tailnet in the Tailscale admin console."}
+                              "tailnet in the Tailscale admin console.",
+                 "tailscale-private": "Only devices on your tailnet reach it (a VPN). Needs Tailscale installed and "
+                                      "signed in. Other VPNs (WireGuard, ZeroTier, …): just put this machine's VPN "
+                                      "address in Public URL below."}
         self.query_one("#set-expose-info", Static).update(f"[dim]{hints.get(mode, '')}[/dim]")
 
     def expose_status_line(self) -> str:
@@ -2839,15 +3251,15 @@ class LLMTui(App):
             return
         args = {"caddy": ["caddy", host] + (["--email", email] if email else []),
                 "cloudflare-quick": ["cloudflare"], "cloudflare": ["cloudflare", "--name", "l9s", "--host", host],
-                "tailscale": ["tailscale"]}[mode]
+                "tailscale": ["tailscale"], "tailscale-private": ["tailscale", "--private"]}[mode]
         what = {"caddy": f"https://{host} with a Let's Encrypt certificate (Caddy)",
                 "cloudflare-quick": "a Cloudflare quick tunnel", "cloudflare": f"https://{host} via Cloudflare Tunnel",
-                "tailscale": "Tailscale Funnel"}[mode]
+                "tailscale": "Tailscale Funnel", "tailscale-private": "Tailscale (your tailnet only)"}[mode]
 
         def cb(ok):
             if ok:
                 self._run_expose(args)
-        self.push_screen(Confirm(f"Put this server on the internet at {what}?\n\nAnyone who reaches it still needs an "
+        self.push_screen(Confirm(f"Make this server reachable at {what}?\n\nAnyone who reaches it still needs an "
                                  "API key: yours, or one you give them in Keys. The request proxy restarts briefly "
                                  "(running requests are cut off).", "Set up HTTPS", danger=False), cb)
 
@@ -3131,7 +3543,15 @@ class LLMTui(App):
             lines.append(f"[red]last error: {tr.last_error}[/red]")
         if st in ("exited", "dead") and s.get("oom"):
             lines.append("[red]killed: out of memory. Lower --max-model-len or GPU_MEM, or pick a smaller model.[/red]")
-        if st == "absent":
+        if self.backend == "remote":
+            import links as lk
+            names = sorted(lk.load())
+            lines = [f"[b]Client mode[/b]: this device has no model server; it uses "
+                     + (", ".join(f"[b]{n}[/b]" for n in names) if names else "no linked server yet")
+                     + f". Tools on this device: http://127.0.0.1:{self.port}/v1 (models: <link>/<model>).",
+                     "[dim]Linked servers and their status: " + clk("tab('keys')", "Access (9)")
+                     + " · to serve models here: Settings › Mode[/dim]"]
+        elif st == "absent":
             lines.append("[dim]No server container. Serve a model from the Local or Hub tab.[/dim]")
         elif st in ("exited", "dead") and not self.serving:
             lines.append("[dim]Press Start to bring it back, or pick another profile on the Local tab.[/dim]")
