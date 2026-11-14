@@ -1225,14 +1225,26 @@ def render_markdown(A: dict, caps: dict | None) -> str:
 
 
 # starter models for `l9s quickstart`, largest first; the first one that fits is used
+# (the first that fits with 16K+ context is offered; each class's top entries are measured by the release gate)
 STARTERS = {
+    # GB10 / DGX Spark (NVIDIA, unified memory, Blackwell: NVFP4 runs natively), with its DFlash draft model
+    "vllm-unified": ["nvidia/Qwen3.6-35B-A3B-NVFP4", "Qwen/Qwen3-8B-FP8", "Qwen/Qwen3-4B-FP8", "Qwen/Qwen3-0.6B"],
     "vllm": ["Qwen/Qwen3-8B-FP8", "Qwen/Qwen3-4B-FP8", "Qwen/Qwen3-1.7B-FP8", "Qwen/Qwen3-0.6B"],
-    "mlx": ["mlx-community/Qwen3-8B-4bit", "mlx-community/Qwen3-4B-4bit", "mlx-community/Qwen3-0.6B-4bit"],
+    "mlx": ["lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit", "mlx-community/Qwen3-8B-4bit", "mlx-community/Qwen3-4B-4bit",
+            "mlx-community/Qwen3-0.6B-4bit"],
 }
+
+
+def starter_class(h) -> str:
+    if h.backend == "mlx":
+        return "mlx"
+    return "vllm-unified" if h.vendor == "nvidia" and h.unified else "vllm"
 
 
 # measured on our own hardware by the release gate: (tokens/s for one conversation, where)
 STARTER_SPEED: dict[str, tuple[float, str]] = {
+    "nvidia/Qwen3.6-35B-A3B-NVFP4": (97, "a GB10 / DGX Spark, with its DFlash draft model (59-118 by task)"),
+    "lmstudio-community/Qwen3.6-35B-A3B-MLX-4bit": (113, "a 128 GB M-series Mac"),
     "mlx-community/Qwen3-8B-4bit": (160, "an M-series Mac, with its draft model"),
 }
 
@@ -1337,7 +1349,7 @@ def _cli() -> None:
             return analyze(fetch_meta(repo, api, token), caps, h.pool_per_gpu(), float(env.get("GPU_MEM", "0.85")),
                            backend, max(1, h.n_gpus), h.card_tags())
         if sys.argv[1] == "starter":
-            for repo in STARTERS["mlx" if backend == "mlx" else "vllm"]:
+            for repo in STARTERS["mlx" if backend == "mlx" else starter_class(h) if h.backend == "vllm" else "vllm"]:
                 A = analysis(repo)
                 if not A["blockers"] and (A["ctx"] or 0) >= 16384:
                     if "--json" in sys.argv:

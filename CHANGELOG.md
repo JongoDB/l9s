@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.1
+- **The recommended model is now curated per hardware class, with speeds measured on real hardware:**
+  - **GB10 / DGX Spark:** Qwen3.6-35B-A3B (NVIDIA's NVFP4 build), with its DFlash draft model added automatically: about 97 tokens/s for one conversation (59-118 depending on the task), 262K context, a 23 GB download.
+  - **Macs with room for it:** Qwen3.6-35B-A3B (MLX 4-bit): 113 tokens/s on a 128 GB M-series Mac, 262K context, a 20 GB download.
+  - **Smaller machines:** l9s still picks the largest Qwen3 that fits.
+- **Fixed: Claude Code against Qwen3.6 models failed with "There's an issue with the selected model".** Newer Claude Code puts system messages in the middle of a conversation, and Qwen3.6's chat template only accepts one at the start. l9s now passes those on as user messages with the same text, in the same place, so the cached prompt prefix still matches.
+- When the model server refuses a request, l9s saves exactly what it was sent to `~/.l9s/cache/last-refused-request.json`. This stays on this machine, only happens when prompt logging is on, and makes failures like the one above quick to diagnose.
+
 ## 0.14.0
 - **Alerts** when the server needs you while you're away. Set them up in Settings › Alerts, or with `l9s config set ALERT_URL …` and `l9s alerts test`. Messages fit where they go: an ntfy topic gets free phone pushes, Slack and Discord webhooks get chat messages, and any other URL gets JSON. You choose which events alert:
   - the server down for 2+ minutes (model switches don't count), and back up;

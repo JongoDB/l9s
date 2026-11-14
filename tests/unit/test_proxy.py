@@ -632,3 +632,18 @@ def test_a_reply_cut_off_by_the_server_is_an_error_not_an_empty_success(stack):
     assert "stopped in the middle" in (rec.get("error") or "")
     ok = call(px, "/v1/chat/completions", chat_body("mymodel", stream=True)).read().decode()
     assert '"error"' not in ok and "[DONE]" in ok  # a normal reply is untouched
+
+
+def test_late_system_messages_become_user_messages():
+    import importlib
+    sys.path.insert(0, str(APP))
+    proxy = importlib.import_module("proxy")
+    j = {"system": "top", "messages": [{"role": "user", "content": "a"}, {"role": "system", "content": "env"},
+                                       {"role": "user", "content": [{"type": "text", "text": "b"}]}]}
+    assert proxy.fold_late_system(j)
+    assert j["messages"][1] == {"role": "user", "content": "<system-reminder>\nenv\n</system-reminder>"}
+    chat = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"},
+                         {"role": "system", "content": [{"type": "text", "text": "late"}]}]}
+    assert proxy.fold_late_system(chat)
+    assert chat["messages"][0]["role"] == "system" and chat["messages"][2]["role"] == "user"
+    assert not proxy.fold_late_system({"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]})

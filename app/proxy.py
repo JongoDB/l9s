@@ -520,6 +520,26 @@ AGENT_UA = re.compile(r"claude-cli|claude-code|codex|opencode|kilo|crush|goose|a
 BILLING = "x-anthropic-billing-header:"
 
 
+def fold_late_system(j: dict) -> bool:
+    """System messages after the start of a conversation (newer Claude Code sends them) break chat templates that
+    only allow one at the beginning (Qwen3.6: "System message must be at the beginning"). They become user
+    messages with the same text, in the same place: nothing is lost and the prompt prefix stays the same."""
+    msgs = j.get("messages")
+    if not isinstance(msgs, list):
+        return False
+    changed = False
+    for i, m in enumerate(msgs):
+        if not isinstance(m, dict) or m.get("role") != "system":
+            continue
+        if i == 0 and "system" not in j and isinstance(m.get("content"), str):
+            continue  # (chat: a leading system message is the normal place for it)
+        c = m.get("content")
+        text = c if isinstance(c, str) else "".join(b.get("text", "") for b in c or [] if isinstance(b, dict))
+        msgs[i] = {"role": "user", "content": f"<system-reminder>\n{text}\n</system-reminder>"}
+        changed = True
+    return changed
+
+
 def add_identity(j: dict, name: str, api: str) -> None:
     """Append the note at the end of the system prompt: it's the same for every request on this model, so the
     prompt prefix (and the server's prefix cache) is unchanged."""
@@ -1137,6 +1157,8 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                             body = json.dumps(j).encode()
                         if request.path == "/v1/messages" and strip_billing_header(j):
                             body = json.dumps(j).encode()
+                        if request.path in ("/v1/messages", "/v1/chat/completions") and fold_late_system(j):
+                            body = json.dumps(j).encode()
                         api = {"/v1/messages": "anthropic", "/v1/responses": "responses",
                                "/v1/chat/completions": "chat"}.get(request.path)
                         if (api and j.get("model") and load_env().get("IDENTITY_NOTE", "1") != "0"
@@ -1284,6 +1306,13 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                     pass
                 if up.status >= 400 and not rec.get("error"):
                     rec["error"] = data[:300].decode("utf-8", "replace")
+                if up.status >= 400 and LOG_PROMPTS:  # what exactly the model server refused (this machine only)
+                    try:
+                        (L9S_HOME / "cache" / "last-refused-request.json").write_text(json.dumps(
+                            {"time": time.time(), "status": up.status, "error": data[:2000].decode("utf-8", "replace"),
+                             "path": upath, "request": json.loads(body)}, indent=1)[:2_000_000])
+                    except (OSError, ValueError, TypeError):
+                        pass
             state = "done" if up.status < 400 else "error"
             if xlate:
                 try:
