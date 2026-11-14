@@ -86,12 +86,20 @@ def switch(to: str, yes: bool = False) -> int:
             l9s("start")
         else:
             print("    serve a model: l9s quickstart  (or the Hub view in the TUI)")
+    act = L9S_HOME / "active"
+    if to == "personal" and act.is_symlink():  # e.g. back from shared: offer the draft model again
+        prof = os.path.basename(os.readlink(act))
+        r = subprocess.run([str(L9S_HOME / "bin" / "l9s"), "optimize", prof], capture_output=True, text=True)
+        if "run with -y" in r.stdout:
+            print(f"    {prof} can be faster for one conversation (draft model / MTP): l9s optimize {prof} -y, then "
+                  f"l9s use {prof}  (the TUI shows ⚡ and `o` does both)")
     if to == "shared":
         e = expose.env()
         print("\nnext:")
-        print("  1. HTTPS for people elsewhere:  " + (f"done ({e['PUBLIC_URL']})" if e.get("PUBLIC_URL") else
-                                                      "l9s expose caddy <host> | cloudflare | tailscale"))
-        print("  2. a key per person:            l9s keys add <name> [--concurrent 2]")
+        print("  1. how people reach it:  " + (f"done ({e['PUBLIC_URL']})" if e.get("PUBLIC_URL") else
+                                               "l9s expose --help lists every choice (VPN, a free Cloudflare address, "
+                                               "Tailscale, your domain, …); the TUI asks in Settings › Access"))
+        print("  2. a key per person:     l9s keys add <name> [--concurrent 2]")
         if backend == "mlx":
             print("  (draft models are off for profiles you serve from now on, so mlx-lm can batch; "
                   "existing profiles: l9s optimize shows what to change)")

@@ -423,6 +423,8 @@ def remote_entries() -> list[dict]:
 def models_list() -> dict:
     """/v1/models: every saved profile plus every downloaded model that fits, so tools that list models see all
     of them. One is loaded; asking for another loads it (like Ollama), unless MODEL_SWITCH=off."""
+    if BACKEND == "remote":  # client mode: no model server here, only linked servers' models
+        return {"object": "list", "data": remote_entries()}
     act, _ = active_model()
     now = int(time.time())
     switch_on = load_env().get("MODEL_SWITCH", "auto") != "off"
@@ -490,7 +492,7 @@ async def ensure_model(name: str, new_repo: str | None = None, me: str | None = 
         act = active_model()[0]
         return {"status": 409, "error": {
             "message": f"`{name}` isn't loaded: the server is running `{act or 'nothing'}`. Switch with "
-                       f"`l9s use {name}` or in the l9s TUI (automatic switching is off: MODEL_SWITCH=off).",
+                       f"`l9s use {name}` or in the l9s TUI (automatic switching is off: turn it on in Settings › Model switching, or `l9s config set MODEL_SWITCH auto`).",
             "type": "model_not_loaded", "code": 409}}
     if me:
         pending[me] = name
@@ -931,11 +933,16 @@ def allowed_models(who: dict) -> set | None:
     return ok
 
 
+def may_use_linked(who: dict, model: str) -> bool:
+    """Linked servers' models are the owner's: another person's key gets one only when it's listed in that key
+    (`l9s keys set <name> --models gb1/l9s`), even a key that may switch models; otherwise it re-shares their key."""
+    return bool(who.get("admin")) or model in (who.get("models") or [])
+
+
 def filter_models(data: list[dict], who: dict) -> list[dict]:
     ok = allowed_models(who)
-    if ok is None:
-        return data
-    return [m for m in data if m["id"] in ok or (m.get("follows") and m["follows"] in ok)]
+    return [m for m in data if (may_use_linked(who, m["id"]) if m.get("remote") else
+                                ok is None or m["id"] in ok or (m.get("follows") and m["follows"] in ok))]
 
 
 _usage: dict = {}
@@ -1002,6 +1009,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
     record = (request.method, request.path) not in QUIET and not request.path.startswith("/_")
     rec = None
     xlate = None  # mlx: "anthropic" | "responses" request translated to chat completions
+    alias = None  # mlx: (repo, name): replies say the profile name the client used, not the repo mlx-lm loaded
     xreq: dict = {}
     upath = request.path_qs
     if BACKEND == "mlx" and request.path == "/v1/messages/count_tokens":
@@ -1024,8 +1032,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                     remote = remote_target(j.get("model")) if request.path.startswith("/v1/") else None
                     if remote:
                         # a linked server's model: forward as is (that l9s does its own switching / translation)
-                        ok = allowed_models(who)
-                        if ok is not None and j["model"] not in ok:
+                        if not may_use_linked(who, j["model"]):
                             msg = f"your key can't use `{j['model']}` (a model on a server linked to this one)"
                             rec["status"], rec["error"] = 403, msg
                             finish(rec, "error")
@@ -1141,6 +1148,9 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                             # mlx-lm loads whatever `model` names; map the profile name to the loaded repo
                             name, repo = active_model()
                             if j["model"] in (name, repo, "", None) and repo:
+                                if not xlate:
+                                    alias = (re.compile(rb'("model":\s*")' + re.escape(repo.encode()) + rb'"'),
+                                             rb"\g<1>" + name.encode() + rb'"')
                                 j["model"] = repo
                                 body = json.dumps(j).encode()
                             else:
@@ -1226,7 +1236,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                                 except json.JSONDecodeError:
                                     pass
                         elif keep:
-                            await resp.write(ev + b"\n\n")
+                            await resp.write((alias[0].sub(alias[1], ev) if alias else ev) + b"\n\n")
                 if buf and xs is None:
                     await resp.write(buf)
                 if xs is not None:
@@ -1261,6 +1271,8 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 data = json.dumps(body_out).encode()
                 out_headers = {k: v for k, v in out_headers.items() if k.lower() != "content-type"}
                 out_headers["Content-Type"] = "application/json"
+            if alias:
+                data = alias[0].sub(alias[1], data)
             if pre is not None:  # the client already got a 200 event stream: deliver the reply as one event
                 await pre.write(b"data: " + data + b"\n\n")
                 await pre.write_eof()

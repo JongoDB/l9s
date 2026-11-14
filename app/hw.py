@@ -277,6 +277,22 @@ def vpn_addresses() -> list[dict]:
     return sorted(found.values(), key=lambda d: (d["kind"] != "Tailscale", d["kind"], d["ip"]))
 
 
+def firewall_blocks() -> str | None:
+    """Why other devices can't connect even though l9s listens on the network (None: nothing in the way seen)."""
+    if platform.system() == "Darwin":
+        fw = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+        if "blocking all" in _run([fw, "--getblockall"], timeout=3):
+            return ("this Mac's firewall blocks all incoming connections, so other devices can't reach l9s. To allow "
+                    "them: System Settings › Network › Firewall › Options › turn off \"Block all incoming "
+                    "connections\" (or ask whoever manages this Mac).")
+        return None
+    if shutil.which("ufw"):
+        out = _run(["ufw", "status"], timeout=3)
+        if out.startswith("Status: active"):
+            return None  # (rules can't be read without root; `l9s expose` checks the port from outside when it can)
+    return None
+
+
 def vllm_reserved(hw: Hardware) -> int:
     """Bytes of GPU memory held by compute processes (vLLM), where the driver reports it."""
     if hw.vendor == "nvidia":

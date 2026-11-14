@@ -6,6 +6,12 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[2] / "app"))
 import hfmeta  # noqa: E402
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _own_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("L9S_HOME", str(tmp_path))  # not this machine's settings (e.g. SPEC_DECODE=off when shared)
 
 CARD = ("Pairs with [z-lab/Qwen3.6-35B-A3B-DFlash](https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash).\n"
         "See github.com/AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4-DFlash\n"

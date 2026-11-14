@@ -414,23 +414,30 @@ case "$cmd" in
       read -r -p "Continue? [y/N] " ans < /dev/tty
       [[ "$ans" == [yY]* ]] || { echo "cancelled"; exit 1; }
     fi
-    if [[ "$BACKEND" == "mlx" ]]; then
+    # whatever `l9s expose` set up (tunnel service, Tailscale Funnel / Serve, the Caddy site): undone first
+    if [[ -x "$PY" && -n "${EXPOSE:-}${PUBLIC_URL:-}" ]]; then
+      "$PY" -c "import sys; sys.path.insert(0, '$APP'); import expose; expose.stop_front_end()" 2>/dev/null || true
+      echo "==> front end removed (${EXPOSE:-your own})"
+    fi
+    if [[ "$OS" == "Darwin" ]]; then  # (client mode may still have the agent from an earlier personal / shared mode)
       launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
       rm -f "$(plist_path $LABEL)"
-    else
+    elif command -v docker >/dev/null 2>&1; then
       docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
       [[ $rmimage -eq 1 ]] && docker rmi "$IMAGE" >/dev/null 2>&1 || true
     fi
     echo "==> model server removed"
     if [[ "$OS" == "Darwin" ]]; then
-      launchctl bootout "gui/$UID/$PROXY_LABEL" 2>/dev/null || true
-      rm -f "$(plist_path $PROXY_LABEL)"
+      for l in "$PROXY_LABEL" dev.l9s.update dev.l9s.tunnel; do
+        launchctl bootout "gui/$UID/$l" 2>/dev/null || true
+        rm -f "$(plist_path "$l")"
+      done
     else
-      sudo systemctl disable --now l9s-proxy >/dev/null 2>&1 || true
-      sudo rm -f /etc/systemd/system/l9s-proxy.service
+      sudo systemctl disable --now l9s-proxy l9s-update.timer l9s-update l9s-tunnel >/dev/null 2>&1 || true
+      sudo rm -f /etc/systemd/system/l9s-{proxy,update,tunnel}.service /etc/systemd/system/l9s-update.timer
       sudo systemctl daemon-reload
     fi
-    echo "==> proxy service removed"
+    echo "==> services removed (request proxy, daily update check, tunnel)"
     if [[ $rmmodels -eq 1 && ${#repos[@]} -gt 0 && -x "$PY" ]]; then
       "$PY" - "${repos[@]}" <<'PYEOF2'
 import sys

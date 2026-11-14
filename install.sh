@@ -165,7 +165,7 @@ else
 fi
 
 # ---------------------------------------------------------------- daily update check
-say "daily update check (UPDATE_MODE in $L9S_HOME/env: notify | auto | off)"
+say "daily update check (change it in Settings › Updates, or: l9s config set UPDATE_MODE notify|auto|off)"
 if [[ "$OS" == "Darwin" ]]; then
   UPL="$HOME/Library/LaunchAgents/dev.l9s.update.plist"
   cat > "$UPL" <<EOF

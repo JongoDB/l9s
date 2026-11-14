@@ -328,7 +328,7 @@ def expose_cloudflare(name: str | None, host: str | None) -> None:
         set_env(PUBLIC_URL=url, EXPOSE="cloudflare-quick")
         restart_proxy()
         print(f"==> quick tunnel up: {url}/v1  (HTTPS by Cloudflare; nothing opened on your router)\n"
-              "   The address changes whenever the tunnel restarts (l9s updates PUBLIC_URL when you run `l9s expose`).\n"
+              "   The address changes whenever the tunnel restarts (l9s picks up the new one whenever you run `l9s expose` or open Settings › Access).\n"
               "   For a fixed address on your own domain: l9s expose cloudflare --name l9s --host llm.example.com")
         return
     name = name or "l9s"
@@ -370,8 +370,11 @@ def status() -> None:
     e = env()
     url, mode = e.get("PUBLIC_URL"), e.get("EXPOSE", "")
     if not url:
-        print("this machine only (other devices can't connect)." if mode == "local" or e.get("BIND") == "127.0.0.1"
+        local = mode == "local" or e.get("BIND") == "127.0.0.1"
+        print("this machine only (other devices can't connect)." if local
               else "not on the internet: l9s is reachable on this machine and your local network.")
+        if not local:
+            warn_firewall()
         if sys.stdout.isatty():
             print("\n" + __doc__)
         return
@@ -380,7 +383,7 @@ def status() -> None:
         if new and new != url:
             set_env(PUBLIC_URL=new)
             restart_proxy()
-            print(f"(the quick tunnel restarted with a new address; PUBLIC_URL updated: {url} → {new})")
+            print(f"(the quick tunnel restarted with a new address: {url} → {new}; give people the new one)")
             url = new
     names = {"own": "your own tunnel / reverse proxy", "vpn": "your VPN", "": "your own tunnel / reverse proxy",
              "cloudflare-quick": "Cloudflare quick tunnel", "cloudflare": "Cloudflare Tunnel",
@@ -402,8 +405,17 @@ def status() -> None:
         with urllib.request.urlopen(req, timeout=10, context=ctx) as r:  # Cloudflare's bot rules block that one
             print(f"reachable{' over HTTPS with a valid certificate' if url.startswith('https') else ''} (HTTP {r.status})")
     except Exception as ex:  # noqa: BLE001
-        print(f"couldn't reach {url}/health from here ({str(ex)[:160]}); from inside your own network that can be "
-              "normal (routers often don't loop back), so check from a phone off Wi-Fi.")
+        sys.path.insert(0, str(Path(__file__).parent))
+        try:
+            import hw
+            fw = hw.firewall_blocks()
+        except Exception:  # noqa: BLE001
+            fw = None
+        why = ("the firewall (see above) is the likely reason" if fw and mode == "vpn" else
+               "check from a device on the VPN" if mode == "vpn" else
+               "from inside your own network that can be normal (routers often don't loop back), so check from a phone "
+               "off Wi-Fi")
+        print(f"couldn't reach {url}/health from here ({str(ex)[:160]}); {why}.")
     for ip in relays():
         print(f"relay: requests reach l9s through {ip} (a tunnel or reverse proxy on another machine). If that machine "
               f"is yours, trust it so l9s sees each client's real address: l9s expose trust {ip}")
@@ -445,6 +457,18 @@ def expose_lan() -> None:
     except Exception:  # noqa: BLE001
         ip = "<this machine's address>"
     print(f"==> reachable on this machine and your local network: http://{ip}:{port()}/v1 (nothing on the internet)")
+    warn_firewall()
+
+
+def warn_firewall() -> None:
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        import hw
+        why = hw.firewall_blocks()
+    except Exception:  # noqa: BLE001
+        why = None
+    if why:
+        print(f"!! {why}")
 
 
 def expose_local() -> None:
@@ -473,6 +497,8 @@ def expose_url(url: str, trust: str | None, vpn: bool) -> None:
     set_env(**kv)
     restart_proxy()
     print(f"==> l9s now gives out {url}/v1 ({'your VPN' if vpn else 'your own tunnel / reverse proxy'})")
+    if vpn:
+        warn_firewall()
     status()
 
 

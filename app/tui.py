@@ -834,10 +834,11 @@ class ReachDialog(ModalScreen[dict | None]):
     #rd-btns Button { margin-left: 2; }
     """
 
-    def __init__(self, current: str, recommended: str, lan: str, port: str, vpn: list[dict], mode: str = ""):
+    def __init__(self, current: str, recommended: str, lan: str, port: str, vpn: list[dict], mode: str = "",
+                 firewall: str | None = None):
         super().__init__()
-        self.current, self.recommended, self.lan, self.port, self.vpn, self.mode = \
-            current, recommended, lan, port, vpn, mode
+        self.current, self.recommended, self.lan, self.port, self.vpn, self.mode, self.firewall = \
+            current, recommended, lan, port, vpn, mode, firewall
         self.choice: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -856,7 +857,9 @@ class ReachDialog(ModalScreen[dict | None]):
                 with Horizontal(classes="opt"):
                     yield Button(title + (" ✓" if rid == self.current else ""), id=f"rd-{rid}",
                                  variant="primary" if rid == self.recommended else "default")
-                    yield Static(desc.format(lan=self.lan, port=self.port, vpn=vpn))
+                    yield Static(desc.format(lan=self.lan, port=self.port, vpn=vpn)
+                                 + (f"\n[{K9['orangered']}]! {rich_escape(self.firewall)}[/]"
+                                    if self.firewall and rid in ("lan", "vpn") else ""))
             with Vertical(id="rd-fields"):
                 pass
             yield Static("", id="rd-err")
@@ -3388,9 +3391,13 @@ class LLMTui(App):
         cur = reach_current(env)
         if cur == "local":
             return f"now: [b]this machine only[/b] (http://localhost:{self.port}/v1)"
+        fw = ""
+        if cur in ("lan", "vpn"):
+            why = hw.firewall_blocks()
+            fw = f"\n[{K9['orangered']}]! {rich_escape(why)}[/]" if why else ""
         if cur == "lan":
-            return f"now: [b]this machine + local network[/b] (http://{self.ip}:{self.port}/v1)"
-        return f"now: [b]{env.get('PUBLIC_URL', '')}/v1[/b] · {REACH_TITLE[cur]}"
+            return f"now: [b]this machine + local network[/b] (http://{self.ip}:{self.port}/v1){fw}"
+        return f"now: [b]{env.get('PUBLIC_URL', '')}/v1[/b] · {REACH_TITLE[cur]}{fw}"
 
     def reach_values(self, choice: str) -> dict:
         host = self.query_one("#set-expose-host", Input).value.strip()
@@ -3447,7 +3454,8 @@ class LLMTui(App):
                     then()
                 return
             self.confirm_reach(res, then)
-        self.push_screen(ReachDialog(cur, rec, self.ip, str(self.port), hw.vpn_addresses(), mode), picked)
+        self.push_screen(ReachDialog(cur, rec, self.ip, str(self.port), hw.vpn_addresses(), mode,
+                                     hw.firewall_blocks()), picked)
 
     @on(Button.Pressed, "#set-expose-check")
     def expose_check(self) -> None:

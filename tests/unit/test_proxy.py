@@ -607,4 +607,16 @@ def test_linked_server_models_merge_and_route(stack):
     with pytest.raises(urllib.error.HTTPError) as e:
         as_user(px, k, "/v1/chat/completions", chat_body("friend/theirmodel"))
     assert e.value.code == 403
+    # not even a key that may switch models (found in the e2e run: it used to get every linked model)
+    k2 = keys_cli("add", "frank", "--switch")["key"]
+    assert not [m for m in json.load(as_user(px, k2, "/v1/models"))["data"] if m.get("remote")]
+    with pytest.raises(urllib.error.HTTPError) as e:
+        as_user(px, k2, "/v1/chat/completions", chat_body("friend/theirmodel"))
+    assert e.value.code == 403
+    # listed explicitly: shared on purpose, even without switching
+    keys_cli("set", "erin", "--models", "friend/theirmodel")
+    time.sleep(0.05)
+    ids = [m["id"] for m in json.load(as_user(px, k, "/v1/models"))["data"]]
+    assert "friend/theirmodel" in ids and "friend/l9s" not in ids
+    assert json.load(as_user(px, k, "/v1/chat/completions", chat_body("friend/theirmodel")))["choices"]
     (HOMEDIR / "links.json").unlink()

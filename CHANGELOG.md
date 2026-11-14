@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.1
+Fixes from an end-to-end run of every setup on a fresh Mac: client, personal and shared mode, and this machine only, LAN, VPN, a free Cloudflare address and your own tunnel, through the first-run popups and the CLI. Tested from a second machine over the internet, including keys and limits, linked servers in both directions, Claude Code and Codex.
+- Keys you give out never get your linked servers' models unless they're listed in the key (`l9s keys set <name> --models gb1/l9s`). Before, a key allowed to switch models got all of them, re-sharing the key someone gave you.
+- Client mode lists only the linked servers' models. Before, it also listed this device's own models, which it can't serve.
+- On a Mac, replies name the model the client asked for (`qwen3-8b-4bit`, as on vLLM), not the Hugging Face repo mlx-lm loaded.
+- l9s tells you when a firewall blocks other devices: for example, macOS set to "Block all incoming connections". The warning shows in the setup popup, Settings › Access and `l9s expose`.
+- `l9s uninstall` also removes the daily update check and whatever `l9s expose` set up (the tunnel service, Tailscale Funnel / Serve, the Caddy site). It also removes a Mac's model-server agent left from an earlier mode.
+- Switching back to personal mode says when the model can be fast again (the draft model that shared mode turned off): `l9s optimize -y`.
+- Messages no longer name config variables (`MODEL_SWITCH=off`, `PUBLIC_URL`); they say where to change things. When a VPN address can't be reached, the message says why.
+
 ## 0.10.0
 - Setting up a personal or shared server now asks how other devices reach it, and nothing about that is fixed: **only this machine**, **this machine + your local network**, **your VPN** (WireGuard, ZeroTier, NetBird, …), **Tailscale (tailnet only)**, a **free temporary address** (Cloudflare quick tunnel), **Tailscale Funnel**, **your domain** via Cloudflare Tunnel or via Caddy + Let's Encrypt on your public IP, or **a tunnel / reverse proxy you already run**. The same choices are in Settings › Access (Apply, or Guided… for the popup) and `l9s expose local|lan|vpn|url|cloudflare|tailscale|caddy`.
 - l9s detects the addresses itself: the LAN address, this machine's VPN addresses (Tailscale, WireGuard, ZeroTier, NetBird, other tunnels), and a tunnel or reverse proxy on another machine that relays requests. It offers to trust that relay (Settings › Access › Trust relay, `l9s expose trust <ip>`) so per-person limits and the wrong-key block see real client addresses.
