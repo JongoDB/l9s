@@ -61,7 +61,8 @@ async def main():
         check("READY", await wait(pilot, lambda: app.state.get("ready"), 30), head()[:200])
         hdr = str(app.query_one("#hdr-info").render())
         check("server panel adds repo + uptime; header has mlx-lm (no repeats)",
-              "mlx-community/" in head() and " up " in head() and "mlx-lm" in hdr and "endpoint" not in head(),
+              tui.profile_repo(tui.active_profile()) in head() and " up " in head() and "mlx-lm" in hdr
+              and "endpoint" not in head(),
               head()[:300])
         check("uptime from launchd pid", "uptime -" not in head(), head()[:300])
         sysp = lambda: str(app.query_one("#st-sys", Static).render())  # noqa: E731

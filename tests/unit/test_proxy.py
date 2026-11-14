@@ -647,3 +647,15 @@ def test_late_system_messages_become_user_messages():
     assert proxy.fold_late_system(chat)
     assert chat["messages"][0]["role"] == "system" and chat["messages"][2]["role"] == "user"
     assert not proxy.fold_late_system({"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]})
+
+
+
+def test_late_developer_messages_in_responses_become_user_messages():
+    import importlib
+    proxy = importlib.import_module("proxy")
+    j = {"instructions": "be codex", "input": [{"type": "message", "role": "developer", "content": [
+        {"type": "input_text", "text": "env info"}]}, {"type": "message", "role": "user", "content": "hi"}]}
+    assert proxy.fold_late_system(j)
+    assert j["input"][0]["role"] == "user" and "env info" in j["input"][0]["content"][0]["text"]
+    chat = {"messages": [{"role": "system", "content": "s"}, {"role": "developer", "content": "d"}]}
+    assert proxy.fold_late_system(chat) and chat["messages"][1]["role"] == "user"

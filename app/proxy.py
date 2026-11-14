@@ -524,18 +524,22 @@ def fold_late_system(j: dict) -> bool:
     """System messages after the start of a conversation (newer Claude Code sends them) break chat templates that
     only allow one at the beginning (Qwen3.6: "System message must be at the beginning"). They become user
     messages with the same text, in the same place: nothing is lost and the prompt prefix stays the same."""
-    msgs = j.get("messages")
+    responses = isinstance(j.get("input"), list) and "messages" not in j
+    msgs = j.get("input") if responses else j.get("messages")
     if not isinstance(msgs, list):
         return False
     changed = False
+    first_taken = bool(j.get("system") or j.get("instructions"))  # (Anthropic / Responses: the system prompt)
     for i, m in enumerate(msgs):
-        if not isinstance(m, dict) or m.get("role") != "system":
+        if not isinstance(m, dict) or m.get("role") not in ("system", "developer"):
             continue
-        if i == 0 and "system" not in j and isinstance(m.get("content"), str):
-            continue  # (chat: a leading system message is the normal place for it)
+        if i == 0 and not first_taken:
+            continue  # a leading system message is the normal place for it
         c = m.get("content")
         text = c if isinstance(c, str) else "".join(b.get("text", "") for b in c or [] if isinstance(b, dict))
-        msgs[i] = {"role": "user", "content": f"<system-reminder>\n{text}\n</system-reminder>"}
+        wrapped = f"<system-reminder>\n{text}\n</system-reminder>"
+        msgs[i] = ({"type": "message", "role": "user", "content": [{"type": "input_text", "text": wrapped}]}
+                   if responses else {"role": "user", "content": wrapped})
         changed = True
     return changed
 
@@ -1157,7 +1161,8 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                             body = json.dumps(j).encode()
                         if request.path == "/v1/messages" and strip_billing_header(j):
                             body = json.dumps(j).encode()
-                        if request.path in ("/v1/messages", "/v1/chat/completions") and fold_late_system(j):
+                        if request.path in ("/v1/messages", "/v1/chat/completions", "/v1/responses") \
+                                and fold_late_system(j):
                             body = json.dumps(j).encode()
                         api = {"/v1/messages": "anthropic", "/v1/responses": "responses",
                                "/v1/chat/completions": "chat"}.get(request.path)
@@ -1172,6 +1177,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                             j = translate.anthropic_to_chat(j) if xlate == "anthropic" else translate.responses_to_chat(j)
                             if wants_no_thinking(xreq):
                                 thinking_off(j)
+                            fold_late_system(j)  # (the translation can put the system prompt ahead of others)
                             body = json.dumps(j).encode()
                             upath = "/v1/chat/completions"
                         elif request.path == "/v1/responses" and str((j.get("reasoning") or {}).get("effort")) == "minimal":
