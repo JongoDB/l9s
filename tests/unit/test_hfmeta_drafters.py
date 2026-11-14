@@ -108,3 +108,15 @@ def test_mtp_needs_real_weights(tmp_path):
     (tmp_path / "model.safetensors").write_bytes(struct.pack("<Q", len(hdr)) + hdr)
     assert hfmeta.has_mtp_weights("org/m", cfg, None, tmp_path)
     assert hfmeta.mtp_supported("qwen3_5_moe") and hfmeta.mtp_supported("nemotron_h") and not hfmeta.mtp_supported("llama")
+
+
+def test_mlx_caps_the_conversation_cache():
+    A = {"sampling": {}, "remote_code": False, "mlx_draft": None, "max_ctx": 40960, "kv_avail": 90e9,
+         "card_commands": []}
+    f = hfmeta.build_presets_mlx(A, {"flags": {"--prompt-cache-bytes": 1, "--max-tokens": 1}})[0]["flags"]
+    assert f["--prompt-cache-bytes"][0] == str(int(16e9))  # at most 16 GB
+    A["kv_avail"] = 10e9
+    f = hfmeta.build_presets_mlx(A, {"flags": {"--prompt-cache-bytes": 1}})[0]["flags"]
+    assert f["--prompt-cache-bytes"][0] == str(int(3e9))  # 30% of what's left after the weights
+    new, ch = hfmeta.optimize_profile("org/m\n--max-tokens\n8192\n", {"presets": [{"flags": f}]}, None)
+    assert "--prompt-cache-bytes\n3000000000" in new and ch

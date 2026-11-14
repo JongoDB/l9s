@@ -14,6 +14,13 @@
 - **Setup suggests one model** for this machine: its download size, its context, and its speed where measured. **Download & serve** starts it. An interactive install now opens the TUI to finish setting up instead of downloading a model on its own.
 - **Platform labels:** `l9s hw`, the installer and the TUI header say whether this machine is supported, experimental (AMD ROCm, WSL2) or client-only. The README documents the support levels and the compatibility promise for 1.x.
 - **CI:** `l9s expose caddy` gets a real certificate from Pebble, Let's Encrypt's test server, and HTTPS through Caddy reaches l9s.
+- **Fixed: mlx-lm running out of memory.** mlx-lm keeps every conversation's cache unless it's capped. With coding agents it grew to 109 GB on a 128 GB Mac, and replies then failed half-way. l9s now caps it (30% of the memory left after the weights, at most 16 GB). `l9s optimize` adds the cap to existing profiles, and `l9s doctor` spots the out-of-memory failures and fixes them with one click.
+- **A reply the model server cuts off is an error** (with the reason, when the log says), not an empty "success".
+- **`l9s claude` on small-context models (under 100K)** leaves your MCP servers, plugins and hooks out of that session. Their tools and instructions alone measured 34K of a 40K window. Your normal `claude` is unchanged.
+- **`l9s pull` retries interrupted downloads** (they resume), and says plainly when a model needs a license or doesn't exist.
+- **Fixed:**
+  - restoring a backup could briefly leave the TUI without its profiles (a restore now swaps everything in at once);
+  - a timer refresh could crash the TUI while it closed.
 
 ## 0.13.0
 - **Health.** `l9s doctor` checks everything and says what's wrong, why, and how to fix it. The **Fix** buttons in the TUI's Health window (click the ● in the header, or `:doctor`) run the same thing as `l9s doctor --fix`. The checks:

@@ -872,6 +872,19 @@ def client_ip(request: web.Request) -> str:
     return request.remote or "?"
 
 
+def backend_failure_hint() -> str:
+    """Why the model server just failed, when its log says (Metal out of memory on a Mac, CUDA OOM)."""
+    try:
+        log = (L9S_HOME / "logs" / "backend.log")
+        tail = log.read_text(errors="replace")[-6000:] if BACKEND == "mlx" and log.exists() else ""
+    except OSError:
+        tail = ""
+    if "Insufficient Memory" in tail or "out of memory" in tail.lower():
+        return (": it ran out of GPU memory (l9s doctor explains; `l9s optimize` caps mlx-lm's conversation cache, "
+                "then restart the model)")
+    return " (see the Server log)"
+
+
 def principal(given: str, local: bool = False) -> dict | None:
     """Who is asking: the owner's admin key (API_KEY), a key from `l9s keys`, or nobody."""
     if not API_KEY:
@@ -1241,6 +1254,21 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                             await resp.write((alias[0].sub(alias[1], ev) if alias else ev) + b"\n\n")
                 if buf and xs is None:
                     await resp.write(buf)
+                if up.status < 400 and rec is not None and not rec.get("finish_reason") and not rec.get("remote"):
+                    # the model server ended the stream without finishing the reply (it crashed or ran out of
+                    # memory mid-way): say so, instead of handing the client an empty "success"
+                    msg = "the model server stopped in the middle of the reply" + backend_failure_hint()
+                    rec["error"] = msg
+                    event("error", msg, "error", model=rec.get("model"))
+                    if xlate == "anthropic":
+                        await resp.write(b"event: error\ndata: " + json.dumps(
+                            {"type": "error", "error": {"type": "api_error", "message": msg}}).encode() + b"\n\n")
+                    else:
+                        await resp.write(b"data: " + json.dumps({"error": {"message": msg, "type": "server_error"}})
+                                         .encode() + b"\n\n")
+                    await resp.write_eof()
+                    state = "error"
+                    return resp
                 if xs is not None:
                     for out_ev in xs.finish():
                         await resp.write(out_ev)

@@ -620,3 +620,15 @@ def test_linked_server_models_merge_and_route(stack):
     assert "friend/theirmodel" in ids and "friend/l9s" not in ids
     assert json.load(as_user(px, k, "/v1/chat/completions", chat_body("friend/theirmodel")))["choices"]
     (HOMEDIR / "links.json").unlink()
+
+
+
+def test_a_reply_cut_off_by_the_server_is_an_error_not_an_empty_success(stack):
+    px, _ = stack
+    body = chat_body("mymodel", stream=True, messages=[{"role": "user", "content": "CRASH please"}])
+    out = call(px, "/v1/chat/completions", body).read().decode()
+    assert "par" in out and '"error"' in out and "stopped in the middle of the reply" in out
+    rec = admin(px, "/_l9s/requests")["recent"][-1]
+    assert "stopped in the middle" in (rec.get("error") or "")
+    ok = call(px, "/v1/chat/completions", chat_body("mymodel", stream=True)).read().decode()
+    assert '"error"' not in ok and "[DONE]" in ok  # a normal reply is untouched

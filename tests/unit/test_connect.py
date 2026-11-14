@@ -181,3 +181,4 @@ def test_claude_prompt_is_cache_friendly_and_lean_on_small_context(cx):
     small = dict(FOLLOW, models=[dict(m, context_window=40960) for m in FOLLOW["models"]])
     drop = connect.tool("claude").plan(small).argv
     assert "Monitor" in drop[drop.index("--disallowedTools") + 1]
+    assert "--strict-mcp-config" in drop and "--strict-mcp-config" not in big.argv  # MCP tools don't fit 40K

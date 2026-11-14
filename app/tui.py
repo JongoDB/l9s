@@ -262,9 +262,16 @@ def suggest_flags(repo: str) -> str:
 def read_profiles() -> list[tuple[str, str, str, str]]:
     """(name, repo, flags, env) for each saved profile. Profile file: line 1 repo, `ENV K=V` lines, flag lines."""
     out = []
-    for p in sorted(PROFILES.iterdir()):
+    try:
+        entries = sorted(PROFILES.iterdir())
+    except OSError:  # (a restore swapping the folder in)
+        return out
+    for p in entries:
         if p.is_file():
-            lines = [l for l in p.read_text().splitlines() if l.strip()]
+            try:
+                lines = [l for l in p.read_text().splitlines() if l.strip()]
+            except OSError:
+                continue
             if lines:
                 env = " ".join(shlex.quote(l[4:]) for l in lines[1:] if l.startswith("ENV "))
                 flags = " ".join(shlex.quote(l) if " " in l or "{" in l else l for l in lines[1:] if not l.startswith("ENV "))
@@ -1639,6 +1646,14 @@ class LLMTui(App):
                    "follow": {"server"}, "save_log": {"server"}, "save_settings": {"settings"},
                    "filter": {"server", "requests", "local", "hub", "events"}}
 
+
+    def _handle_exception(self, error: Exception) -> None:
+        """A timer or background job that touches a widget while the app is closing (the widgets are already gone)
+        isn't a crash; anything else is."""
+        root = getattr(error, "error", error)  # (WorkerFailed wraps the real one)
+        if isinstance(root, NoMatches) and (self._closing or self._closed or not getattr(self, "_running", True)):
+            return
+        super()._handle_exception(error)
 
     def call_from_thread(self, callback, *args, **kwargs):
         """Background work hands results back here; one that lands while the app is closing is dropped (its widgets

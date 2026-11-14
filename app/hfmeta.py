@@ -1076,6 +1076,12 @@ def build_presets_mlx(A: dict, caps: dict | None) -> list[dict]:
         computed["--num-draft-tokens"] = ("3", "drafted tokens per step")
     if A["max_ctx"] and (not flags_ok or "--max-tokens" in flags_ok):
         computed["--max-tokens"] = (str(min(8192, A["max_ctx"])), "default reply length when a request doesn't set max_tokens")
+    if A.get("kv_avail") and (not flags_ok or "--prompt-cache-bytes" in flags_ok):
+        # mlx-lm keeps every conversation's KV cache by default: with coding agents it grew to 109 GB on a 128 GB
+        # Mac and generation then failed (Metal out of memory). Cap it at 30% of what's left after the weights.
+        cap = int(min(16e9, max(1e9, A["kv_avail"] * 0.3)))
+        computed["--prompt-cache-bytes"] = (str(cap), f"keep at most {cap / 1e9:.0f} GB of cached conversations "
+                                                       "(mlx-lm's own default has no limit)")
     presets = [{"label": "Recommended for mlx-lm", "flags": computed, "env": {}, "notes": [], "extra_repos": []}]
     for i, c in enumerate(A["card_commands"], 1):
         presets.append({"label": f"Model card #{i}: {c['heading'][:50] or 'line ' + str(c['line'])}",
@@ -1287,6 +1293,10 @@ def optimize_profile(text: str, A: dict, caps: dict | None) -> tuple[str, list[s
             and "--max-num-batched-tokens" not in have:
         have["--max-num-batched-tokens"] = "16384"
         changes.append("--max-num-batched-tokens 16384  (DFlash needs an explicit token budget)")
+    if "--prompt-cache-bytes" in rec and "--prompt-cache-bytes" not in have:
+        have["--prompt-cache-bytes"] = rec["--prompt-cache-bytes"][0]
+        pairs.append(("--prompt-cache-bytes", rec["--prompt-cache-bytes"][0]))
+        changes.append(f"--prompt-cache-bytes {rec['--prompt-cache-bytes'][0]}  ({rec['--prompt-cache-bytes'][1]})")
     if have.get("--max-num-seqs") == "16" and A.get("layout", {}).get("linear_layers"):
         have["--max-num-seqs"] = "32"
         changes.append("--max-num-seqs 16 → 32  (hybrid model; measured fine on a GB10)")
@@ -1369,7 +1379,7 @@ def _cli() -> None:
 
 
 def _cli_optimize(args: list[str]) -> None:
-    """l9s optimize [<profile>...|--all] [-y] [--json]"""
+    """l9s optimize [<profile>...|--all] [-y] [--restart] [--json]"""
     import os
     import sys
     from huggingface_hub import HfApi
@@ -1419,8 +1429,14 @@ def _cli_optimize(args: list[str]) -> None:
             return
     for r in todo:
         (pdir / r["profile"]).write_text(r["new"])
+        if r["active"] and "--restart" in args:
+            print(f"updated {r['profile']}: reloading it with these settings")
+            import subprocess
+            subprocess.run([str(L9S_HOME / "bin" / "l9s"), "use", r["profile"]])
+            continue
         print(f"updated {r['profile']}" + (f"  (it's running: `l9s use {r['profile']}` reloads it with these "
-                                             "settings; the endpoint is down while it loads)" if r["active"] else ""))
+                                             "settings, or run this with --restart; the endpoint is down while it "
+                                             "loads)" if r["active"] else ""))
 
 
 if __name__ == "__main__":

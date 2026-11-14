@@ -39,6 +39,9 @@ async def chat(request):
                                   "usage": {"prompt_tokens": 7, "completion_tokens": n, "total_tokens": 7 + n}})
     resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
     await resp.prepare(request)
+    if "CRASH" in json.dumps(body.get("messages")):  # the server dying mid-reply (mlx-lm out of memory)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"par"},"finish_reason":null}]}\n\n')
+        return resp
     try:
         for i in range(n):
             chunk = {"choices": [{"index": 0, "delta": {"content": f"t{i} "}, "finish_reason": None}]}

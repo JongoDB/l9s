@@ -264,7 +264,19 @@ case "$cmd" in
         < <("$PY" "$APP/hfmeta.py" exclude "$1" 2>/dev/null)
       [[ ${#pats[@]} -gt 0 ]] && echo "==> skipping files the server doesn't use: ${pats[*]}  (pass --include/--exclude to override)"
     fi
-    HF_TOKEN="${HF_TOKEN:-}" "$HF" download "$@" ${extra[@]+"${extra[@]}"} ;;
+    # network hiccups are common on big downloads: try again (it resumes where it stopped) before giving up
+    for try in 1 2 3 4; do
+      if HF_TOKEN="${HF_TOKEN:-}" "$HF" download "$@" ${extra[@]+"${extra[@]}"} 2> >(tee "$L9S_HOME/logs/pull.err" >&2); then
+        exit 0
+      fi
+      if grep -qiE "401|403|gated|not found|404|Repository Not Found" "$L9S_HOME/logs/pull.err" 2>/dev/null; then
+        grep -qiE "gated|401|403" "$L9S_HOME/logs/pull.err" \
+          && die "$1 needs access: accept its license on huggingface.co/$1 and add your token in Settings (or: l9s config set HF_TOKEN hf_…)" \
+          || die "$1 isn't on Hugging Face (check the name)"
+      fi
+      [[ $try -lt 4 ]] && { echo "==> the download was interrupted (network): trying again in $((try * 10))s, it picks up where it stopped (try $((try + 1)) of 4)" >&2; sleep $((try * 10)); }
+    done
+    die "couldn't download $1 after 4 tries: check the network, then run the same command again (it resumes)" ;;
   info) [[ $# -eq 1 ]] || die "usage: l9s info <org/repo>"; "$PY" "$APP/hfmeta.py" report "$1" ;;
   optimize) "$PY" "$APP/hfmeta.py" optimize "$@" ;;
   keys) exec "$PY" "$APP/keys.py" "$@" ;;

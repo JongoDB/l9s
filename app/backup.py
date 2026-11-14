@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from pathlib import Path
 
@@ -128,11 +129,28 @@ def restore(which: str = "latest", apply: bool = True, fresh: bool = False) -> d
         for m in names:  # only the files l9s wrote: no absolute paths, no ../
             if m.name.startswith(("/", "..")) or ".." in Path(m.name).parts or not (m.isfile() or m.isdir()):
                 raise SystemExit(f"{e['id']} contains an unexpected entry ({m.name}); not restoring it")
-        if (home() / "profiles").is_dir():
-            shutil.rmtree(home() / "profiles")
+        # unpack next to ~/.l9s, then swap each piece in with one rename: nothing (the TUI, the proxy) ever sees a
+        # half-restored setup or a missing profiles folder
         home().mkdir(parents=True, exist_ok=True)
-        for m in names:
-            t.extract(m, home(), filter="data")
+        stage = Path(tempfile.mkdtemp(prefix=".restore-", dir=home()))
+        try:
+            for m in names:
+                t.extract(m, stage, filter="data")
+            for f in FILES:
+                if (stage / f).is_file():
+                    (home() / f).parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(stage / f, home() / f)
+            for dd in DIRS:
+                if (stage / dd).is_dir():
+                    old = home() / f".{dd}.old"
+                    if old.exists():
+                        shutil.rmtree(old)
+                    if (home() / dd).exists():
+                        os.replace(home() / dd, old)
+                    os.replace(stage / dd, home() / dd)
+                    shutil.rmtree(old, ignore_errors=True)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
     for f in FILES:
         if (home() / f).exists():
             os.chmod(home() / f, 0o600)

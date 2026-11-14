@@ -78,6 +78,14 @@ def _secs(s) -> str:
     return f"{s:.0f}s" if s < 90 else f"{s / 60:.0f} min"
 
 
+def claude_user_plugins() -> dict:
+    """The plugins your own Claude Code has enabled ({"name@marketplace": true})."""
+    try:
+        return (json.loads((Path.home() / ".claude" / "settings.json").read_text()).get("enabledPlugins") or {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
 def claude_picker(info: dict) -> dict:
     """Claude Code's /model list, replaced by l9s's models (its built-in Opus/Sonnet/Haiku rows would be
     misleading here: every row is a model on your server)."""
@@ -127,8 +135,14 @@ def claude(info: dict) -> Plan:
         env[f"ANTHROPIC_DEFAULT_{tier}_MODEL"] = mid
         env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_NAME"] = name
         env[f"ANTHROPIC_DEFAULT_{tier}_MODEL_DESCRIPTION"] = "your l9s server"
-    settings = json.dumps(claude_picker(info), separators=(",", ":"))
+    st = claude_picker(info)
+    if lean:  # plugins add skill lists and startup hooks to every prompt: too much for a small model to work in
+        st["enabledPlugins"] = {k: False for k, v in claude_user_plugins().items() if v}
+        st["disableAllHooks"] = True
+    settings = json.dumps(st, separators=(",", ":"))
     argv = ["claude", "--settings", settings, "--disallowedTools", ",".join(drop)]
+    if lean:  # your MCP servers' tools alone can outgrow a small context (34K of 44K tokens, measured)
+        argv.insert(1, "--strict-mcp-config")
     return Plan(env=env, argv=argv,
                 snippet="\n".join(f"export {k}={shlex.quote(v)}" for k, v in env.items())
                         + "\n" + shlex.join(argv),
@@ -142,7 +156,9 @@ def claude(info: dict) -> Plan:
                        "Background and sub-agent tasks use the same l9s model.",
                        "Web search is off (it runs on Anthropic's servers); WebFetch works."
                        + (f" With {ctx(m) // 1024}K of context, the scheduling, worktree and team tools are off too, "
-                          "so the prompt leaves room to work." if lean else "")])
+                          "and your MCP servers, plugins and hooks are left out (for this session only: their tools "
+                          "and instructions alone can fill it), so the prompt leaves room to work. Serve a model with "
+                          "100K+ context to have them." if lean else "")])
 
 
 # ------------------------------------------------------------------ Codex CLI (Responses API)

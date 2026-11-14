@@ -104,6 +104,30 @@ def check_server(env: dict) -> list[dict]:
     return out
 
 
+def check_backend_log(env: dict) -> list[dict]:
+    """The model server failing replies (mlx-lm out of Metal memory shows up only in its log)."""
+    if env.get("BACKEND") != "mlx":
+        return []
+    log = home() / "logs" / "backend.log"
+    try:
+        if time.time() - log.stat().st_mtime > 3600:
+            return []
+        tail = log.read_text(errors="replace")[-40000:]
+    except OSError:
+        return []
+    n = tail.count("Insufficient Memory")
+    if not n:
+        return []
+    prof = active()
+    has_cap = prof and "--prompt-cache-bytes" in (home() / "profiles" / prof).read_text()
+    return [R("mlx-oom", "server", "fail", f"the model server ran out of GPU memory ({n}× recently)",
+              "replies fail half-way. mlx-lm keeps every conversation's cache unless it's capped"
+              + ("; restart it to free the memory" if has_cap else "; cap it (and restart)"),
+              ["use", prof] if has_cap else ["optimize", prof, "-y", "--restart"],
+              "Restart it" if has_cap else "Cap and restart")] \
+        if prof else []
+
+
 def check_memory(env: dict) -> list[dict]:
     try:
         if IS_MAC:
@@ -324,7 +348,7 @@ AREAS = ["server", "reach", "access", "links", "machine", "l9s"]
 def run(quick: bool = False) -> dict:
     env = envfile.read()
     res = []
-    for fn in (check_server, check_memory, check_disk, check_docker):
+    for fn in (check_server, check_backend_log, check_memory, check_disk, check_docker):
         try:
             res += fn(env)
         except Exception as e:  # noqa: BLE001
