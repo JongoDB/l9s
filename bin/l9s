@@ -349,7 +349,7 @@ case "$cmd" in
     for a in "$@"; do
       case "$a" in
         --check) check=1 ;; -y|--yes) yes=1 ;; --scheduled) scheduled=1 ;;
-        -h|--help) echo "usage: l9s update [--check] [-y]   (UPDATE_MODE=$UPDATE_MODE in $L9S_HOME/env: notify | auto | off)"; exit 0 ;;
+        -h|--help) echo "usage: l9s update [--check] [-y]   (automatic updates: ${UPDATE_MODE:-notify}; change in Settings › Updates or: l9s config set UPDATE_MODE notify|auto|off)"; exit 0 ;;
         *) die "usage: l9s update [--check] [-y]" ;;
       esac
     done

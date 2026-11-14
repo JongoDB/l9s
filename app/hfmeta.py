@@ -22,6 +22,10 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
+import sys  # noqa: E402
+sys.path.insert(0, str(Path(__file__).parent))
+import envfile  # noqa: E402
+
 HOME = Path.home()
 import os as _os
 L9S_HOME = Path(_os.environ.get("L9S_HOME", HOME / ".l9s"))
@@ -276,12 +280,8 @@ def find_drafters(repo: str, base_models: list[str], readme: str, api) -> list[s
 
 
 def spec_off() -> bool:
-    """SPEC_DECODE=off in ~/.l9s/env: no drafters (for servers shared by many users, where batching wins)."""
-    try:
-        env = (Path(_os.environ.get("L9S_HOME") or Path.home() / ".l9s") / "env").read_text()
-    except OSError:
-        return False
-    return bool(re.search(r"^SPEC_DECODE=off\s*$", env, re.M))
+    """Speculative decoding set to off (Settings): no drafters (servers shared by many users, where batching wins)."""
+    return envfile.read().get("SPEC_DECODE") == "off"
 
 
 def vllm_at_least(caps: dict | None, want: tuple) -> bool:
@@ -1308,14 +1308,7 @@ def _cli() -> None:
             or len(sys.argv) == 2 and sys.argv[1] == "starter"):
         print("usage: hfmeta.py exclude|report|serveargs <org/repo>  |  hfmeta.py starter", file=sys.stderr)
         sys.exit(2)
-    env = {}
-    try:
-        for line in (L9S_HOME / "env").read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
+    env = envfile.read(L9S_HOME / "env")
     token = env.get("HF_TOKEN") or os.environ.get("HF_TOKEN") or None
     api = HfApi(token=token)
     if sys.argv[1] in ("starter", "serveargs"):
@@ -1376,14 +1369,7 @@ def _cli_optimize(args: list[str]) -> None:
     pdir = L9S_HOME / "profiles"
     if "--all" in args or not names:
         names = sorted(p.name for p in pdir.iterdir()) if pdir.exists() else []
-    env = {}
-    try:
-        for line in (L9S_HOME / "env").read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
+    env = envfile.read(L9S_HOME / "env")
     token = env.get("HF_TOKEN") or os.environ.get("HF_TOKEN") or None
     api = HfApi(token=token)
     h = hw.detect()

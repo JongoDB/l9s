@@ -31,6 +31,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import envfile  # noqa: E402
 from typing import Callable
 
 HOME = Path.home()
@@ -42,16 +45,7 @@ IS_MAC = sys.platform == "darwin"
 
 # ------------------------------------------------------------------ server info
 def load_env(path: Path = L9S_HOME / "env") -> dict:
-    env = {}
-    try:
-        for line in path.read_text().splitlines():
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip().strip('"')
-    except FileNotFoundError:
-        pass
-    return env
-
+    return envfile.read(path)
 
 def state() -> dict:
     try:

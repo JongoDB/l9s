@@ -21,6 +21,10 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import envfile  # noqa: E402
+import registry as reg  # noqa: E402
+
 from huggingface_hub import HfApi, scan_cache_dir
 from rich.highlighter import Highlighter
 from rich.text import Text
@@ -55,16 +59,7 @@ for d in (PROFILES, DL_DIR):
 
 # ================================================================ helpers
 def load_env() -> dict:
-    env = {}
-    try:
-        for line in (LLM_HOME / "env").read_text().splitlines():
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip().strip('"').strip("'")
-    except FileNotFoundError:
-        pass
-    return env
-
+    return envfile.read(LLM_HOME / "env")
 
 def meminfo() -> dict:
     out = {}
@@ -1691,6 +1686,10 @@ class LLMTui(App):
                     with Horizontal(classes="frow"):
                         yield Input(id="set-port", restrict=r"[0-9]*")
                         yield Static("", id="set-port-info")
+                    yield Static("[dim]The model server's own port: only this machine uses it (l9s talks to it and "
+                                 "relays everything). Change it only if another program needs 8001.[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Input(id="set-backend-port", restrict=r"[0-9]*", placeholder="model server port (8001)")
                     yield Label("How other devices reach this server", classes="section")
                     yield Static("[dim]Pick how, fill in what it asks for, and press Apply: l9s installs what's needed, "
                                  "gets the certificate and works out the address to share (runs right away, no Save "
@@ -1729,6 +1728,13 @@ class LLMTui(App):
                         with Horizontal(classes="frow"):
                             yield Input(id="set-image")
                         yield Static("", id="set-image-info")
+                        yield Label("Advanced", classes="section")
+                        yield Static("[dim]How Docker gives vLLM the GPUs (NVIDIA: --gpus all · AMD: --device=/dev/kfd "
+                                     "--device=/dev/dri --group-add video), and the container's name. l9s detects "
+                                     "both at install; change them only if your setup needs it.[/dim]")
+                        with Horizontal(classes="frow"):
+                            yield Input(id="set-gpu-args", placeholder="--gpus all")
+                            yield Input(id="set-container", placeholder="l9s-vllm")
                     yield Label("Model switching", classes="section")
                     yield Static("[dim]auto: a request that names another model (any profile, or a downloaded model "
                                  "that fits) loads it, like Ollama: running requests finish first, then the model "
@@ -2971,66 +2977,53 @@ class LLMTui(App):
                                      what.capitalize()), go)
 
     # ------------------------------------------------------------ settings
-    SETTING_KEYS = {"HF_TOKEN": "#set-hf", "API_KEY": "#set-key", "GPU_MEM": "#set-mem", "PORT": "#set-port",
-                    "IMAGE": "#set-image", "TRUST_PROXY": "#set-trust"}
+    # Every field comes from registry.SETTINGS (the same list `l9s config` uses).
+    def form_settings(self) -> list:
+        return [x for x in reg.SETTINGS if self.backend in x.backends]
+
+    def w_get(self, wid: str) -> str:
+        w = self.query_one(wid)
+        if isinstance(w, Checkbox):
+            return "1" if w.value else "0"
+        if isinstance(w, Select):
+            return str(w.value)
+        return w.value.strip()
+
+    def w_set(self, wid: str, value: str) -> None:
+        w = self.query_one(wid)
+        if isinstance(w, Checkbox):
+            w.value = value != "0"
+        elif isinstance(w, Select):
+            opts = [o[1] for o in w._options]
+            w.value = value if value in opts else reg.BY_KEY[next(k.key for k in reg.SETTINGS if k.widget == wid)].default
+        else:
+            w.value = value
 
     def load_settings_form(self) -> None:
         self._settings_loaded = True
-        self.query_one("#vllm-settings").display = self.backend != "mlx"
+        self.query_one("#vllm-settings").display = self.backend not in ("mlx",)
         env = load_env()
-        defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0"}
-        for k, sel in self.SETTING_KEYS.items():
-            self.query_one(sel, Input).value = env.get(k, defaults.get(k, ""))
-        self.query_one("#set-logprompts", Checkbox).value = env.get("LOG_PROMPTS", "1") != "0"
-        self.query_one("#set-identity", Checkbox).value = env.get("IDENTITY_NOTE", "1") != "0"
-        self.query_one("#set-switch", Select).value = "off" if env.get("MODEL_SWITCH") == "off" else "auto"
-        self.query_one("#set-spec", Select).value = "off" if env.get("SPEC_DECODE") == "off" else "auto"
+        for x in reg.SETTINGS:
+            self.w_set(x.widget, reg.get(env, x.key))
         self.query_one("#set-mode", Select).value = self.mode()
         self.mode_changed()
         self.load_reach_form()
         self.query_one("#set-expose-info", Static).update(self.expose_status_line())
-        self.query_one("#set-update", Select).value = env.get("UPDATE_MODE", "notify") \
-            if env.get("UPDATE_MODE", "notify") in ("notify", "auto", "off") else "notify"
         self.query_one("#set-hf-status", Static).update(
             "[dim]no token set[/dim]" if not env.get("HF_TOKEN") else "[dim]token set; press Test token to verify[/dim]")
         self.settings_changed()
 
     def settings_values(self) -> dict:
-        v = {k: self.query_one(sel, Input).value.strip() for k, sel in self.SETTING_KEYS.items()}
-        v["LOG_PROMPTS"] = "1" if self.query_one("#set-logprompts", Checkbox).value else "0"
-        v["IDENTITY_NOTE"] = "1" if self.query_one("#set-identity", Checkbox).value else "0"
-        v["UPDATE_MODE"] = str(self.query_one("#set-update", Select).value)
-        v["MODEL_SWITCH"] = str(self.query_one("#set-switch", Select).value)
-        v["SPEC_DECODE"] = str(self.query_one("#set-spec", Select).value)
-        return v
+        return {x.key: self.w_get(x.widget) for x in self.form_settings()}
 
     def settings_problems(self, v: dict) -> list[str]:
-        probs = []
-        try:
-            m = float(v["GPU_MEM"])
-            if not 0.3 <= m <= 0.95:
-                probs.append("GPU_MEM must be between 0.30 and 0.95")
-        except ValueError:
-            probs.append("GPU_MEM must be a number like 0.85")
-        if not v["PORT"].isdigit() or not 1024 <= int(v["PORT"]) <= 65535:
-            probs.append("port must be 1024-65535")
-        if not v["API_KEY"] or " " in v["API_KEY"]:
-            probs.append("API key can't be empty or contain spaces")
-        if v["HF_TOKEN"] and not v["HF_TOKEN"].startswith("hf_"):
-            probs.append("Hugging Face tokens start with hf_")
-        if ":" not in v["IMAGE"]:
-            probs.append("image needs a tag, e.g. vllm/vllm-openai:v0.33.0")
-        if v["TRUST_PROXY"] and not all(re.match(r"^[0-9a-fA-F:.]+$", x.strip())
-                                         for x in v["TRUST_PROXY"].split(",") if x.strip()):
-            probs.append("trusted relays are IP addresses, comma-separated")
-        return probs
-
-    # What each setting needs before it is in effect. Everything else is read when used (HF token, update mode).
-    PROXY_KEYS = ("PORT", "API_KEY", "LOG_PROMPTS", "BIND", "TRUST_PROXY")  # the request proxy reads these at start: restarted on Save
+        env = {**load_env(), **v}
+        return [f"{x.key}: {why}" for x in self.form_settings() if x.key in v
+                and (why := reg.check(x.key, v[x.key], env))]
 
     def server_keys(self) -> tuple:
         """Settings the model server reads at start (need a server restart)."""
-        return () if self.backend == "mlx" else ("API_KEY", "GPU_MEM", "IMAGE")
+        return tuple(reg.plan({x.key: "" for x in reg.SETTINGS}, {"BACKEND": self.backend})["server"])
 
     def settings_dirty(self) -> list[str]:
         if not getattr(self, "_settings_loaded", False):
@@ -3040,19 +3033,14 @@ class LLMTui(App):
         except Exception:
             return []
         cur = load_env()
-        defaults = {"GPU_MEM": "0.85", "PORT": "8000", "IMAGE": "vllm/vllm-openai:v0.33.0", "LOG_PROMPTS": "1",
-                    "UPDATE_MODE": "notify", "MODEL_SWITCH": "auto", "SPEC_DECODE": "auto",
-                    "IDENTITY_NOTE": "1"}
-        return [k for k in list(self.SETTING_KEYS) + ["LOG_PROMPTS", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE",
-                                                      "IDENTITY_NOTE"]
-                if v[k] != cur.get(k, defaults.get(k, ""))]
+        return [k for k in v if v[k] != reg.get(cur, k)]
 
     def server_pending(self) -> list[str]:
         """Saved settings the running model server doesn't use yet."""
         if not active_profile():
             return []
         saved, running = load_env(), self.applied_env()
-        return [k for k in self.server_keys() if saved.get(k, "") != running.get(k, saved.get(k, ""))]
+        return [k for k in self.server_keys() if reg.get(saved, k) != reg.get(running, k)]
 
     @on(Input.Changed, "#settings-form Input")
     @on(Checkbox.Changed, "#set-logprompts")
@@ -3063,12 +3051,13 @@ class LLMTui(App):
     def settings_changed(self, *_) -> None:
         v = self.settings_values()
         try:
-            m = float(v["GPU_MEM"])
+            m = float(v.get("GPU_MEM", "0.85"))
             self.query_one("#set-mem-info", Static).update(
                 f"= [b]{self.pool * m / 1e9:.0f} GB[/b] for vLLM" + (f" per GPU × {self.hw.n_gpus}" if self.hw.n_gpus > 1 else "")
                 + (f", {self.pool * (1 - m) / 1e9:.0f} GB left for the system" if self.hw.unified else ""))
         except ValueError:
             self.query_one("#set-mem-info", Static).update("")
+        v.setdefault("PORT", "")
         pub = load_env().get("PUBLIC_URL", "")
         self.query_one("#set-port-info", Static).update(
             f"endpoint would be {pub or f'http://{self.ip}:' + (v['PORT'] or '?')}/v1"
@@ -3094,22 +3083,7 @@ class LLMTui(App):
         return self._applied_env
 
     def write_env(self, v: dict) -> None:
-        path = LLM_HOME / "env"
-        lines = path.read_text().splitlines() if path.exists() else []
-        out, done = [], set()
-        for line in lines:
-            k = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
-            if k in v:
-                out.append(f"{k}={v[k]}")
-                done.add(k)
-            else:
-                out.append(line)
-        out += [f"{k}={val}" for k, val in v.items() if k not in done]
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text("\n".join(out) + "\n")
-        os.chmod(tmp, 0o600)
-        tmp.replace(path)
-        self.reload_env()
+        envfile.write(v, LLM_HOME / "env")
 
     def reload_env(self) -> None:
         self.env = load_env()
@@ -3161,29 +3135,41 @@ class LLMTui(App):
         if probs:
             self.notify("fix the settings first: " + "; ".join(probs), severity="error")
             return False
+        before = load_env()
+        changed = {k: val for k, val in v.items() if val != reg.get(before, k)}  # only what you changed
+        if not changed:
+            self.notify("nothing to save")
+            return True
+        plan = reg.plan(changed, before)  # the same plan `l9s config set` follows
+        if plan["rename_container"]:
+            subprocess.run(["docker", "rm", "-f", plan["rename_container"]], capture_output=True)
+        self.write_env(changed)
         running = self.applied_env()
-        changed = [k for k in v if v[k] != running.get(k, v[k])]
-        self.write_env(v)
         applied = dict(running)
+        server = set(self.server_keys())
+        for k in changed:
+            if k not in server:
+                applied[k] = changed[k]
         done = []
-        # no restart needed: read whenever they're used
-        for k in ("HF_TOKEN", "UPDATE_MODE", "MODEL_SWITCH", "SPEC_DECODE", "IDENTITY_NOTE"):
-            applied[k] = v[k]
-        proxy = [k for k in changed if k in self.PROXY_KEYS]
-        if proxy:
+        if plan["proxy"]:
             self.run_llm(["proxy", "restart"], "request proxy restarted with the new settings")
-            for k in proxy:
-                if k not in self.server_keys():
-                    applied[k] = v[k]
             done.append("proxy restarted")
-            if "PORT" in proxy:
-                self.notify(f"the endpoint is now http://{self.ip}:{v['PORT']}/v1", timeout=10)
+            if "PORT" in changed:
+                self.notify(f"the endpoint is now http://{self.ip}:{changed['PORT']}/v1", timeout=10)
+        if plan["reapply"]:
+            self._run_expose(["reapply", reg.get(before, "PORT")])
+            done.append("the way in follows the new port")
+        if plan["refresh_tools"]:
+            subprocess.Popen([sys.executable, str(Path(__file__).with_name("connect.py")), "refresh"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            done.append("connected tools updated")
         if not active_profile():  # nothing running: everything applies when a model is served
             applied = load_env()
         self._applied_env = applied
+        self.reload_env()
         self.notify("saved" + (f" · {', '.join(done)}" if done else ""))
         self.settings_changed()
-        if self.server_pending():
+        if self.server_pending() or plan["rename_container"]:
             self.settings_apply()
         return True
 
@@ -3358,10 +3344,6 @@ class LLMTui(App):
         env = load_env()
         cur = reach_current(env)
         self.query_one("#set-expose-mode", Select).value = cur
-        pub = env.get("PUBLIC_URL", "")
-        val = {"own": pub, "vpn": re.sub(r"^https?://", "", pub).rsplit(":", 1)[0],
-               "caddy": pub[8:], "cloudflare": pub[8:]}.get(cur, "")
-        self.query_one("#set-expose-host", Input).value = val
         self.expose_mode_changed()
         self.query_one("#set-expose-info", Static).update(self.expose_status_line())
         self.query_one("#set-trust-relay").display = False
@@ -3375,8 +3357,15 @@ class LLMTui(App):
         self.query_one("#set-expose-hostrow").display = bool(needs)
         if needs:
             host.placeholder = f"{needs[0][1]}: {needs[0][2]}"
-            if choice == "vpn" and not host.value:
-                vpn = hw.vpn_addresses()
+            # each choice shows its own value: what's set up now if it's the current one, else a detected default
+            env = load_env()
+            pub = env.get("PUBLIC_URL", "")
+            if choice == reach_current(env):
+                host.value = {"own": pub, "vpn": re.sub(r"^https?://", "", pub).rsplit(":", 1)[0],
+                              "caddy": pub[8:], "cloudflare": pub[8:]}.get(choice, "")
+                email.value = env.get("EXPOSE_EMAIL", "")
+            else:
+                vpn = hw.vpn_addresses() if choice == "vpn" else []
                 host.value = vpn[0]["ip"] if vpn else ""
         email.display = choice == "caddy"
         email.placeholder = "email for Let's Encrypt notices (optional)"

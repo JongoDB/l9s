@@ -24,6 +24,10 @@ import time
 import uuid
 from pathlib import Path
 
+import sys  # noqa: E402
+sys.path.insert(0, str(Path(__file__).parent))
+import envfile  # noqa: E402
+
 import aiohttp
 from aiohttp import web
 
@@ -40,16 +44,7 @@ MAX_LOG_BYTES = 50 * 1024 * 1024
 
 
 def load_env() -> dict:
-    env = {}
-    try:
-        for line in (L9S_HOME / "env").read_text().splitlines():
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
-    except FileNotFoundError:
-        pass
-    return env
-
+    return envfile.read(L9S_HOME / "env")
 
 ENV = load_env()
 PORT = int(os.environ.get("LLMPROXY_PORT") or ENV.get("PORT", "8000"))

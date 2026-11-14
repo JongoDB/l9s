@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0
+- One list of settings (`app/registry.py`) now drives the TUI's Settings tab, `l9s config` and the settings table in the docs. A test fails the build if any of them falls out of step, so the TUI and the CLI can't disagree.
+- Every setting can be changed in Settings and with `l9s config`, including the three that could only be changed by editing the file: the model server's port, how Docker gets the GPUs, and the container name. Also the trusted relays (`l9s config set TRUST_PROXY …` as well as `l9s expose trust`). New: `l9s config reset <NAME>`.
+- Saving does whatever the change needs, the same way in both places:
+  - The request proxy restarts.
+  - On a new port, the tunnel / Caddy site / Tailscale follow it and connected tools are updated.
+  - A renamed container replaces the old one.
+  - You're asked before the model server restarts.
+- Settings › Save writes only what you changed. Before, it wrote every field, including empty ones and vLLM-only values on a Mac.
+- The config file is versioned and brought up to date on install and update. This release renames `VLLM_PORT` to `BACKEND_PORT` and removes values earlier saves wrote but nobody set. One reader and writer handles quoting the same way everywhere; it also writes the file atomically and keeps it readable only by you.
+- Settings › Access shows each choice's own value when you switch between them. Before, the field could keep another choice's URL.
+- `l9s update --help` no longer fails when the update setting is missing.
+
 ## 0.10.1
 Fixes from an end-to-end run of every setup on a fresh Mac: client, personal and shared mode, and this machine only, LAN, VPN, a free Cloudflare address and your own tunnel, through the first-run popups and the CLI. Tested from a second machine over the internet, including keys and limits, linked servers in both directions, Claude Code and Codex.
 - Keys you give out never get your linked servers' models unless they're listed in the key (`l9s keys set <name> --models gb1/l9s`). Before, a key allowed to switch models got all of them, re-sharing the key someone gave you.

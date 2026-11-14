@@ -1,150 +1,127 @@
-"""l9s settings from the command line: the same ones as the TUI's Settings tab, checked and applied for you.
+"""l9s settings from the command line: the same ones as the TUI's Settings tab (both come from registry.py),
+checked and applied the same way.
 
 usage:  l9s config                     every setting, its value and what it does
         l9s config get <NAME>
         l9s config set <NAME> <value> [<NAME> <value> ...] [-y]
-                                       checks the value, saves it and restarts what has to restart to use it
-                                       (-y: also restart the model server without asking, when a setting needs it)
+                                       checks the values, saves them and does what they need to take effect:
+                                       restarts the request proxy, points the tunnel / Caddy at a new port,
+                                       updates connected tools; asks before restarting the model server (-y: don't)
+        l9s config reset <NAME>        back to the default
 
-How the server is reached (public URL, relays, listening address) is `l9s expose`; what the device is for is
-`l9s mode`; API keys for other people are `l9s keys`. l9s keeps all of it in ~/.l9s/env for you.
+How the server is reached is `l9s expose`, what the device is for is `l9s mode`, keys for other people are
+`l9s keys`. l9s keeps all of it in ~/.l9s/env itself; there's nothing to edit by hand.
 """
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
-L9S_HOME = Path(os.environ.get("L9S_HOME") or Path.home() / ".l9s")
 sys.path.insert(0, str(Path(__file__).parent))
-import expose  # noqa: E402  (env file helpers)
+import envfile  # noqa: E402
+import expose  # noqa: E402
+import registry as reg  # noqa: E402
+
+L9S_HOME = envfile.home()
 
 
-def _choice(*opts):
-    return lambda v: None if v in opts else f"one of: {', '.join(opts)}"
-
-
-def _gpu_mem(v):
-    try:
-        return None if 0.3 <= float(v) <= 0.95 else "between 0.30 and 0.95"
-    except ValueError:
-        return "a number like 0.85"
-
-
-def _port(v):
-    return None if v.isdigit() and 1024 <= int(v) <= 65535 else "a port number 1024-65535"
-
-
-# name: (what it does, default, check, applies)  applies: now | proxy | server (model server restart)
-SETTINGS = {
-    "API_KEY": ("your own (admin) API key: every model, switching, no limits. Clients must be given the new one",
-                "", lambda v: None if v and " " not in v else "can't be empty or contain spaces", "server"),
-    "HF_TOKEN": ("Hugging Face token, for gated models (huggingface.co/settings/tokens)", "",
-                 lambda v: None if not v or v.startswith("hf_") else "Hugging Face tokens start with hf_", "now"),
-    "PORT": ("the port clients connect to", "8000", _port, "proxy"),
-    "MODEL_SWITCH": ("auto: a request for another model loads it · off: it gets an error", "auto",
-                     _choice("auto", "off"), "now"),
-    "SPEC_DECODE": ("auto: draft models / MTP for faster single requests · off: none (better for many users at once;"
-                    " applies to models you serve or optimize from now on)", "auto", _choice("auto", "off"), "now"),
-    "IDENTITY_NOTE": ("1: coding agents get one line telling the model which model it really is · 0: off", "1",
-                      _choice("1", "0"), "now"),
-    "LOG_PROMPTS": ("1: keep short prompt / reply previews in the request log · 0: off", "1", _choice("1", "0"),
-                    "proxy"),
-    "UPDATE_MODE": ("notify: tell you about new l9s versions · auto: install them · off", "notify",
-                    _choice("notify", "auto", "off"), "now"),
-    "GPU_MEM": ("(vLLM) fraction of GPU memory vLLM may use", "0.85", _gpu_mem, "server"),
-    "IMAGE": ("(vLLM) the vLLM Docker image", "vllm/vllm-openai:v0.33.0",
-              lambda v: None if ":" in v else "needs a tag, e.g. vllm/vllm-openai:v0.33.0", "server"),
-}
-# set by other commands, shown for reference
-MANAGED = {"BACKEND": "l9s mode", "MODE": "l9s mode", "SERVER_BACKEND": "l9s mode", "PUBLIC_URL": "l9s expose",
-           "EXPOSE": "l9s expose", "TRUST_PROXY": "l9s expose trust", "BIND": "l9s expose local|lan"}
-SECRET = ("API_KEY", "HF_TOKEN")
-
-
-def show(name: str, v: str) -> str:
-    return (v[:7] + "…" if len(v) > 10 else "set") if name in SECRET and v else (v or "-")
+def show(s: reg.Setting | None, v: str) -> str:
+    if s is not None and s.secret and v:
+        return v[:7] + "…" if len(v) > 10 else "set"
+    return v or "-"
 
 
 def l9s(*args, quiet=False) -> int:
-    return subprocess.run([str(L9S_HOME / "bin" / "l9s"), *args],
-                          capture_output=quiet).returncode
+    return subprocess.run([str(L9S_HOME / "bin" / "l9s"), *args], capture_output=quiet).returncode
+
+
+def apply(changed: dict, before: dict, yes: bool, interactive: bool) -> int:
+    """Save `changed` and do what it needs (same plan the TUI follows)."""
+    p = reg.plan(changed, before)
+    if p["rename_container"]:  # the old container would keep running under its old name
+        subprocess.run(["docker", "rm", "-f", p["rename_container"]], capture_output=True)
+    envfile.write(changed)
+    print("saved: " + ", ".join(f"{k}={show(reg.BY_KEY.get(k), v)}" if v is not None else
+                                f"{k} back to its default ({reg.BY_KEY[k].default or 'none'})" for k, v in changed.items()))
+    if p["proxy"]:
+        expose.restart_proxy()
+        print("request proxy restarted")
+    if p["reapply"]:
+        print("the way in follows the new port:")
+        expose.reapply(before.get("PORT", "8000"))
+    if p["refresh_tools"]:
+        subprocess.run([sys.executable, str(Path(__file__).with_name("connect.py")), "refresh"], capture_output=True)
+        print("connected tools updated (l9s connect)")
+    rc = 0
+    if p["server"] or p["rename_container"]:
+        act = L9S_HOME / "active"
+        profile = os.path.basename(os.readlink(act)) if act.is_symlink() else None
+        if not profile:
+            print("applies when you next serve a model")
+        elif yes or p["rename_container"] or (interactive and input(
+                f"the model server must restart to use {', '.join(p['server'])} ({profile} reloads; the endpoint is "
+                "down meanwhile). Restart now? [y/N] ").strip().lower() in ("y", "yes")):
+            rc = l9s("upgrade", changed["IMAGE"]) if "IMAGE" in changed else l9s("use", profile)
+        else:
+            print(f"applies when the model server restarts: l9s config set … -y, or Settings › Restart server")
+    return rc
 
 
 def main(argv: list[str]) -> int:
-    e = expose.env()
+    e = envfile.read()
+    backend = e.get("BACKEND", "vllm")
     if not argv or argv[0] in ("list", "ls"):
-        for n, (desc, default, _, applies) in SETTINGS.items():
-            print(f"{n:14} {show(n, e.get(n, default)):28} {desc}")
+        for s in reg.SETTINGS:
+            if backend in s.backends:
+                print(f"{s.key:14} {show(s, reg.get(e, s.key)):28} {s.help}")
         print()
-        for n, how in MANAGED.items():
-            if e.get(n):
-                print(f"{n:14} {show(n, e[n]):28} (set with: {how})")
+        for k, (how, _) in reg.OWNED.items():
+            if e.get(k):
+                print(f"{k:14} {show(None, e[k]):28} (set with: {how})")
         return 0
     cmd, rest = argv[0], argv[1:]
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
     if cmd == "get":
         if not rest:
             print("usage: l9s config get <NAME>", file=sys.stderr)
             return 2
         n = rest[0].upper()
-        if n not in SETTINGS and n not in MANAGED:
+        if n not in reg.BY_KEY and n not in reg.OWNED:
             print(f"no setting {n} (see: l9s config)", file=sys.stderr)
             return 1
-        print(e.get(n, SETTINGS.get(n, ("", ""))[1]))
+        print(reg.get(e, n) if n in reg.BY_KEY else e.get(n, ""))
         return 0
-    if cmd == "set":
+    if cmd in ("set", "reset"):
         yes = "-y" in rest
-        pairs = [a for a in rest if a != "-y"]
-        if not pairs or len(pairs) % 2:
-            print("usage: l9s config set <NAME> <value> [<NAME> <value> ...]", file=sys.stderr)
-            return 2
+        args = [a for a in rest if a != "-y"]
+        if cmd == "reset":
+            pairs = [(a, reg.BY_KEY[a.upper()].default if a.upper() in reg.BY_KEY else "") for a in args]
+        else:
+            if not args or len(args) % 2:
+                print("usage: l9s config set <NAME> <value> [<NAME> <value> ...]", file=sys.stderr)
+                return 2
+            pairs = list(zip(args[::2], args[1::2]))
         new, bad = {}, []
-        for n, v in zip(pairs[::2], pairs[1::2]):
+        for n, v in pairs:
             n = n.upper()
-            if n in MANAGED:
-                bad.append(f"{n} is set with `{MANAGED[n]}`")
-            elif n not in SETTINGS:
-                bad.append(f"no setting {n} (see: l9s config)")
-            elif (why := SETTINGS[n][2](v)):
-                bad.append(f"{n}: {why}")
+            why = reg.check(n, v, {**e, **new})
+            if why:
+                bad.append(f"{n}: {why}" if n in reg.BY_KEY else why)
             else:
                 new[n] = v
         if bad:
             print("error: " + "; ".join(bad), file=sys.stderr)
             return 1
-        changed = {n: v for n, v in new.items() if e.get(n, SETTINGS[n][1]) != v}
+        changed = {n: (None if (v == reg.BY_KEY[n].default and cmd == "reset") else v) for n, v in new.items()
+                   if reg.get(e, n) != v or (cmd == "reset" and n in e)}
         if not changed:
             print("nothing changed")
             return 0
-        expose.set_env(**changed)
-        print("saved: " + ", ".join(f"{n}={show(n, v)}" for n, v in changed.items()))
-        backend = e.get("BACKEND", "vllm")
-        applies = {SETTINGS[n][3] for n in changed}
-        server = "server" in applies and backend == "vllm"
-        if "proxy" in applies or "server" in applies:  # API_KEY is read by the proxy too
-            expose.restart_proxy()
-            print("request proxy restarted")
-        if server:
-            act = L9S_HOME / "active"
-            profile = os.path.basename(os.readlink(act)) if act.is_symlink() else None
-            if not profile:
-                print("applies when you next serve a model")
-            elif yes or (sys.stdin.isatty() and input(
-                    f"the model server must restart to use it ({profile} reloads; the endpoint is down meanwhile). "
-                    "Restart now? [y/N] ").strip().lower() in ("y", "yes")):
-                if "IMAGE" in changed:
-                    return l9s("upgrade", changed["IMAGE"])
-                return l9s("use", profile)
-            else:
-                print(f"applies when the model server restarts (now: l9s config set … -y, or l9s use {profile})")
-        if "API_KEY" in changed:
-            print("give your tools the new key: l9s connect <tool> (or re-run l9s connect for each)")
-        return 0
-    if cmd in ("-h", "--help", "help"):
-        print(__doc__)
-        return 0
+        return apply(changed, e, yes, sys.stdin.isatty())
     print(__doc__, file=sys.stderr)
     return 2
 

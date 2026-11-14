@@ -45,6 +45,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import envfile  # noqa: E402
+
 L9S_HOME = Path(os.environ.get("L9S_HOME") or Path.home() / ".l9s")
 ENV = L9S_HOME / "env"
 IS_MAC = platform.system() == "Darwin"
@@ -55,30 +58,11 @@ PLIST = Path.home() / "Library/LaunchAgents/dev.l9s.tunnel.plist"
 
 
 def env() -> dict:
-    d = {}
-    try:
-        for line in ENV.read_text().splitlines():
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.split("=", 1)
-                d[k.strip()] = v.strip()
-    except OSError:
-        pass
-    return d
+    return envfile.read(ENV)
 
 
 def set_env(**kv: str) -> None:
-    lines = ENV.read_text().splitlines() if ENV.exists() else []
-    out, done = [], set()
-    for line in lines:
-        k = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
-        if k in kv:
-            if kv[k] is not None:
-                out.append(f"{k}={kv[k]}")
-            done.add(k)
-        else:
-            out.append(line)
-    out += [f"{k}={v}" for k, v in kv.items() if k not in done and v is not None]
-    ENV.write_text("\n".join(out) + "\n")
+    envfile.write(kv, ENV)
 
 
 def run(cmd: list[str], sudo: bool = False, check: bool = True, **kw) -> subprocess.CompletedProcess:
@@ -213,7 +197,7 @@ def expose_caddy(host: str, email: str | None) -> None:
     else:
         run(["systemctl", "enable", "--now", "caddy"], sudo=True)
         run(["systemctl", "reload-or-restart", "caddy"], sudo=True)
-    set_env(PUBLIC_URL=f"https://{host}")
+    set_env(PUBLIC_URL=f"https://{host}", EXPOSE_EMAIL=email or None)
     restart_proxy()
     print(f"==> Caddy serves https://{host} → l9s on 127.0.0.1:{port()}; getting a certificate from Let's Encrypt…")
     for _ in range(45):
@@ -340,7 +324,7 @@ def expose_cloudflare(name: str | None, host: str | None) -> None:
         run(["cloudflared", "tunnel", "create", name])
     run(["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", name, host])
     tunnel_service(["tunnel", "--no-autoupdate", "run", "--url", target, name])
-    set_env(PUBLIC_URL=f"https://{host}", EXPOSE="cloudflare")
+    set_env(PUBLIC_URL=f"https://{host}", EXPOSE="cloudflare", EXPOSE_TUNNEL=None if name == "l9s" else name)
     restart_proxy()
     print(f"==> https://{host}/v1 → Cloudflare Tunnel '{name}' → l9s (HTTPS by Cloudflare; nothing opened on your "
           "router)")
@@ -442,13 +426,39 @@ def stop_front_end() -> None:
             pass
 
 
+def reapply(old_port: str | None = None) -> None:
+    """Set up the current choice again (after the port changed, or a restore): the front end follows l9s's port."""
+    e = env()
+    mode, url = e.get("EXPOSE", ""), e.get("PUBLIC_URL", "")
+    host = host_of(url)
+    if mode == "caddy" and host:
+        path = write_caddyfile(caddy_block(host, e.get("EXPOSE_EMAIL")))
+        run(["caddy", "validate", "--config", str(path), "--adapter", "caddyfile"], check=True)
+        run(["brew", "services", "restart", "caddy"]) if IS_MAC else \
+            run(["systemctl", "reload-or-restart", "caddy"], sudo=True)
+        print(f"==> Caddy now relays https://{host} to port {port()}")
+    elif mode == "cloudflare" and host:
+        tunnel_service(["tunnel", "--no-autoupdate", "run", "--url", f"http://127.0.0.1:{port()}",
+                        e.get("EXPOSE_TUNNEL") or "l9s"])
+        print(f"==> the Cloudflare Tunnel now relays https://{host} to port {port()}")
+    elif mode == "cloudflare-quick":
+        expose_cloudflare(None, None)
+    elif mode in ("tailscale", "tailscale-private"):
+        expose_tailscale(mode == "tailscale-private")
+    elif mode == "vpn" and old_port and url.endswith(f":{old_port}"):
+        set_env(PUBLIC_URL=url[: -len(old_port)] + port())
+        print(f"==> your VPN address is now {url[: -len(old_port)] + port()}/v1")
+    elif mode == "own":
+        print(f"!! your own tunnel / reverse proxy ({url}) must now relay to port {port()}: change it there")
+
+
 def off() -> None:
     expose_lan()
 
 
 def expose_lan() -> None:
     stop_front_end()
-    set_env(PUBLIC_URL=None, EXPOSE=None, BIND=None)
+    set_env(PUBLIC_URL=None, EXPOSE=None, BIND=None, EXPOSE_EMAIL=None, EXPOSE_TUNNEL=None)
     restart_proxy()
     sys.path.insert(0, str(Path(__file__).parent))
     try:
@@ -571,6 +581,8 @@ def main(argv: list[str]) -> int:
         expose_vpn(rest[0] if rest and not rest[0].startswith("-") else None)
     elif cmd == "trust":
         set_trust(rest[0] if rest else "")
+    elif cmd == "reapply":
+        reapply(rest[0] if rest else None)
     elif cmd == "relays":
         print(json.dumps({"untrusted": relays(), "trusted": [x for x in env().get("TRUST_PROXY", "").split(",") if x]}))
     elif cmd in ("-h", "--help", "help"):

@@ -96,6 +96,8 @@ if [[ ! -f "$L9S_HOME/env" ]]; then
   chmod 600 "$L9S_HOME/env"
 fi
 grep -q '^BACKEND=' "$L9S_HOME/env" || echo "BACKEND=$BACKEND" >> "$L9S_HOME/env"
+# older configs: renamed / converted settings brought up to date (app/registry.py); a new one is stamped current
+"$PY" "$L9S_HOME/app/registry.py" migrate || true
 envget() { ( set +u; source "$L9S_HOME/env"; eval "echo \"\${$1:-}\"" ); }
 envset() { grep -v "^$1=" "$L9S_HOME/env" > "$L9S_HOME/env.tmp" || true; [[ -n "$2" ]] && echo "$1=$2" >> "$L9S_HOME/env.tmp"
            mv "$L9S_HOME/env.tmp" "$L9S_HOME/env"; chmod 600 "$L9S_HOME/env"; }

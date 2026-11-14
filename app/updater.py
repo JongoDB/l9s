@@ -22,6 +22,9 @@ import time
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import envfile  # noqa: E402
+
 L9S_HOME = Path(os.environ.get("L9S_HOME", Path.home() / ".l9s"))
 CACHE = L9S_HOME / "cache" / "update.json"
 REPO = "JongoDB/l9s"
@@ -39,16 +42,7 @@ def vtuple(v: str) -> tuple:
 
 
 def load_env() -> dict:
-    env = {}
-    try:
-        for line in (L9S_HOME / "env").read_text().splitlines():
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip().strip('"')
-    except FileNotFoundError:
-        pass
-    return env
-
+    return envfile.read(L9S_HOME / "env")
 
 def installed_version() -> str:
     try:

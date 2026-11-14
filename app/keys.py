@@ -21,6 +21,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import envfile  # noqa: E402
+
 L9S_HOME = Path(os.environ.get("L9S_HOME") or Path.home() / ".l9s")
 KEYS = L9S_HOME / "keys.json"
 USAGE = L9S_HOME / "cache" / "usage.json"
@@ -132,16 +135,7 @@ def describe(v: dict) -> str:
 
 
 def _env() -> dict:
-    env = {}
-    try:
-        for line in (L9S_HOME / "env").read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                k, v = line.split("=", 1)
-                env[k.strip()] = v.strip()
-    except OSError:
-        pass
-    return env
-
+    return envfile.read(L9S_HOME / "env")
 
 def endpoint() -> str:
     """The URL people elsewhere use: PUBLIC_URL if set, else this machine's LAN address."""
