@@ -117,7 +117,7 @@ def main(argv: list[str]) -> int:
             print("error: " + "; ".join(bad), file=sys.stderr)
             return 1
         changed = {n: (None if (v == reg.BY_KEY[n].default and cmd == "reset") else v) for n, v in new.items()
-                   if reg.get(e, n) != v or (cmd == "reset" and n in e)}
+                   if not reg.same(n, reg.get(e, n), v) or (cmd == "reset" and n in e)}
         if not changed:
             print("nothing changed")
             return 0

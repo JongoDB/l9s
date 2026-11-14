@@ -1,0 +1,30 @@
+name: Hardware
+
+# The real-hardware gate on self-hosted runners (a GB10 with vLLM, a Mac with mlx-lm), against their live l9s
+# installs. Never on pull requests: only code already on main (pushed by a maintainer) runs on these machines.
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", "bin/**", "install.sh", "get.sh", "requirements.lock", "tests/live/**", ".github/scripts/hardware.sh"]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardware
+  cancel-in-progress: false
+
+jobs:
+  hardware:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [l9s-gb10, l9s-mac]
+    runs-on: [self-hosted, "${{ matrix.runner }}"]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: End-to-end on the live install
+        run: .github/scripts/hardware.sh

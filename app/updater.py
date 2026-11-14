@@ -66,18 +66,33 @@ def changelog_between(text: str, old: str, new: str) -> list[str]:
     return out[:30]
 
 
-def check() -> dict:
+def latest_release(channel: str) -> tuple[str, bool]:
+    """(tag, is a beta) of the newest release on a channel. stable: the newest that passed the beta period;
+    beta: the newest of all (every release is a beta first)."""
+    if channel == "beta":
+        rels = [r for r in json.loads(_get(f"https://api.github.com/repos/{REPO}/releases?per_page=30"))
+                if not r.get("draft") and re.fullmatch(r"v\d+\.\d+\.\d+", r.get("tag_name", ""))]
+        if rels:
+            r = max(rels, key=lambda r: vtuple(r["tag_name"][1:]))
+            return r["tag_name"], bool(r.get("prerelease"))
+    return json.loads(_get(f"https://api.github.com/repos/{REPO}/releases/latest"))["tag_name"], False
+
+
+def check(channel: str | None = None) -> dict:
     env = load_env()
+    channel = channel or env.get("UPDATE_CHANNEL", "stable")
     backend = env.get("BACKEND", "mlx" if platform.system() == "Darwin" else "vllm")
     res: dict = {"checked": time.time(), "backend": backend, "l9s": {}, "server": {}, "errors": []}
     cur = installed_version()
     try:
+        beta = False
         try:
-            ref = json.loads(_get(f"https://api.github.com/repos/{REPO}/releases/latest"))["tag_name"]
+            ref, beta = latest_release(channel)
         except Exception:  # noqa: BLE001  (no release yet: fall back to main)
             ref = "main"
         latest = _get(f"{RAW}/{ref}/VERSION").strip()
-        res["l9s"] = {"installed": cur, "latest": latest, "update": vtuple(latest) > vtuple(cur), "ref": ref}
+        res["l9s"] = {"installed": cur, "latest": latest, "update": vtuple(latest) > vtuple(cur), "ref": ref,
+                      "channel": channel, "beta": beta}
         if res["l9s"]["update"]:
             res["l9s"]["notes"] = changelog_between(_get(f"{RAW}/{ref}/CHANGELOG.md"), cur, latest)
     except Exception as e:  # noqa: BLE001
@@ -147,8 +162,10 @@ def main() -> None:
     if not args or args[0] != "check":
         print(__doc__)
         sys.exit(2)
-    res = None if "--force" in args else cached()
-    res = res or check()
+    channel = args[args.index("--channel") + 1] if "--channel" in args and args.index("--channel") + 1 < len(args) \
+        else None
+    res = None if "--force" in args or channel else cached()
+    res = res or check(channel)
     if "--json" in args:
         print(json.dumps(res))
     elif "--quiet" not in args:

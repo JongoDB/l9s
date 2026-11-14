@@ -260,6 +260,10 @@ print(f"    {sys.argv[1] if sys.argv[1] != 'mlx' else 'mlx-lm'} {c.get('version'
 PY
 
 "$PY" "$L9S_HOME/app/hw.py" | sed 's/^/    /'
+if "$PY" "$L9S_HOME/app/hw.py" | grep -q '^support: experimental'; then
+  echo "!!  This platform is experimental: expected to work, but not tested on real hardware before releases."
+  echo "    If something's off: l9s report --issue  (a file to attach; nothing is sent)"
+fi
 
 # ---------------------------------------------------------------- restored / reinstalled: set the rest up again
 if [[ $RESTORED -eq 0 && $UPDATE -eq 0 && $NEW_ENV -eq 0 && -L "$L9S_HOME/active" ]] && ! "$L9S_HOME/bin/l9s" status 2>/dev/null | grep -q "server: running"; then
@@ -275,7 +279,10 @@ if [[ $RESTORED -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------- starter model
-if [[ $NO_MODEL -eq 0 ]] && { [[ -n "$MODEL" ]] || [[ ! -L "$L9S_HOME/active" ]]; }; then
+# an interactive first install opens the TUI's setup instead (it offers the recommended model, with its size)
+INTERACTIVE=0
+[[ $UPDATE -eq 0 && $RESTORED -eq 0 && -z "$MODEL" && -r /dev/tty && -t 1 && -t 0 ]] && INTERACTIVE=1
+if [[ $NO_MODEL -eq 0 && $INTERACTIVE -eq 0 ]] && { [[ -n "$MODEL" ]] || [[ ! -L "$L9S_HOME/active" ]]; }; then
   say "starting a model${MODEL:+: $MODEL} (skip with --no-model)"
   "$L9S_HOME/bin/l9s" quickstart ${MODEL:+"$MODEL"} \
     || echo "    couldn't start a model automatically; pick one with: l9s  (Hub tab) or l9s quickstart <org/repo>"
@@ -299,4 +306,8 @@ Shared mode, next (the TUI walks you through both the first time you open it):
 MSG
 fi
 [[ "$OS" == "Darwin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && echo "Add ~/.local/bin to your PATH to use 'l9s'."
+if [[ $INTERACTIVE -eq 1 && -z "$(envget SETUP_DONE)" ]]; then
+  echo; echo "==> opening l9s to finish setting up (how it's reached, a model$([[ "$MODE" == "shared" ]] && echo ', keys'))"
+  L9S_SETUP_AFTER_MODE=1 exec "$L9S_HOME/bin/l9s" < /dev/tty
+fi
 exit 0

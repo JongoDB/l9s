@@ -88,9 +88,21 @@ SETTINGS: list[Setting] = [
             _choice("1", "0"), "proxy", widget="#set-logprompts"),
     Setting("UPDATE_MODE", "Updates", "notify: tell you about new versions · auto: install them · off", "notify",
             _choice("notify", "auto", "off"), "now", widget="#set-update"),
+    Setting("UPDATE_CHANNEL", "Updates", "stable: releases that passed a few days as beta · beta: every release as "
+                                         "soon as it passes the hardware tests (automatic updates stay on stable)",
+            "stable", _choice("stable", "beta"), "now", widget="#set-channel"),
     Setting("TRUST_PROXY", "How other devices reach this server",
             "tunnels / reverse proxies on other machines whose client addresses l9s believes", "",
             _ips, "proxy", widget="#set-trust"),
+    Setting("ALERT_URL", "Alerts", "a webhook for alerts when the server needs you: ntfy (phone push), Slack, "
+                                   "Discord, or any URL (JSON)", "",
+            lambda v, e: None if not v or re.match(r"^https?://\S+$", v) else "a URL, e.g. https://ntfy.sh/your-topic",
+            "now", widget="#set-alert-url"),
+    Setting("ALERT_EVENTS", "Alerts", "which alerts: down, up, url, cert, link, abuse, update, disk", "down,up,url",
+            lambda v, e: None if all(x.strip() in ("down", "up", "url", "cert", "link", "abuse", "update", "disk")
+                                     for x in v.split(",") if x.strip()) else
+            "a comma-separated list of: down, up, url, cert, link, abuse, update, disk", "now",
+            widget="#set-alert-events"),
     Setting("GPU_MEM", "Memory for vLLM (GPU_MEM)", "fraction of GPU memory vLLM may use", "0.85", _gpu_mem,
             "server", backends=("vllm",), widget="#set-mem"),
     Setting("IMAGE", "vLLM image", "the vLLM Docker image", "vllm/vllm-openai:v0.33.0",
@@ -112,6 +124,8 @@ OWNED = {
     "PUBLIC_URL": ("l9s expose", "#set-expose-mode"), "EXPOSE": ("l9s expose", "#set-expose-mode"),
     "BIND": ("l9s expose local / lan", "#set-expose-mode"), "EXPOSE_EMAIL": ("l9s expose caddy", "#set-expose-email"),
     "EXPOSE_TUNNEL": ("l9s expose cloudflare --name", "#set-expose-mode"),
+    "EXPOSE_CF_TUNNEL_ID": ("l9s expose cloudflare --api-token", "#set-expose-mode"),
+    "EXPOSE_CF_ACCOUNT": ("l9s expose cloudflare --api-token", "#set-expose-mode"),
 }
 # Bookkeeping l9s keeps for itself (never shown as settings).
 INTERNAL = {"SERVER_BACKEND", "SETUP_DONE", "CONFIG_VERSION"}
@@ -120,6 +134,15 @@ BY_KEY = {s.key: s for s in SETTINGS}
 
 def get(env: dict, key: str) -> str:
     return env.get(key, BY_KEY[key].default if key in BY_KEY else "")
+
+
+LIST_KEYS = {"ALERT_EVENTS", "TRUST_PROXY"}  # comma-separated sets: order and spacing don't matter
+
+
+def same(key: str, a: str, b: str) -> bool:
+    if key in LIST_KEYS:
+        return {x.strip() for x in a.split(",") if x.strip()} == {x.strip() for x in b.split(",") if x.strip()}
+    return a == b
 
 
 def check(key: str, value: str, env: dict) -> str | None:

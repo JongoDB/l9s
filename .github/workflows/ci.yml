@@ -43,6 +43,53 @@ jobs:
           L9S_HOME="$RUNNER_TEMP/l9s" L9S_NO_SERVICES=1 ./install.sh --no-model
           "$RUNNER_TEMP/l9s/app/.venv/bin/python" -c "import textual, aiohttp, huggingface_hub; print('ok')"
 
+  caddy-acme:
+    # `l9s expose caddy` for real, with Pebble (Let's Encrypt's test server) standing in for Let's Encrypt: Caddy is
+    # installed from its package, gets a certificate over ACME, and HTTPS through it reaches l9s.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install l9s (no services) and start its proxy
+        run: |
+          export L9S_HOME="$RUNNER_TEMP/l9s"
+          L9S_NO_SERVICES=1 ./install.sh --no-model
+          echo "L9S_HOME=$L9S_HOME" >> "$GITHUB_ENV"
+          nohup "$L9S_HOME/app/.venv/bin/python" "$L9S_HOME/app/proxy.py" > "$RUNNER_TEMP/proxy.log" 2>&1 &
+          for i in $(seq 30); do curl -fs localhost:8000/_l9s/health && break; sleep 1; done
+      - name: Pebble (test ACME server)
+        run: |
+          docker run -d --name pebble --network host -e PEBBLE_VA_ALWAYS_VALID=1 -e PEBBLE_VA_NOSLEEP=1 \
+            ghcr.io/letsencrypt/pebble:latest -config test/config/pebble-config.json
+          for i in $(seq 30); do curl -ks https://localhost:14000/dir >/dev/null && break; sleep 1; done
+          docker cp pebble:/test/certs/pebble.minica.pem "$RUNNER_TEMP/pebble.minica.pem"
+          sudo install -D -m 644 "$RUNNER_TEMP/pebble.minica.pem" /etc/caddy/pebble.minica.pem
+          echo "127.0.0.1 l9s-ci.test" | sudo tee -a /etc/hosts
+      - name: l9s expose caddy (certificate from Pebble)
+        env:
+          L9S_ACME_CA: https://localhost:14000/dir
+          L9S_ACME_CA_ROOT: /etc/caddy/pebble.minica.pem
+        run: |
+          "$L9S_HOME/app/.venv/bin/python" "$L9S_HOME/app/expose.py" caddy l9s-ci.test --email ci@example.com
+          grep -q "acme_ca https://localhost:14000/dir" /etc/caddy/Caddyfile
+      - name: HTTPS through Caddy reaches l9s, with the issued certificate
+        run: |
+          curl -ks https://localhost:15000/roots/0 > "$RUNNER_TEMP/pebble-root.pem"
+          for i in $(seq 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$RUNNER_TEMP/pebble-root.pem" https://l9s-ci.test/health || true)
+            [[ "$code" =~ ^[2-5][0-9][0-9]$ ]] && break; sleep 2
+          done
+          echo "HTTP $code over verified TLS"
+          [[ "$code" =~ ^[2-5][0-9][0-9]$ ]]
+          curl -s --cacert "$RUNNER_TEMP/pebble-root.pem" -o /dev/null -w '%{http_code}\n' https://l9s-ci.test/v1/models | grep -q 401
+      - name: l9s expose off removes the site
+        run: |
+          "$L9S_HOME/app/.venv/bin/python" "$L9S_HOME/app/expose.py" off
+          ! grep -q l9s-ci.test /etc/caddy/Caddyfile
+      - if: failure()
+        run: |
+          sudo journalctl -u caddy --no-pager | tail -60; cat "$RUNNER_TEMP/proxy.log" | tail -40
+
   macos-mlx:
     runs-on: macos-15
     steps:

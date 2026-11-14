@@ -13,16 +13,22 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  release:
+  hardware:
     needs: ci
+    uses: ./.github/workflows/hardware.yml
+
+  release:
+    needs: hardware
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Tag and release the version in VERSION if it isn't released yet
+      - name: Tag and release the version in VERSION as a beta, if it isn't released yet
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           v=$(tr -d '[:space:]' < VERSION)
           if gh release view "v$v" >/dev/null 2>&1; then echo "v$v already released"; exit 0; fi
           python3 .github/scripts/release_notes.py "$v" > notes.md
-          gh release create "v$v" --target "$GITHUB_SHA" --title "l9s $v" --notes-file notes.md
+          # every release starts as a beta (pre-release); promote.yml makes it stable after 3 days without a
+          # regression issue. Stable = GitHub's "latest" (what get.sh and stable-channel updates install).
+          gh release create "v$v" --target "$GITHUB_SHA" --title "l9s $v" --notes-file notes.md --prerelease

@@ -67,6 +67,7 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
                                          (shortcuts: l9s claude, l9s codex, l9s opencode, …)
   tui                                    open the terminal UI
   update [--check] [-y]                  check for / install a newer l9s (and mlx-lm on a Mac)
+  alerts [test]                          where alerts go (set: l9s config set ALERT_URL …) / send a test one
   doctor [--fix [-y]]                    is everything working? what's wrong, why, and fixes
   report [--anonymize] [--issue]         a file with what's needed to debug a problem (secrets removed), to attach
                                          to a GitHub issue; nothing is sent
@@ -275,6 +276,7 @@ case "$cmd" in
   restore) exec "$PY" "$APP/backup.py" restore "$@" ;;
   report) exec "$PY" "$APP/report.py" "$@" ;;
   doctor) exec "$PY" "$APP/doctor.py" "$@" ;;
+  alerts) exec "$PY" "$APP/alerts.py" "$@" ;;
   quickstart)
     repo="${1:-}"
     if [[ -z "$repo" ]]; then
@@ -370,7 +372,9 @@ case "$cmd" in
         auto) yes=1 ;;
       esac
     fi
-    rc=0; "$PY" "$APP/updater.py" check --force || rc=$?
+    # automatic updates only ever install stable releases (a beta channel still gets told about betas)
+    chan=(); [[ $scheduled -eq 1 ]] && chan=(--channel stable)
+    rc=0; "$PY" "$APP/updater.py" check --force ${chan[@]+"${chan[@]}"} || rc=$?
     [[ $check -eq 1 ]] && exit 0
     if [[ $rc -ne 10 ]]; then echo "==> nothing to update"; exit 0; fi
     l9s_up="$("$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(int(bool((d.get("l9s") or {}).get("update"))), int(bool((d.get("server") or {}).get("update") and (d.get("server") or {}).get("auto"))))' "$UPCACHE")"
@@ -386,7 +390,8 @@ case "$cmd" in
     mlx_before=""; [[ "$BACKEND" == "mlx" ]] && mlx_before="$("$PY" -c 'from importlib.metadata import version; print(version("mlx-lm"))' 2>/dev/null || true)"
     "$PY" "$APP/backup.py" now "update from $(cat "$APP/VERSION")" >/dev/null 2>&1 || true
     echo "==> updating l9s"
-    curl -fsSL "https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh" | bash -s -- --update || die "update failed (your install is unchanged where the step failed; see above)"
+    ref="$("$PY" -c 'import json,sys; print((json.load(open(sys.argv[1])).get("l9s") or {}).get("ref") or "")' "$UPCACHE" 2>/dev/null || true)"
+    curl -fsSL "https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh" | bash -s -- --update ${ref:+--ref "$ref"} || die "update failed (your install is unchanged where the step failed; see above)"
     if [[ "$BACKEND" == "mlx" ]]; then
       mlx_after="$("$PY" -c 'from importlib.metadata import version; print(version("mlx-lm"))' 2>/dev/null || true)"
       if [[ -n "$mlx_before" && "$mlx_before" != "$mlx_after" ]] && mlx_running; then

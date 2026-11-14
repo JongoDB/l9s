@@ -16,11 +16,13 @@
                                      Caddy in front of l9s with a Let's Encrypt certificate (renewed on its own).
                                      Needs: <host>'s DNS A/AAAA record pointing at your public IP, and ports 80 and
                                      443 on your router forwarded to this machine.
-  l9s expose cloudflare [--name <tunnel> --host <host>]
+  l9s expose cloudflare [--name <tunnel> --host <host> [--api-token <token>]]
                                      a Cloudflare Tunnel: nothing opened on your router, HTTPS by Cloudflare.
                                      Without --host: a free quick tunnel at a random https://….trycloudflare.com
                                      address (no account; the address changes when the tunnel restarts).
-                                     With --host: your own domain on Cloudflare (run `cloudflared tunnel login` once).
+                                     With --host: your own domain on Cloudflare (run `cloudflared tunnel login` once,
+                                     or give an API token: no browser needed; Account › Cloudflare Tunnel › Edit and
+                                     Zone › DNS › Edit; also read from CLOUDFLARE_API_TOKEN; not stored).
   l9s expose tailscale [--private]   Tailscale: https://<machine>.<tailnet>.ts.net, certificate by Tailscale
                                      (Let's Encrypt). Funnel = the internet (Funnel must be allowed for the
                                      tailnet); --private = only devices on your tailnet (a VPN; Tailscale Serve).
@@ -119,8 +121,12 @@ def caddyfile_path() -> Path:
 
 def caddy_block(host: str, email: str | None) -> str:
     # flush_interval -1: stream tokens as they come; no read timeout, so long generations aren't cut off
+    # (L9S_ACME_CA / L9S_ACME_CA_ROOT: a test certificate authority instead of Let's Encrypt, for CI with Pebble)
+    glob = ([f"\temail {email}"] if email else []) + \
+        ([f"\tacme_ca {os.environ['L9S_ACME_CA']}"] if os.environ.get("L9S_ACME_CA") else []) + \
+        ([f"\tacme_ca_root {os.environ['L9S_ACME_CA_ROOT']}"] if os.environ.get("L9S_ACME_CA_ROOT") else [])
     return "\n".join([MARK_BEGIN,
-                      *([f"{{\n\temail {email}\n}}"] if email else []),
+                      *(["{", *glob, "}"] if glob else []),
                       f"{host} {{",
                       "\tencode zstd gzip",
                       f"\treverse_proxy 127.0.0.1:{port()} {{",
@@ -301,7 +307,75 @@ def quick_tunnel_url(wait: float = 60) -> str | None:
         time.sleep(1)
 
 
-def expose_cloudflare(name: str | None, host: str | None) -> None:
+CF_API = "https://api.cloudflare.com/client/v4"
+CF_TOKEN_FILE = L9S_HOME / "cloudflare-tunnel.token"
+
+
+def cf(method: str, path: str, token: str, body: dict | None = None) -> dict:
+    """One Cloudflare API call (raises SystemExit with Cloudflare's own message)."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(CF_API + path, method=method, data=json.dumps(body).encode() if body is not None
+                                 else None, headers={"Authorization": f"Bearer {token}",
+                                                     "Content-Type": "application/json", "User-Agent": "l9s"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            d = json.load(e)
+        except Exception:  # noqa: BLE001
+            raise SystemExit(f"Cloudflare API {method} {path}: HTTP {e.code}")
+    if not d.get("success", False):
+        errs = "; ".join(x.get("message", "") for x in d.get("errors") or []) or str(d)[:200]
+        raise SystemExit(f"Cloudflare refused ({method} {path.split('?')[0]}): {errs}\n"
+                         "The token needs: Account › Cloudflare Tunnel › Edit, and Zone › DNS › Edit for the domain.")
+    return d
+
+
+def expose_cloudflare_api(name: str, host: str, token: str) -> None:
+    """Your domain via Cloudflare Tunnel, set up with an API token: no browser on this machine (headless boxes)."""
+    install_cloudflared()
+    zones = cf("GET", "/zones?per_page=50", token)["result"]
+    zone = max((z for z in zones if host == z["name"] or host.endswith("." + z["name"])), key=lambda z: len(z["name"]),
+               default=None)
+    if not zone:
+        raise SystemExit(f"none of this token's domains covers {host} (it sees: "
+                         f"{', '.join(z['name'] for z in zones) or 'none'})")
+    acct = zone["account"]["id"]
+    tunnels = cf("GET", f"/accounts/{acct}/cfd_tunnel?is_deleted=false&name={name}", token)["result"]
+    if tunnels:
+        tid = tunnels[0]["id"]
+    else:
+        import secrets
+        import base64
+        tid = cf("POST", f"/accounts/{acct}/cfd_tunnel", token,
+                 {"name": name, "config_src": "cloudflare",
+                  "tunnel_secret": base64.b64encode(secrets.token_bytes(32)).decode()})["result"]["id"]
+    cf("PUT", f"/accounts/{acct}/cfd_tunnel/{tid}/configurations", token,
+       {"config": {"ingress": [{"hostname": host, "service": f"http://127.0.0.1:{port()}"},
+                               {"service": "http_status:404"}]}})
+    recs = cf("GET", f"/zones/{zone['id']}/dns_records?name={host}", token)["result"]
+    rec = {"type": "CNAME", "name": host, "content": f"{tid}.cfargotunnel.com", "proxied": True,
+           "comment": "l9s (l9s expose)"}
+    if recs:
+        cf("PUT", f"/zones/{zone['id']}/dns_records/{recs[0]['id']}", token, rec)
+    else:
+        cf("POST", f"/zones/{zone['id']}/dns_records", token, rec)
+    ttok = cf("GET", f"/accounts/{acct}/cfd_tunnel/{tid}/token", token)["result"]
+    CF_TOKEN_FILE.write_text(ttok)
+    os.chmod(CF_TOKEN_FILE, 0o600)
+    tunnel_service(["tunnel", "--no-autoupdate", "run", "--token-file", str(CF_TOKEN_FILE)])
+    set_env(PUBLIC_URL=f"https://{host}", EXPOSE="cloudflare", EXPOSE_TUNNEL=None if name == "l9s" else name,
+            EXPOSE_CF_TUNNEL_ID=tid, EXPOSE_CF_ACCOUNT=acct)
+    restart_proxy()
+    print(f"==> https://{host}/v1 → Cloudflare Tunnel '{name}' ({tid[:8]}…) → l9s (set up with your API token; "
+          "HTTPS by Cloudflare; nothing opened on your router). The API token itself isn't stored.")
+
+
+def expose_cloudflare(name: str | None, host: str | None, api_token: str | None = None) -> None:
+    if host and api_token:
+        return expose_cloudflare_api(name or "l9s", host, api_token)
     install_cloudflared()
     target = f"http://127.0.0.1:{port()}"
     if not host:
@@ -319,7 +393,10 @@ def expose_cloudflare(name: str | None, host: str | None) -> None:
     cert = Path.home() / ".cloudflared" / "cert.pem"
     if not cert.exists():
         raise SystemExit("first sign in to Cloudflare once (opens a browser): cloudflared tunnel login\n"
-                         "then run this again")
+                         "then run this again. No browser on this machine? Use an API token instead:\n"
+                         f"  l9s expose cloudflare --host {host} --api-token <token>   (or CLOUDFLARE_API_TOKEN=…)\n"
+                         "  (dash.cloudflare.com › My Profile › API Tokens: Account › Cloudflare Tunnel › Edit, "
+                         "Zone › DNS › Edit)")
     if name not in run(["cloudflared", "tunnel", "list", "--output", "json"]).stdout:
         run(["cloudflared", "tunnel", "create", name])
     run(["cloudflared", "tunnel", "route", "dns", "--overwrite-dns", name, host])
@@ -437,6 +514,9 @@ def reapply(old_port: str | None = None) -> None:
         run(["brew", "services", "restart", "caddy"]) if IS_MAC else \
             run(["systemctl", "reload-or-restart", "caddy"], sudo=True)
         print(f"==> Caddy now relays https://{host} to port {port()}")
+    elif mode == "cloudflare" and host and e.get("EXPOSE_CF_TUNNEL_ID"):
+        raise SystemExit(f"this tunnel was set up with an API token: run it again with the token so Cloudflare "
+                         f"relays to port {port()}: l9s expose cloudflare --host {host} --api-token <token>")
     elif mode == "cloudflare" and host:
         tunnel_service(["tunnel", "--no-autoupdate", "run", "--url", f"http://127.0.0.1:{port()}",
                         e.get("EXPOSE_TUNNEL") or "l9s"])
@@ -458,7 +538,9 @@ def off() -> None:
 
 def expose_lan() -> None:
     stop_front_end()
-    set_env(PUBLIC_URL=None, EXPOSE=None, BIND=None, EXPOSE_EMAIL=None, EXPOSE_TUNNEL=None)
+    set_env(PUBLIC_URL=None, EXPOSE=None, BIND=None, EXPOSE_EMAIL=None, EXPOSE_TUNNEL=None, EXPOSE_CF_TUNNEL_ID=None,
+            EXPOSE_CF_ACCOUNT=None)
+    CF_TOKEN_FILE.unlink(missing_ok=True)
     restart_proxy()
     sys.path.insert(0, str(Path(__file__).parent))
     try:
@@ -568,7 +650,7 @@ def main(argv: list[str]) -> int:
         expose_caddy(rest[0], opt("--email"))
         set_env(EXPOSE="caddy")
     elif cmd == "cloudflare":
-        expose_cloudflare(opt("--name"), opt("--host"))
+        expose_cloudflare(opt("--name"), opt("--host"), opt("--api-token") or os.environ.get("CLOUDFLARE_API_TOKEN"))
     elif cmd == "tailscale":
         expose_tailscale("--private" in rest)
     elif cmd == "off":

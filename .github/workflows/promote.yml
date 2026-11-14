@@ -1,0 +1,40 @@
+name: Promote betas
+
+# A beta release (it already passed CI and the hardware gate) becomes stable once it's 3 days old and no open issue
+# labelled "regression" names its version. Stable is what new installs and stable-channel updates get.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Promote this tag now (skips the 3-day wait)"
+        required: false
+
+permissions:
+  contents: write
+  issues: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Promote betas that passed their beta period
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FORCE: ${{ inputs.tag }}
+        run: |
+          now=$(date +%s)
+          gh api "repos/$REPO/releases?per_page=30" --jq '.[] | select(.prerelease and (.draft | not)) | "\(.tag_name) \(.created_at)"' \
+            | sort -V | while read -r tag created; do
+            age=$(( (now - $(date -d "$created" +%s)) / 86400 ))
+            v="${tag#v}"
+            regress=$(gh issue list -R "$REPO" --state open --label regression --search "$v" --json number --jq length)
+            if [[ "$tag" == "$FORCE" ]] || [[ $age -ge 3 && $regress -eq 0 ]]; then
+              echo "promoting $tag (age ${age}d, open regressions: $regress)"
+              gh release edit "$tag" -R "$REPO" --prerelease=false --latest
+            else
+              echo "keeping $tag as beta (age ${age}d, open regressions: $regress)"
+            fi
+          done

@@ -90,6 +90,12 @@ def event(kind: str, detail: str, level: str = "info", **extra) -> None:
     ev = {"t": time.time(), "kind": kind, "level": level, "detail": detail, **extra}
     events.append(ev)
     _append(EVENT_LOG, ev)
+    if kind in ("down", "ready", "exit", "switch"):
+        try:
+            import alerts
+            alerts.on_event(kind, detail, switching=bool(globals().get("switching")))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _load_history() -> None:

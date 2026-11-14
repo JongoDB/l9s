@@ -285,6 +285,25 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 State lives in `~/.l9s` (config `env`, `profiles/`, `requests.jsonl`, `events.jsonl`, `logs/`); model weights stay
 in the standard Hugging Face cache, shared with other tools.
 
+## Releases, platforms and compatibility
+
+**Platforms.** *Supported* means tested on real hardware before every release: NVIDIA GB10 / DGX Spark, NVIDIA
+GPUs on Linux (single and multi-GPU) and Apple Silicon Macs. *Experimental* means expected to work but not tested on
+real hardware: AMD ROCm and NVIDIA on WSL2. Any other machine can use l9s in *client mode* (other people's l9s
+servers). `l9s hw` says which this machine is; the installer and the TUI header say so too.
+
+**Releases.** Every release first passes CI and then the hardware gate: the full live test suite (the TUI, the
+setup, the API, Claude Code and Codex sessions) on a GB10 and a Mac. It ships as a **beta**, and becomes **stable**
+after 3 days with no open `regression` issue. New installs and automatic updates get stable. Settings › Updates
+(`l9s config set UPDATE_CHANNEL beta`) gets betas when you update by hand.
+
+**Compatibility (from 1.0).** Versions follow semantic versioning. Within 1.x, settings, `l9s` commands and their
+flags, the API that tools connect to, and the files l9s keeps (config, keys, links, backups) stay compatible:
+- an update never needs you to change anything;
+- a renamed setting is migrated for you;
+- something that goes away is announced in the changelog and in `l9s doctor` at least one minor release before it's
+  removed.
+
 ## Privacy
 
 Everything stays on your machine. The proxy keeps the first ~400 characters of each prompt and response in

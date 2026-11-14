@@ -36,7 +36,7 @@ from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import (Button, Checkbox, DataTable, Footer, Header, Input, Label, Markdown,
-                             Log, OptionList, Select, Sparkline, Static, TabbedContent, TabPane)
+                             Log, OptionList, Select, Sparkline, Static, TabbedContent, TabPane, SelectionList)
 from textual.widgets.option_list import Option
 from textual.widgets._data_table import Column
 
@@ -784,7 +784,8 @@ def reach_current(env: dict) -> str:
 def reach_needs(choice: str) -> list[tuple[str, str, str]]:
     """Inputs a choice needs: (field, label, placeholder)."""
     return {"vpn": [("addr", "VPN address", "this machine's address on the VPN, e.g. 10.8.0.2")],
-            "cloudflare": [("host", "Host name", "e.g. llm.example.com (on your Cloudflare domain)")],
+            "cloudflare": [("host", "Host name", "e.g. llm.example.com (on your Cloudflare domain)"),
+                           ("token", "API token", "optional: no browser here? a Cloudflare API token (Tunnel + DNS edit)")],
             "caddy": [("host", "Host name", "e.g. llm.example.com"),
                       ("email", "Email", "for Let's Encrypt expiry notices (optional)")],
             "own": [("url", "Its URL", "e.g. https://llm.example.com"),
@@ -888,8 +889,8 @@ class ReachDialog(ModalScreen[dict | None]):
         prefill = {"addr": self.vpn[0]["ip"] if self.vpn else ""}
         rows = [Static(f"[b]{REACH_TITLE[self.choice]}[/b]", classes="grp")]
         for fid, label, ph in needs:
-            rows.append(Horizontal(Label(label), Input(value=prefill.get(fid, ""), placeholder=ph, id=f"rd-f-{fid}"),
-                                   classes="fld"))
+            rows.append(Horizontal(Label(label), Input(value=prefill.get(fid, ""), placeholder=ph, id=f"rd-f-{fid}",
+                                                       password=fid == "token"), classes="fld"))
         if self.choice == "vpn" and len(self.vpn) > 1:
             rows.append(Static("[dim]this machine's VPN addresses: " + ", ".join(
                 f"{d['ip']} ({d['kind']}, {d['iface']})" for d in self.vpn) + "[/dim]"))
@@ -1872,6 +1873,8 @@ class LLMTui(App):
                     with Horizontal(classes="frow"):
                         yield Select([("notify", "notify"), ("auto", "auto"), ("off", "off")], value="notify",
                                      allow_blank=False, id="set-update")
+                        yield Select([("stable releases", "stable"), ("beta: every release, sooner", "beta")],
+                                     value="stable", allow_blank=False, id="set-channel")
                         yield Button("Check now", id="set-update-check")
                     yield Static("", id="set-update-info")
                     yield Label("Request log", classes="section")
@@ -1892,6 +1895,20 @@ class LLMTui(App):
                         yield Button("Back up now", id="set-backup-now")
                         yield Button("Restore…", id="set-backup-restore", variant="warning")
                     yield Static("", id="set-backup-info")
+                    yield Label("Alerts", classes="section")
+                    yield Static("[dim]Get told when the server needs you while you're away. Paste a webhook: an ntfy "
+                                 "topic (free phone pushes: https://ntfy.sh/<a-long-random-name>, then subscribe in the "
+                                 "ntfy app), a Slack or Discord incoming webhook, or any URL (gets JSON). Save, then "
+                                 "Send a test. (`l9s config set ALERT_URL …`, `l9s alerts test`)[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Input(id="set-alert-url", placeholder="https://ntfy.sh/your-long-random-topic")
+                        yield Button("Send a test", id="set-alert-test")
+                    yield SelectionList(("server down for 2+ min", "down"), ("server back", "up"),
+                                        ("public address changed", "url"), ("certificate expiring", "cert"),
+                                        ("linked server down", "link"), ("key guessing / abuse", "abuse"),
+                                        ("update failed", "update"), ("disk almost full", "disk"),
+                                        id="set-alert-events")
+                    yield Static("", id="set-alert-info")
                     yield Label("Report a problem", classes="section")
                     yield Static("[dim]Writes one file with what's needed to debug it: versions, hardware, settings, "
                                  "logs, recent events and requests. Keys, tokens and prompt / reply text are left out, "
@@ -2005,7 +2022,8 @@ class LLMTui(App):
         lines = [
             lab("Model:") + clk("tab('local')", val(active_profile() or "-")),
             lab("Deploy:") + val(f"{self.mode()} · {self.backend} · {self.hw.gpus[0].name if self.hw.gpus else 'cpu'}"
-                                 + ("" if self.backend == "remote" else f" ({mode})")),
+                                 + ("" if self.backend == "remote" else f" ({mode})"))
+            + (f" [{K9['orangered']}]experimental[/]" if self.hw.support()[0] == "experimental" else ""),
             lab("Endpoint:") + clk("connect", val(self.endpoint)),
             lab("Status:") + clk("tab('server')", val(f"● {badge}", color)) + (f" {val('in flight ' + str(px['active']))}" if px and px.get("active") else ""),
             lab("Server:") + clk("tab('settings')", val(s.get("image") or self.server_name())),
@@ -2080,7 +2098,11 @@ class LLMTui(App):
         self.update_info = updater.cached(max_age=10 ** 9)
         self.check_updates()
         self.set_timer(20, self.check_optimizable)
-        if not load_env().get("SETUP_DONE") and not os.environ.get("L9S_SKIP_SETUP"):
+        if os.environ.get("L9S_SETUP_AFTER_MODE") and not load_env().get("SETUP_DONE"):
+            # the installer already asked what the device is for: carry on from there
+            self.write_env({"SETUP_DONE": "1"})
+            self.set_timer(0.6, lambda: self.setup_next(self.mode()))
+        elif not load_env().get("SETUP_DONE") and not os.environ.get("L9S_SKIP_SETUP"):
             self.set_timer(0.6, self.action_setup)
         self.set_interval(6 * 3600, self.check_updates)
 
@@ -3126,12 +3148,20 @@ class LLMTui(App):
             return "1" if w.value else "0"
         if isinstance(w, Select):
             return str(w.value)
+        if isinstance(w, SelectionList):
+            sel = set(w.selected)
+            return ",".join(str(o.value) for o in w._options if o.value in sel)  # in the list's own order
         return w.value.strip()
 
     def w_set(self, wid: str, value: str) -> None:
         w = self.query_one(wid)
         if isinstance(w, Checkbox):
             w.value = value != "0"
+        elif isinstance(w, SelectionList):
+            want = {x.strip() for x in value.split(",") if x.strip()}
+            w.deselect_all()
+            for x in want:
+                w.select(x)
         elif isinstance(w, Select):
             opts = [o[1] for o in w._options]
             w.value = value if value in opts else reg.BY_KEY[next(k.key for k in reg.SETTINGS if k.widget == wid)].default
@@ -3173,7 +3203,7 @@ class LLMTui(App):
         except Exception:
             return []
         cur = load_env()
-        return [k for k in v if v[k] != reg.get(cur, k)]
+        return [k for k in v if not reg.same(k, v[k], reg.get(cur, k))]
 
     def server_pending(self) -> list[str]:
         """Saved settings the running model server doesn't use yet."""
@@ -3188,6 +3218,8 @@ class LLMTui(App):
     @on(Select.Changed, "#set-update")
     @on(Select.Changed, "#set-switch")
     @on(Select.Changed, "#set-spec")
+    @on(Select.Changed, "#set-channel")
+    @on(SelectionList.SelectedChanged, "#set-alert-events")
     def settings_changed(self, *_) -> None:
         v = self.settings_values()
         try:
@@ -3276,7 +3308,7 @@ class LLMTui(App):
             self.notify("fix the settings first: " + "; ".join(probs), severity="error")
             return False
         before = load_env()
-        changed = {k: val for k, val in v.items() if val != reg.get(before, k)}  # only what you changed
+        changed = {k: val for k, val in v.items() if not reg.same(k, val, reg.get(before, k))}  # only what changed
         if not changed:
             self.notify("nothing to save")
             return True
@@ -3379,19 +3411,51 @@ class LLMTui(App):
 
     def setup_model(self, mode: str) -> None:
         if not active_profile():
-            def model(ok):
-                if ok:
-                    self.goto_tab("hub")
-                if mode == "shared":
-                    self.set_timer(0.5, self.setup_keys)
-            self.push_screen(Confirm("[b]Serve a model[/b]\n\nNo model is set up yet. Open the Hub to pick one? (Enter "
-                                     "on a model shows the recommended settings for this machine; or run `l9s "
-                                     "quickstart` for a good default.)", "Open the Hub", danger=False, cancel="Later"),
-                             model)
+            self.notify("finding the best model for this machine…", timeout=4)
+            self._recommend(mode)
         elif mode == "shared":
             self.setup_keys()
         else:
             self.notify("Personal mode: tools on this machine connect in Connect (2).", title="All set", timeout=8)
+
+    @work(thread=True, exclusive=True, group="recommend")
+    def _recommend(self, mode: str) -> None:
+        """One recommended model for this machine (the curated starters), offered with its size and speed."""
+        r = subprocess.run([str(Path(__file__).parent / ".venv" / "bin" / "python"),
+                            str(Path(__file__).with_name("hfmeta.py")), "starter", "--json"],
+                           capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
+        try:
+            rec = json.loads(r.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError):
+            rec = None
+        self.call_from_thread(self._offer_model, mode, rec)
+
+    def _offer_model(self, mode: str, rec: dict | None) -> None:
+        def after():
+            if mode == "shared":
+                self.set_timer(0.5, self.setup_keys)
+
+        def chose(c):
+            if c == "serve" and rec:
+                self.goto_tab("server")
+                self.run_llm(["quickstart", rec["repo"]], f"{rec['repo']} is being served")
+            elif c == "hub":
+                self.goto_tab("hub")
+            after()
+        if not rec:
+            self.push_screen(Choice("[b]Serve a model[/b]\n\nl9s couldn't work out a recommendation right now (no "
+                                    "network?). Pick one in the Hub: Enter on a model shows what fits this machine.",
+                                    [("hub", "Open the Hub", "primary"), ("later", "Later", "default")]), chose)
+            return
+        speed = rec.get("speed")
+        self.push_screen(Choice(
+            f"[b]Serve a model[/b]\n\nRecommended for this machine: [b]{rec['repo']}[/b]\n"
+            f"  download: {rec['download_gb']:.0f} GB (once; it stays on disk)"
+            + (f"\n  context: {rec['ctx'] // 1024}K tokens" if rec.get("ctx") else "")
+            + (f"\n  speed: about {speed[0]:.0f} tokens/s for one conversation, measured on {speed[1]}" if speed else "")
+            + "\n\nl9s picks the settings (and a draft model for speed where one fits). You can switch models any time "
+              "in the Hub.", [("serve", "Download & serve", "primary"), ("hub", "Pick another", "default"),
+                              ("later", "Later", "default")]), chose)
 
     def setup_keys(self) -> None:
         def go(ok):
@@ -3441,6 +3505,20 @@ class LLMTui(App):
     def action_doctor(self) -> None:
         import doctor
         self.push_screen(HealthModal(doctor.load()))
+
+    # ------------------------------------------------------------ alerts
+    @on(Button.Pressed, "#set-alert-test")
+    def alert_test(self) -> None:
+        if "ALERT_URL" in self.settings_dirty():
+            self.notify("Save first, then Send a test", severity="warning")
+            return
+        self._alert_test()
+
+    @work(thread=True, exclusive=True, group="alerts")
+    def _alert_test(self) -> None:
+        r = subprocess.run([LLM_BIN, "alerts", "test"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.call_from_thread(self.query_one("#set-alert-info", Static).update,
+                              rich_escape((r.stdout + r.stderr).strip()))
 
     # ------------------------------------------------------------ report a problem (l9s report)
     @on(Button.Pressed, "#set-report")
@@ -3601,8 +3679,12 @@ class LLMTui(App):
             else:
                 vpn = hw.vpn_addresses() if choice == "vpn" else []
                 host.value = vpn[0]["ip"] if vpn else ""
-        email.display = choice == "caddy"
-        email.placeholder = "email for Let's Encrypt notices (optional)"
+        email.display = choice in ("caddy", "cloudflare")
+        email.password = choice == "cloudflare"
+        email.placeholder = ("Cloudflare API token (optional: for a machine without a browser)" if choice == "cloudflare"
+                             else "email for Let's Encrypt notices (optional)")
+        if choice == "cloudflare":
+            email.value = ""
         desc = next(d for r, _, _, d in REACH if r == choice)
         vpn = ", ".join(f"{d['ip']} ({d['kind']})" for d in hw.vpn_addresses()) if choice == "vpn" else ""
         self.query_one("#set-expose-info", Static).update(
@@ -3629,6 +3711,8 @@ class LLMTui(App):
         v = {key: host}
         if choice == "caddy" and email:
             v["email"] = email
+        if choice == "cloudflare" and email:
+            v["token"] = email
         if choice == "own" and load_env().get("TRUST_PROXY"):
             v["trust"] = load_env()["TRUST_PROXY"]
         return v
@@ -3652,7 +3736,8 @@ class LLMTui(App):
         def cb(ok):
             if ok:
                 self.goto_tab("settings")
-                self._run_expose(reach_args(choice, res), then)
+                self._run_expose(reach_args(choice, res), then, secret_env={"CLOUDFLARE_API_TOKEN": res["token"]}
+                                 if res.get("token") else None)
             elif then:
                 then()
         self.push_screen(Confirm(f"[b]{what}[/b]\n\n" + next(d for r, _, _, d in REACH if r == choice).format(
@@ -3720,12 +3805,12 @@ class LLMTui(App):
         self.call_from_thread(show)
 
     @work(thread=True, exclusive=True, group="expose")
-    def _run_expose(self, args: list[str], then=None) -> None:
+    def _run_expose(self, args: list[str], then=None, secret_env: dict | None = None) -> None:
         info = self.query_one("#set-expose-info", Static)
-        lines = [f"[dim]$ l9s expose {' '.join(args)}[/dim]"]
+        lines = [f"[dim]$ l9s expose {' '.join(args)}" + (" (with your API token)" if secret_env else "") + "[/dim]"]
         self.call_from_thread(info.update, "\n".join(lines + ["[dim]working…[/dim]"]))
         p = subprocess.Popen([LLM_BIN, "expose", *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                             stdin=subprocess.DEVNULL, errors="replace")
+                             stdin=subprocess.DEVNULL, errors="replace", env={**os.environ, **(secret_env or {})})
         for line in p.stdout:
             if line.strip() and "Usage:" not in line and not line.startswith("relay: "):
                 lines.append(rich_escape(line.rstrip()))

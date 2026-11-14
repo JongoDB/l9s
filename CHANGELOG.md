@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.0
+- **Alerts** when the server needs you while you're away. Set them up in Settings › Alerts, or with `l9s config set ALERT_URL …` and `l9s alerts test`. Messages fit where they go: an ntfy topic gets free phone pushes, Slack and Discord webhooks get chat messages, and any other URL gets JSON. You choose which events alert:
+  - the server down for 2+ minutes (model switches don't count), and back up;
+  - the public address changed;
+  - the certificate is expiring;
+  - a linked server is down;
+  - someone is guessing keys;
+  - an update failed;
+  - the disk is almost full.
+- **Release channels.** Every release is a beta first: it passed CI and the hardware gate, the full live suite on a GB10 and a Mac. It becomes stable after 3 days with no open regression issue. Settings › Updates › stable / beta (`UPDATE_CHANNEL`); automatic updates only ever install stable.
+- **Cloudflare Tunnel on your domain without a browser:** paste a Cloudflare API token (Settings › Access, or `l9s expose cloudflare --host … --api-token …`). l9s creates the tunnel, its routing and the DNS record through the Cloudflare API. Only the tunnel's own token is kept, readable only by you, and the API token isn't stored.
+- **Setup suggests one model** for this machine: its download size, its context, and its speed where measured. **Download & serve** starts it. An interactive install now opens the TUI to finish setting up instead of downloading a model on its own.
+- **Platform labels:** `l9s hw`, the installer and the TUI header say whether this machine is supported, experimental (AMD ROCm, WSL2) or client-only. The README documents the support levels and the compatibility promise for 1.x.
+- **CI:** `l9s expose caddy` gets a real certificate from Pebble, Let's Encrypt's test server, and HTTPS through Caddy reaches l9s.
+
 ## 0.13.0
 - **Health.** `l9s doctor` checks everything and says what's wrong, why, and how to fix it. The **Fix** buttons in the TUI's Health window (click the ● in the header, or `:doctor`) run the same thing as `l9s doctor --fix`. The checks:
   - **Server:** is the server up and its model loaded, or is it stuck loading?

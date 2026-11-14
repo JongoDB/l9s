@@ -1225,6 +1225,12 @@ STARTERS = {
 }
 
 
+# measured on our own hardware by the release gate: (tokens/s for one conversation, where)
+STARTER_SPEED: dict[str, tuple[float, str]] = {
+    "mlx-community/Qwen3-8B-4bit": (160, "an M-series Mac, with its draft model"),
+}
+
+
 # ======================================================================= CLI (used by `l9s pull` / `l9s info`)
 SPEED_FLAGS = ("--speculative-config", "--max-num-batched-tokens", "--draft-model", "--num-draft-tokens")
 
@@ -1305,7 +1311,7 @@ def _cli() -> None:
     if len(sys.argv) >= 2 and sys.argv[1] == "optimize":
         return _cli_optimize(sys.argv[2:])
     if not (len(sys.argv) == 3 and sys.argv[1] in ("exclude", "report", "serveargs")
-            or len(sys.argv) == 2 and sys.argv[1] == "starter"):
+            or len(sys.argv) in (2, 3) and sys.argv[1] == "starter"):
         print("usage: hfmeta.py exclude|report|serveargs <org/repo>  |  hfmeta.py starter", file=sys.stderr)
         sys.exit(2)
     env = envfile.read(L9S_HOME / "env")
@@ -1324,7 +1330,11 @@ def _cli() -> None:
             for repo in STARTERS["mlx" if backend == "mlx" else "vllm"]:
                 A = analysis(repo)
                 if not A["blockers"] and (A["ctx"] or 0) >= 16384:
-                    print(repo)
+                    if "--json" in sys.argv:
+                        print(json.dumps({"repo": repo, "download_gb": round((A.get("weights") or 0) / 1e9, 1),
+                                          "ctx": A.get("ctx"), "speed": STARTER_SPEED.get(repo)}))
+                    else:
+                        print(repo)
                     return
                 print(f"skip {repo}: {'; '.join(A['blockers']) or 'not enough memory for 16K context'}", file=sys.stderr)
             sys.exit(1)

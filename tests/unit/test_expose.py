@@ -134,3 +134,43 @@ def test_config_checks_and_saves(ex, monkeypatch, capsys):
     assert cfg.main(["set", "PUBLIC_URL", "https://x.y"]) == 1 and "l9s expose" in capsys.readouterr().err
     assert cfg.main(["set", "MODEL_SWITCH", "off", "LOG_PROMPTS", "0"]) == 0
     assert "MODEL_SWITCH=off" in mod.ENV.read_text() and "LOG_PROMPTS=0" in mod.ENV.read_text()
+
+
+def test_cloudflare_api_token_path(quiet, monkeypatch):
+    mod, calls = quiet
+    seen = []
+
+    def fake_cf(method, path, token, body=None):
+        seen.append((method, path.split("?")[0], body))
+        assert token == "cf-test-token"
+        if path.startswith("/zones?"):
+            return {"result": [{"id": "z1", "name": "example.com", "account": {"id": "a1"}},
+                               {"id": "z2", "name": "other.org", "account": {"id": "a1"}}]}
+        if "/cfd_tunnel?" in path:
+            return {"result": []}
+        if method == "POST" and path.endswith("/cfd_tunnel"):
+            return {"result": {"id": "tid-123"}}
+        if path.endswith("/token"):
+            return {"result": "TUNNELTOKEN"}
+        if "/dns_records?" in path:
+            return {"result": []}
+        return {"result": {}}
+    svc = []
+    monkeypatch.setattr(mod, "cf", fake_cf)
+    monkeypatch.setattr(mod, "install_cloudflared", lambda: None)
+    monkeypatch.setattr(mod, "tunnel_service", lambda args: svc.append(args))
+    mod.expose_cloudflare("l9s", "llm.example.com", "cf-test-token")
+    paths = [(m, p) for m, p, _ in seen]
+    assert ("PUT", "/accounts/a1/cfd_tunnel/tid-123/configurations") in paths
+    ingress = next(b for m, p, b in seen if p.endswith("/configurations"))["config"]["ingress"]
+    assert ingress[0] == {"hostname": "llm.example.com", "service": "http://127.0.0.1:8123"}
+    dns = next(b for m, p, b in seen if m == "POST" and p.endswith("/dns_records"))
+    assert dns["content"] == "tid-123.cfargotunnel.com" and dns["proxied"] and dns["name"] == "llm.example.com"
+    tok = mod.CF_TOKEN_FILE
+    assert tok.read_text() == "TUNNELTOKEN" and oct(tok.stat().st_mode & 0o777) == "0o600"
+    assert svc[-1][-2:] == ["--token-file", str(tok)] and "TUNNELTOKEN" not in " ".join(svc[-1])
+    e = mod.env()
+    assert e["PUBLIC_URL"] == "https://llm.example.com" and e["EXPOSE"] == "cloudflare" and "cf-test-token" not in \
+        mod.ENV.read_text()
+    with pytest.raises(SystemExit, match="covers x.nope.net"):
+        mod.expose_cloudflare("l9s", "x.nope.net", "cf-test-token")

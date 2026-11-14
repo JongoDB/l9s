@@ -7,6 +7,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ ACTION_WIDGETS = {"set-expose-host", "set-expose-email", "set-mode", "set-backup
 def form_widgets():
     """Every Input / Select / Checkbox with a set-* id in tui.py."""
     out = set()
-    for m in re.finditer(r"(Input|Select|Checkbox)\(", TUI):
+    for m in re.finditer(r"\b(Input|Select|SelectionList|Checkbox)\(", TUI):
         chunk = TUI[m.end() - 1: m.end() + 600]
         depth, end = 0, None
         for i, ch in enumerate(chunk):
@@ -240,3 +241,72 @@ def test_report_removes_secrets():
     assert "llm.example.com" in out
     anon = report.scrub(text, known, anonymize=True)
     assert "llm.example.com" not in anon and "192.168.1.5" not in anon and "<host1>" in anon
+
+
+
+# ---------------------------------------------------------------- alerts
+def test_alert_formats_and_delivery(tmp_path, monkeypatch):
+    import http.server
+    import json as _json
+    import threading
+    got = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            got.append((self.path, dict(self.headers), self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    monkeypatch.setenv("L9S_HOME", str(tmp_path))
+    (tmp_path / "env").write_text("PUBLIC_URL=https://llm.example.com\n")
+    for mod in ("envfile", "alerts"):
+        sys.modules.pop(mod, None)
+    al = importlib.import_module("alerts")
+    assert al.kind_of("https://hooks.slack.com/services/x") == "slack"
+    assert al.kind_of("https://discord.com/api/webhooks/1/x") == "discord"
+    assert al.kind_of("https://ntfy.sh/topic") == "ntfy" and al.kind_of("https://example.com/hook") == "json"
+    al.send("down", "it broke", base + "/json")
+    path, headers, body = got[-1]
+    d = _json.loads(body)
+    assert d["event"] == "down" and d["message"] == "it broke" and d["server"] == "https://llm.example.com"
+    al.send("down", "it broke", base + "/ntfy/topic")
+    path, headers, body = got[-1]
+    assert body == b"it broke" and headers["Priority"] == "high" and "l9s" in headers["Title"]
+    srv.shutdown()
+
+
+def test_alert_down_needs_two_minutes_and_skips_switches(tmp_path, monkeypatch):
+    monkeypatch.setenv("L9S_HOME", str(tmp_path))
+    (tmp_path / "env").write_text("ALERT_URL=https://x.example/hook\n")
+    for mod in ("envfile", "alerts"):
+        sys.modules.pop(mod, None)
+    al = importlib.import_module("alerts")
+    sent = []
+    monkeypatch.setattr(al, "send", lambda ev, msg, url=None, timeout=10: sent.append(ev))
+    monkeypatch.setattr(al, "DOWN_AFTER", 0.2)
+    al.on_event("down", "x", switching=True)  # a model switch: never an alert
+    time.sleep(0.4)
+    assert sent == []
+    al.on_event("down", "x")
+    al.on_event("ready", "back")  # back before 2 min: nothing
+    time.sleep(0.4)
+    assert sent == []
+    al.on_event("down", "x")
+    time.sleep(0.4)
+    al.on_event("ready", "back")
+    assert sent == ["down", "up"]
+    (tmp_path / "env").write_text("ALERT_URL=https://x.example/hook\nALERT_EVENTS=up\n")
+    al.on_event("down", "x")
+    time.sleep(0.4)
+    al.on_event("ready", "back")
+    assert sent == ["down", "up", "up"]  # down not wanted, up still sent
+
+
+def test_list_settings_compare_as_sets():
+    assert reg.same("ALERT_EVENTS", "down,up,url", "url, down,up") and not reg.same("ALERT_EVENTS", "down", "up")
+    assert not reg.same("PORT", "8000", "8000 ")

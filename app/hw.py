@@ -18,11 +18,19 @@ import platform
 import re
 import shutil
 import subprocess
+from pathlib import Path
 from dataclasses import dataclass, field
 
 UNIFIED_NAMES = re.compile(r"GB10|Thor|Orin|Xavier|MI300A|Radeon 8060S|Strix Halo", re.I)
 NVIDIA_IMAGE = "vllm/vllm-openai:v0.33.0"
 AMD_IMAGE = "rocm/vllm:latest"  # experimental: set IMAGE in ~/.l9s/env to the ROCm vLLM image you use
+
+
+def _read(path: str) -> str:
+    try:
+        return Path(path).read_text()
+    except OSError:
+        return ""
 
 
 def _run(cmd: list[str], timeout: float = 10) -> str:
@@ -102,6 +110,21 @@ class Hardware:
         if self.vendor == "amd":
             tags |= {"rocm", "mi300", "mi300x", "mi325x", "mi355x", "amd"}
         return {t for t in tags if len(t) >= 3}
+
+    def support(self) -> tuple[str, str]:
+        """(supported | experimental | client, what that means) for this machine: supported platforms are tested on
+        real hardware before every release; experimental ones are expected to work but aren't."""
+        wsl = "microsoft" in _read("/proc/version").lower()
+        if self.vendor == "apple":
+            return "supported", "Apple Silicon (mlx-lm)"
+        if self.vendor == "nvidia" and wsl:
+            return "experimental", "NVIDIA on WSL2 (Windows): expected to work, not tested on real hardware yet"
+        if self.vendor == "nvidia":
+            return "supported", ("NVIDIA unified memory (GB10 / DGX Spark)" if self.unified else
+                                 f"NVIDIA on Linux ({len(self.gpus)} GPU{'s' if len(self.gpus) != 1 else ''})")
+        if self.vendor == "amd":
+            return "experimental", "AMD ROCm: expected to work, not tested on real hardware yet"
+        return "client", "no GPU l9s can serve models with: use other l9s servers (client mode)"
 
     @property
     def backend(self) -> str:
@@ -311,6 +334,8 @@ if __name__ == "__main__":
             print(f"GPU_ARGS={shlex.quote(' '.join(h.docker_gpu_args()))}")
             print(f"IMAGE={shlex.quote(h.default_image())}")
     else:
+        lvl, what = h.support()
+        print(f"support: {lvl}: {what}")
         print(f"backend: {h.backend}\nvendor:  {h.vendor}\narch:    {h.arch}\ngpus:    {h.label()}\nunified: {h.unified}\n"
               f"pool:    {h.pool_per_gpu() / 1e9:.0f} GB per GPU (what GPU_MEM is a fraction of)\n"
               f"docker:  {' '.join(h.docker_gpu_args()) or '(no GPU args)'}\ntags:    {sorted(h.card_tags())}")

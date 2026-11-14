@@ -232,7 +232,10 @@ l9s keys add alice                # keys for other people
 | `IDENTITY_NOTE` | Coding agents | 1: coding agents get one line telling the model which model it really is · 0: off | right away |
 | `LOG_PROMPTS` | Request log | 1: keep short prompt / reply previews in the request log · 0: off | right away (proxy restarts) |
 | `UPDATE_MODE` | Updates | notify: tell you about new versions · auto: install them · off | right away |
+| `UPDATE_CHANNEL` | Updates | stable: releases that passed a few days as beta · beta: every release as soon as it passes the hardware tests (automatic updates stay on stable) | right away |
 | `TRUST_PROXY` | How other devices reach this server | tunnels / reverse proxies on other machines whose client addresses l9s believes | right away (proxy restarts) |
+| `ALERT_URL` | Alerts | a webhook for alerts when the server needs you: ntfy (phone push), Slack, Discord, or any URL (JSON) | right away |
+| `ALERT_EVENTS` | Alerts | which alerts: down, up, url, cert, link, abuse, update, disk | right away |
 | `GPU_MEM` | Memory for vLLM (GPU_MEM) | fraction of GPU memory vLLM may use (vllm only) | when the model server restarts |
 | `IMAGE` | vLLM image | the vLLM Docker image (vllm only) | when the model server restarts |
 | `GPU_ARGS` | Advanced | how Docker gets the GPUs (NVIDIA: --gpus all; AMD: --device=/dev/kfd --device=/dev/dri …) (vllm only) | when the model server restarts |
@@ -244,6 +247,8 @@ l9s keys add alice                # keys for other people
 | `BIND` | How other devices reach this server | set with `l9s expose local / lan` | right away |
 | `EXPOSE_EMAIL` | How other devices reach this server | set with `l9s expose caddy` | right away |
 | `EXPOSE_TUNNEL` | How other devices reach this server | set with `l9s expose cloudflare --name` | right away |
+| `EXPOSE_CF_TUNNEL_ID` | How other devices reach this server | set with `l9s expose cloudflare --api-token` | right away |
+| `EXPOSE_CF_ACCOUNT` | How other devices reach this server | set with `l9s expose cloudflare --api-token` | right away |
 <!-- end settings table -->
 
 l9s keeps these in `~/.l9s/env` (readable only by you) and writes that file itself; there's no need to edit it.
