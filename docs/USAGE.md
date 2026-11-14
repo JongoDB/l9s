@@ -248,6 +248,17 @@ l9s keys add alice                # keys for other people
 
 l9s keeps these in `~/.l9s/env` (readable only by you) and writes that file itself; there's no need to edit it.
 
+### Backups
+
+l9s backs up your setup before every update, mode or access change and uninstall: settings, keys, linked servers,
+your tools' l9s setup, model profiles and the one being served (not the models themselves). It keeps the newest 10 in
+`~/.l9s-backups`. Settings › Backups lists them; **Restore** puts one back and sets it up again (the way in, the
+model). From the command line: `l9s backup` (list), `l9s backup now`, `l9s restore [<id>]`.
+
+`l9s uninstall` leaves your setup and backups in place, so installing again picks everything back up; `--purge`
+removes them too. A new install on a machine with backups but no setup asks whether to restore the last one
+(`--restore [<id>]` / `--no-restore` to decide up front).
+
 ## Using it from clients
 
 ```bash

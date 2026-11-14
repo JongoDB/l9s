@@ -67,8 +67,10 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
                                          (shortcuts: l9s claude, l9s codex, l9s opencode, …)
   tui                                    open the terminal UI
   update [--check] [-y]                  check for / install a newer l9s (and mlx-lm on a Mac)
-  uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
-                                         remove l9s (downloaded models stay unless --remove-models)
+  backup [now|list] | restore [<id>]     backups of your setup (taken before updates, mode / access changes,
+                                         uninstall) and bringing one back
+  uninstall [-y] [--purge] [--remove-models] [--remove-image]
+                                         remove l9s; your setup stays for a reinstall unless --purge
 
 deployment: $BACKEND   endpoint: $(endpoint)/v1
 EOF
@@ -266,6 +268,8 @@ case "$cmd" in
   mode) exec "$PY" "$APP/mode.py" "$@" ;;
   link|links) exec "$PY" "$APP/links.py" "$@" ;;
   config) exec "$PY" "$APP/config.py" "$@" ;;
+  backup|backups) exec "$PY" "$APP/backup.py" "$@" ;;
+  restore) exec "$PY" "$APP/backup.py" restore "$@" ;;
   quickstart)
     repo="${1:-}"
     if [[ -z "$repo" ]]; then
@@ -375,6 +379,7 @@ case "$cmd" in
       [[ "$ans" == [yY]* ]] || { echo "cancelled"; exit 1; }
     fi
     mlx_before=""; [[ "$BACKEND" == "mlx" ]] && mlx_before="$("$PY" -c 'from importlib.metadata import version; print(version("mlx-lm"))' 2>/dev/null || true)"
+    "$PY" "$APP/backup.py" now "update from $(cat "$APP/VERSION")" >/dev/null 2>&1 || true
     echo "==> updating l9s"
     curl -fsSL "https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh" | bash -s -- --update || die "update failed (your install is unchanged where the step failed; see above)"
     if [[ "$BACKEND" == "mlx" ]]; then
@@ -392,11 +397,12 @@ case "$cmd" in
     "$PY" "$APP/updater.py" check --force --quiet || true
     echo "==> l9s is now $(cat "$APP/VERSION")" ;;
   uninstall)
-    yes=0 keep=0 rmmodels=0 rmimage=0
+    yes=0 keep=1 rmmodels=0 rmimage=0
     while [[ $# -gt 0 ]]; do
       case "$1" in
-        -y|--yes) yes=1 ;; --keep-config) keep=1 ;; --remove-models) rmmodels=1 ;; --remove-image) rmimage=1 ;;
-        *) die "usage: l9s uninstall [-y] [--keep-config] [--remove-models] [--remove-image]" ;;
+        -y|--yes) yes=1 ;; --keep-config) keep=1 ;; --purge) keep=0 ;;
+        --remove-models) rmmodels=1 ;; --remove-image) rmimage=1 ;;
+        *) die "usage: l9s uninstall [-y] [--purge] [--remove-models] [--remove-image]" ;;
       esac; shift
     done
     repos=()
@@ -404,8 +410,8 @@ case "$cmd" in
     echo "This removes l9s from this machine:"
     echo "  - the model server ($([[ "$BACKEND" == "mlx" ]] && echo "launchd agent $LABEL" || echo "container $CONTAINER"))"
     echo "  - the request proxy service, the l9s command"
-    [[ $keep -eq 1 ]] && echo "  - $L9S_HOME/{app,bin,src,cache,logs} (settings, profiles and history are kept)" \
-                      || echo "  - $L9S_HOME (settings, API key, profiles, request history)"
+    [[ $keep -eq 1 ]] && echo "  - the program files in $L9S_HOME (your settings, keys, linked servers, profiles and history stay: a reinstall picks them up; --purge removes them too)" \
+                      || echo "  - $L9S_HOME and its backups (settings, API key, keys, linked servers, profiles, history)"
     [[ $rmmodels -eq 1 && ${#repos[@]} -gt 0 ]] && echo "  - downloaded models used by your profiles: ${repos[*]}"
     [[ $rmimage -eq 1 && "$BACKEND" == "vllm" ]] && echo "  - the Docker image $IMAGE"
     [[ $rmmodels -eq 0 ]] && echo "Downloaded models stay in $HF_CACHE (add --remove-models to delete the ones your profiles use)."
@@ -414,6 +420,7 @@ case "$cmd" in
       read -r -p "Continue? [y/N] " ans < /dev/tty
       [[ "$ans" == [yY]* ]] || { echo "cancelled"; exit 1; }
     fi
+    [[ -x "$PY" ]] && "$PY" "$APP/backup.py" now uninstall >/dev/null 2>&1 || true
     # whatever `l9s expose` set up (tunnel service, Tailscale Funnel / Serve, the Caddy site): undone first
     if [[ -x "$PY" && -n "${EXPOSE:-}${PUBLIC_URL:-}" ]]; then
       "$PY" -c "import sys; sys.path.insert(0, '$APP'); import expose; expose.stop_front_end()" 2>/dev/null || true
@@ -456,15 +463,15 @@ PYEOF2
       fi
     done
     if [[ $keep -eq 1 ]]; then
-      rm -rf "$L9S_HOME/app" "$L9S_HOME/bin" "$L9S_HOME/src" "$L9S_HOME/cache" "$L9S_HOME/logs" \
-             "$L9S_HOME/downloads" "$L9S_HOME/active"
+      rm -rf "$L9S_HOME/app" "$L9S_HOME/bin" "$L9S_HOME/src" "$L9S_HOME/logs" "$L9S_HOME/downloads"
+      find "$L9S_HOME/cache" -mindepth 1 ! -name usage.json -delete 2>/dev/null || true  # (per-key usage stays)
     else
-      rm -rf "$L9S_HOME"
+      rm -rf "$L9S_HOME" "${L9S_HOME}-backups"
     fi
     left="uv and the hf CLI (~/.local/bin)"
     [[ $rmmodels -eq 0 ]] && left+=", downloaded models ($HF_CACHE)"
     [[ $rmimage -eq 0 && "$BACKEND" == "vllm" ]] && left+=", the vLLM Docker image"
-    [[ $keep -eq 1 ]] && left+=", your settings/profiles/history in $L9S_HOME"
+    [[ $keep -eq 1 ]] && left+=", your setup in $L9S_HOME and backups in ${L9S_HOME}-backups (reinstalling picks it up)"
     echo "==> l9s uninstalled. Left in place: $left."
     exit 0 ;;
   help|-h|--help) usage ;;

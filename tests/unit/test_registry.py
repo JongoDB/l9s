@@ -22,7 +22,7 @@ EXPOSE = (APP / "expose.py").read_text()
 DOCS = (ROOT / "docs" / "USAGE.md").read_text()
 
 # Settings-tab widgets that run an action rather than holding a config value
-ACTION_WIDGETS = {"set-expose-host", "set-expose-email", "set-mode"}
+ACTION_WIDGETS = {"set-expose-host", "set-expose-email", "set-mode", "set-backup-pick"}
 
 
 def form_widgets():
@@ -137,3 +137,68 @@ def test_migration_drops_leftovers_only(tmp_path):
     e = envfile.read(p)
     assert e == {"CONFIG_VERSION": str(reg.CONFIG_VERSION), "BACKEND": "mlx", "API_KEY": "k", "PORT": "8000",
                  "CONTAINER": "mine"}  # a value you chose stays, even where it's unused
+
+
+# ---------------------------------------------------------------- backups
+def test_backup_and_restore_round_trip(tmp_path, monkeypatch):
+    home = tmp_path / ".l9s"
+    (home / "profiles").mkdir(parents=True)
+    monkeypatch.setenv("L9S_HOME", str(home))
+    for mod in ("envfile", "backup"):
+        sys.modules.pop(mod, None)
+    bk = importlib.import_module("backup")
+    (home / "env").write_text("API_KEY=k\nMODE=shared\nPUBLIC_URL=https://x.example\nEXPOSE=own\n")
+    (home / "keys.json").write_text('{"alice": {"hash": "h"}}')
+    (home / "links.json").write_text('{"gb1": {"url": "https://g", "key": "s"}}')
+    (home / "profiles" / "m1").write_text("org/m1\n")
+    (home / "active").symlink_to(home / "profiles" / "m1")
+    p = bk.backup("test")
+    assert p and stat.S_IMODE(os.stat(p).st_mode) == 0o600
+    e = bk.find()
+    assert e["mode"] == "shared" and e["reach"] == "own" and e["profile"] == "m1" and e["keys"] == 1
+    assert e["links"] == ["gb1"]
+    # everything goes away (an uninstall --purge of ~/.l9s, say), then comes back
+    import shutil
+    shutil.rmtree(home)
+    home.mkdir()
+    bk.restore("latest", apply=False)
+    assert envfile.read(home / "env")["PUBLIC_URL"] == "https://x.example"
+    assert (home / "keys.json").read_text() == '{"alice": {"hash": "h"}}'
+    assert os.readlink(home / "active").endswith("profiles/m1")
+    assert stat.S_IMODE(os.stat(home / "links.json").st_mode) == 0o600
+
+
+def test_backups_keep_the_newest_ten(tmp_path, monkeypatch):
+    home = tmp_path / ".l9s"
+    home.mkdir()
+    monkeypatch.setenv("L9S_HOME", str(home))
+    for mod in ("envfile", "backup"):
+        sys.modules.pop(mod, None)
+    bk = importlib.import_module("backup")
+    (home / "env").write_text("API_KEY=k\n")
+    for i in range(13):
+        bk.backup(f"n{i}")
+    es = bk.entries()
+    assert len(es) == 10 and es[0]["reason"] == "n12"
+
+
+def test_restore_refuses_a_tampered_archive(tmp_path, monkeypatch):
+    import io
+    import tarfile
+    home = tmp_path / ".l9s"
+    home.mkdir()
+    monkeypatch.setenv("L9S_HOME", str(home))
+    for mod in ("envfile", "backup"):
+        sys.modules.pop(mod, None)
+    bk = importlib.import_module("backup")
+    d = bk.store()
+    d.mkdir()
+    with tarfile.open(d / "20990101-000000.tar.gz", "w:gz") as t:
+        man = b'{"time": 1, "version": "x", "reason": "r", "mode": "personal", "reach": "lan"}'
+        for name, data in (("manifest.json", man), ("../evil", b"x")):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+    with pytest.raises(SystemExit, match="unexpected entry"):
+        bk.restore("latest", apply=False)
+    assert not (tmp_path / "evil").exists()

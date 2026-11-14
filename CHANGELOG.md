@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.0
+- **Backups.** l9s backs up your setup before every update, mode or access change and uninstall, and keeps the newest 10 in `~/.l9s-backups` (readable only by you). A backup holds your settings, keys, linked servers, your tools' l9s setup, model profiles and which one was served, and per-key usage. **Restore** is in Settings › Backups or `l9s restore [<id>]`. It backs up what's there first, puts the backup back, then sets up the way in again and starts the model it was serving. `l9s backup now` takes one any time.
+- **Uninstalling keeps your setup.** `l9s uninstall` removes the program, services and model server, and leaves your setup and backups behind. Installing again picks it all back up, including the served model and the way in. `--purge` removes the setup and backups too.
+- **A new install offers your previous setup.** When the setup is gone but backups exist (say `~/.l9s` was deleted), a new install asks "Restore that setup?"; `--restore [<id>]` does it unattended and `--no-restore` skips it.
+
 ## 0.11.0
 - One list of settings (`app/registry.py`) now drives the TUI's Settings tab, `l9s config` and the settings table in the docs. A test fails the build if any of them falls out of step, so the TUI and the CLI can't disagree.
 - Every setting can be changed in Settings and with `l9s config`, including the three that could only be changed by editing the file: the model server's port, how Docker gets the GPUs, and the container name. Also the trusted relays (`l9s config set TRUST_PROXY …` as well as `l9s expose trust`). New: `l9s config reset <NAME>`.

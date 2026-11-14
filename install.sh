@@ -12,7 +12,9 @@ cd "$(dirname "$0")"
 #          --no-model          don't serve a starter model
 #          --mode personal|shared|client
 #          --link <name> <url> <key>   link a server you were given access to (client mode's starting point)
-MODEL="" NO_MODEL=0 UPDATE=0 MODE="${L9S_MODE:-}" LINK=()
+#          --restore [<id>]    a new install: bring back your previous setup from a backup (latest, or <id>)
+#          --no-restore        a new install: don't offer to (backups: ~/.l9s-backups, see: l9s backup)
+MODEL="" NO_MODEL=0 UPDATE=0 MODE="${L9S_MODE:-}" LINK=() RESTORE="" NO_RESTORE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model) MODEL="${2:?--model needs an org/repo}"; shift 2 ;;
@@ -20,6 +22,8 @@ while [[ $# -gt 0 ]]; do
     --update) UPDATE=1; NO_MODEL=1; shift ;;   # used by `l9s update` (no starter model)
     --mode) MODE="${2:?--mode needs personal, shared or client}"; shift 2 ;;
     --link) LINK=("${2:?}" "${3:?}" "${4:?--link needs <name> <url> <key>}"); shift 4 ;;
+    --restore) if [[ -n "${2:-}" && "$2" != --* ]]; then RESTORE="$2"; shift 2; else RESTORE=latest; shift; fi ;;
+    --no-restore) NO_RESTORE=1; shift ;;
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
@@ -79,7 +83,9 @@ fi
 
 # ---------------------------------------------------------------- config
 eval "$("$PY" "$L9S_HOME/app/hw.py" env)"   # BACKEND, GPU_ARGS, IMAGE defaults for this machine
+NEW_ENV=0
 if [[ ! -f "$L9S_HOME/env" ]]; then
+  NEW_ENV=1
   say "config -> $L9S_HOME/env (new API key)"
   {
     echo "BACKEND=$BACKEND"
@@ -98,6 +104,22 @@ fi
 grep -q '^BACKEND=' "$L9S_HOME/env" || echo "BACKEND=$BACKEND" >> "$L9S_HOME/env"
 # older configs: renamed / converted settings brought up to date (app/registry.py); a new one is stamped current
 "$PY" "$L9S_HOME/app/registry.py" migrate || true
+# a new install where l9s was set up before: offer to bring that setup back (settings, keys, links, profiles)
+RESTORED=0
+if [[ $NEW_ENV -eq 1 && $UPDATE -eq 0 && $NO_RESTORE -eq 0 ]]; then
+  LAST="$("$PY" "$L9S_HOME/app/backup.py" list --json 2>/dev/null | "$PY" -c 'import json,sys; e=json.load(sys.stdin); print(e[0]["id"] if e else "")' 2>/dev/null || true)"
+  if [[ -n "$LAST" && -z "$RESTORE" && -z "${L9S_NO_SERVICES:-}" && -r /dev/tty && -t 1 ]]; then
+    echo
+    echo "l9s was set up on this machine before:"
+    "$PY" "$L9S_HOME/app/backup.py" list | head -1 | sed 's/^/  /'
+    read -r -p "Restore that setup (settings, keys, linked servers, models you served)? [Y/n] " ans < /dev/tty || ans=n
+    [[ "$ans" != [nN]* ]] && RESTORE=latest
+  fi
+  if [[ -n "$RESTORE" ]]; then
+    "$PY" "$L9S_HOME/app/backup.py" restore "$RESTORE" -y --no-apply --fresh && RESTORED=1 \
+      || echo "    couldn't restore $RESTORE; continuing with a fresh setup"
+  fi
+fi
 envget() { ( set +u; source "$L9S_HOME/env"; eval "echo \"\${$1:-}\"" ); }
 envset() { grep -v "^$1=" "$L9S_HOME/env" > "$L9S_HOME/env.tmp" || true; [[ -n "$2" ]] && echo "$1=$2" >> "$L9S_HOME/env.tmp"
            mv "$L9S_HOME/env.tmp" "$L9S_HOME/env"; chmod 600 "$L9S_HOME/env"; }
@@ -239,6 +261,19 @@ PY
 
 "$PY" "$L9S_HOME/app/hw.py" | sed 's/^/    /'
 
+# ---------------------------------------------------------------- restored / reinstalled: set the rest up again
+if [[ $RESTORED -eq 0 && $UPDATE -eq 0 && $NEW_ENV -eq 0 && -L "$L9S_HOME/active" ]] && ! "$L9S_HOME/bin/l9s" status 2>/dev/null | grep -q "server: running"; then
+  RESTORED=1   # installed again over a kept setup (l9s uninstall keeps it): bring its model and way in back too
+fi
+if [[ $RESTORED -eq 1 ]]; then
+  case "$(envget EXPOSE)" in ""|own|local) ;; *) say "setting up the way in again ($(envget EXPOSE))"; "$L9S_HOME/bin/l9s" expose reapply || true ;; esac
+  if [[ -L "$L9S_HOME/active" ]]; then
+    say "starting $(basename "$(readlink "$L9S_HOME/active")") again"
+    "$L9S_HOME/bin/l9s" use "$(basename "$(readlink "$L9S_HOME/active")")" || true
+  fi
+  "$PY" "$L9S_HOME/app/connect.py" refresh >/dev/null 2>&1 || true
+fi
+
 # ---------------------------------------------------------------- starter model
 if [[ $NO_MODEL -eq 0 ]] && { [[ -n "$MODEL" ]] || [[ ! -L "$L9S_HOME/active" ]]; }; then
   say "starting a model${MODEL:+: $MODEL} (skip with --no-model)"
@@ -258,9 +293,9 @@ MSG
 if [[ "$MODE" == "shared" && $UPDATE -eq 0 ]]; then
   cat <<MSG
 
-Shared mode, next:
-  l9s expose caddy <host> | cloudflare | tailscale    HTTPS for people elsewhere (Let's Encrypt / Cloudflare / Tailscale)
-  l9s keys add <name> [--concurrent 2]                a key per person (shown once; limits; revoke any time)
+Shared mode, next (the TUI walks you through both the first time you open it):
+  l9s expose --help                       how people reach it: VPN, a free Cloudflare address, Tailscale, your domain…
+  l9s keys add <name> [--concurrent 2]    a key per person (shown once; limits; revoke any time)
 MSG
 fi
 [[ "$OS" == "Darwin" ]] && [[ ":$PATH:" != *":$HOME/.local/bin:"* ]] && echo "Add ~/.local/bin to your PATH to use 'l9s'."

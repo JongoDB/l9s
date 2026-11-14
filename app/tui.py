@@ -1769,6 +1769,17 @@ class LLMTui(App):
                     yield Checkbox("Tell the model which model it really is (Claude Code's prompt says it's Claude; "
                                    "agents carry over other models' names). One line at the end of the system prompt.",
                                    True, id="set-identity")
+                    yield Label("Backups", classes="section")
+                    yield Static("[dim]l9s backs up your setup (settings, keys, linked servers, model profiles) before "
+                                 "every update, mode or access change and uninstall, and keeps the newest 10. Restore "
+                                 "puts one back and sets it up again: the way in, and the model it was serving. "
+                                 "(`l9s backup`, `l9s restore`)[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Select([], prompt="no backups yet", id="set-backup-pick")
+                    with Horizontal(classes="frow"):
+                        yield Button("Back up now", id="set-backup-now")
+                        yield Button("Restore…", id="set-backup-restore", variant="warning")
+                    yield Static("", id="set-backup-info")
                     yield Label("Remove l9s", classes="section")
                     with Horizontal(classes="frow"):
                         yield Button("Uninstall…", id="set-uninstall", variant="error")
@@ -3008,6 +3019,7 @@ class LLMTui(App):
         self.query_one("#set-mode", Select).value = self.mode()
         self.mode_changed()
         self.load_reach_form()
+        self.refresh_backups()
         self.query_one("#set-expose-info", Static).update(self.expose_status_line())
         self.query_one("#set-hf-status", Static).update(
             "[dim]no token set[/dim]" if not env.get("HF_TOKEN") else "[dim]token set; press Test token to verify[/dim]")
@@ -3286,14 +3298,76 @@ class LLMTui(App):
                                                      f"\n[{K9['gold']}]now: {cur}. Press Switch mode to change.[/]"))
         self.query_one("#set-mode-go", Button).display = want != cur
 
+    # ------------------------------------------------------------ backups (l9s backup / l9s restore)
+    def refresh_backups(self) -> None:
+        import backup as bk
+        es = bk.entries()
+        self._backups = {e["id"]: e for e in es}
+        sel = self.query_one("#set-backup-pick", Select)
+        sel.set_options([(bk.describe(e), e["id"]) for e in es])
+        if es:
+            sel.value = es[0]["id"]
+        self.query_one("#set-backup-restore", Button).disabled = not es
+
+    @on(Button.Pressed, "#set-backup-now")
+    def backup_now(self) -> None:
+        import backup as bk
+        p = bk.backup("manual")
+        self.refresh_backups()
+        self.notify(f"backed up: {p.name}" if p else "nothing to back up yet")
+
+    @on(Button.Pressed, "#set-backup-restore")
+    def backup_restore(self) -> None:
+        bid = self.query_one("#set-backup-pick", Select).value
+        e = getattr(self, "_backups", {}).get(bid)
+        if not e:
+            return
+        import backup as bk
+
+        def cb(ok):
+            if ok:
+                self._run_restore(e["id"])
+        self.push_screen(Confirm(f"[b]Restore this setup?[/b]\n\n{rich_escape(bk.describe(e))}\n\nWhat's set up now "
+                                 "is backed up first. Settings, keys, linked servers and profiles are replaced; then "
+                                 "the way in is set up again and its model is started (the endpoint is down while it "
+                                 "loads).", "Restore", danger=False), cb)
+
+    @work(thread=True, exclusive=True, group="llm")
+    def _run_restore(self, bid: str) -> None:
+        info = self.query_one("#set-backup-info", Static)
+        lines = [f"[dim]$ l9s restore {bid} -y[/dim]"]
+        p = subprocess.Popen([LLM_BIN, "restore", bid, "-y"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, stdin=subprocess.DEVNULL, errors="replace")
+        for line in p.stdout:
+            if line.strip():
+                lines.append(rich_escape(line.rstrip()))
+                self.call_from_thread(info.update, "\n".join(lines[-10:]))
+        rc = p.wait()
+
+        def done():
+            self.env = load_env()
+            self.backend = self.env.get("BACKEND", self.backend)
+            self._applied_env = load_env()
+            self.load_settings_form()
+            self.refresh_backups()
+            self.refresh_keys()
+            self.render_chrome()
+            self.notify("restored" if rc == 0 else "restore failed: see Settings › Backups",
+                        severity="information" if rc == 0 else "error")
+        self.call_from_thread(done)
+
     @on(Button.Pressed, "#set-uninstall")
     def settings_uninstall(self) -> None:
         self.push_screen(TextModal("Uninstall l9s",
                                    "l9s can't remove itself while this window is open. Quit (q), then in a terminal:\n\n"
-                                   "```\nl9s uninstall                   # services, model server, ~/.l9s; keeps models\n"
+                                   "```\nl9s uninstall                   # the program, services, model server; keeps "
+                                   "your setup and models\n"
                                    "l9s uninstall --remove-models   # also deletes the downloaded models your profiles "
-                                   "use\n```\n\nIt asks before deleting anything, and undoes `l9s connect` changes to "
-                                   "your tools' configs only if you run `l9s connect <tool> --remove` first."))
+                                   "use\n"
+                                   "l9s uninstall --purge           # also your setup (settings, keys, links) and its "
+                                   "backups\n```\n\nIt asks before deleting anything. Without --purge, installing "
+                                   "again picks your setup back up. It undoes `l9s connect` changes to your tools' "
+                                   "configs only if you run `l9s connect <tool> --remove` first."))
 
     @on(Button.Pressed, "#set-mode-wizard")
     def mode_wizard(self) -> None:

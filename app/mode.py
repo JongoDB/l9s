@@ -54,6 +54,9 @@ def l9s(*args: str) -> int:
 def switch(to: str, yes: bool = False) -> int:
     cur = current()
     e = expose.env()
+    if to != cur:
+        import backup
+        backup.backup(f"switching from {cur} to {to} mode")
     if to == "client":
         if cur != "client":
             print("==> stopping the local model server (your profiles and downloads stay)")

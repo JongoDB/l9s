@@ -551,6 +551,10 @@ def main(argv: list[str]) -> int:
 
     def opt(flag):
         return rest[rest.index(flag) + 1] if flag in rest and rest.index(flag) + 1 < len(rest) else None
+    if cmd in ("caddy", "cloudflare", "tailscale", "off", "lan", "local", "url", "vpn", "trust") and \
+            not (cmd == "vpn" and ("--list" in rest or "--json" in rest)):
+        import backup
+        backup.backup(f"access change (l9s expose {cmd})")
     cur = env().get("EXPOSE") or ""
     if cmd in ("caddy", "cloudflare", "tailscale") and cur not in ("", "own", "vpn", "local") and \
             not cur.startswith(cmd):
