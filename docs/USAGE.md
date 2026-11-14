@@ -115,7 +115,7 @@ Speculative-decoding drafter models referenced by a preset are pulled too.
 curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash          # install + starter model
 curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --no-model
 l9s quickstart [org/repo]     # pull + serve with recommended settings (no repo: starter that fits)
-l9s uninstall [-y] [--keep-config] [--remove-models] [--remove-image]
+l9s uninstall [-y] [--purge] [--remove-models] [--remove-image]
 ```
 
 Re-running the one-liner updates l9s in place (code in `~/.l9s/src`).

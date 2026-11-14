@@ -251,7 +251,7 @@ then uses your server.
 | `l9s claude` · `l9s codex` · `l9s run <tool> [-m model]` | launch a coding agent on l9s without changing its normal setup |
 | `l9s hw` · `l9s key` | detected hardware / API key |
 | `l9s update [--check] [-y]` | check for / install a newer l9s (and mlx-lm on a Mac) |
-| `l9s uninstall [-y] [--keep-config] [--remove-models] [--remove-image]` | remove l9s |
+| `l9s uninstall [-y] [--purge] [--remove-models] [--remove-image]` | remove l9s (your setup stays for a reinstall unless `--purge`) |
 
 Full reference: [docs/USAGE.md](docs/USAGE.md).
 
