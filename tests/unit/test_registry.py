@@ -22,7 +22,7 @@ EXPOSE = (APP / "expose.py").read_text()
 DOCS = (ROOT / "docs" / "USAGE.md").read_text()
 
 # Settings-tab widgets that run an action rather than holding a config value
-ACTION_WIDGETS = {"set-expose-host", "set-expose-email", "set-mode", "set-backup-pick"}
+ACTION_WIDGETS = {"set-expose-host", "set-expose-email", "set-mode", "set-backup-pick", "set-report-anon"}
 
 
 def form_widgets():
@@ -202,3 +202,41 @@ def test_restore_refuses_a_tampered_archive(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match="unexpected entry"):
         bk.restore("latest", apply=False)
     assert not (tmp_path / "evil").exists()
+
+
+def test_no_api_key_only_when_local_only(tmp_path, monkeypatch):
+    assert reg.check("API_KEY", "", {"BIND": "127.0.0.1"}) is None
+    assert "this machine alone" in reg.check("API_KEY", "", {})
+    assert reg.check("API_KEY", "a b", {"BIND": "127.0.0.1"})
+    # the proxy: no key set → this machine's own tools only
+    monkeypatch.setenv("L9S_HOME", str(tmp_path))
+    (tmp_path / "env").write_text("BIND=127.0.0.1\n")
+    sys.modules.pop("proxy", None)
+    import proxy
+    assert proxy.principal("", local=True) == proxy.ADMIN
+    assert proxy.principal("", local=False) is None and proxy.principal("anything", local=False) is None
+
+
+def test_expose_refuses_to_open_a_keyless_server(tmp_path, monkeypatch):
+    monkeypatch.setenv("L9S_HOME", str(tmp_path))
+    (tmp_path / "env").write_text("BIND=127.0.0.1\nEXPOSE=local\n")
+    for mod in ("envfile", "expose", "backup"):
+        sys.modules.pop(mod, None)
+    ex = importlib.import_module("expose")
+    with pytest.raises(SystemExit, match="no API key"):
+        ex.main(["lan"])
+    assert envfile.read(tmp_path / "env")["BIND"] == "127.0.0.1"
+
+
+
+def test_report_removes_secrets():
+    import report
+    env = {"API_KEY": "sk-l9s-supersecretvalue", "HF_TOKEN": "hf_abcdefghijkl", "PORT": "8000"}
+    known = report.secrets(env)
+    text = ("key sk-l9s-supersecretvalue token hf_abcdefghijkl other sk-l9s-anotherone12 "
+            "Authorization: Bearer abcdefghijklmnop url https://llm.example.com/v1 ip 192.168.1.5")
+    out = report.scrub(text, known, anonymize=False)
+    assert "supersecret" not in out and "hf_abc" not in out and "anotherone" not in out and "abcdefghijklmnop" not in out
+    assert "llm.example.com" in out
+    anon = report.scrub(text, known, anonymize=True)
+    assert "llm.example.com" not in anon and "192.168.1.5" not in anon and "<host1>" in anon

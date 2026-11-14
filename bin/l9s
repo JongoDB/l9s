@@ -67,6 +67,9 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
                                          (shortcuts: l9s claude, l9s codex, l9s opencode, …)
   tui                                    open the terminal UI
   update [--check] [-y]                  check for / install a newer l9s (and mlx-lm on a Mac)
+  doctor [--fix [-y]]                    is everything working? what's wrong, why, and fixes
+  report [--anonymize] [--issue]         a file with what's needed to debug a problem (secrets removed), to attach
+                                         to a GitHub issue; nothing is sent
   backup [now|list] | restore [<id>]     backups of your setup (taken before updates, mode / access changes,
                                          uninstall) and bringing one back
   uninstall [-y] [--purge] [--remove-models] [--remove-image]
@@ -270,6 +273,8 @@ case "$cmd" in
   config) exec "$PY" "$APP/config.py" "$@" ;;
   backup|backups) exec "$PY" "$APP/backup.py" "$@" ;;
   restore) exec "$PY" "$APP/backup.py" restore "$@" ;;
+  report) exec "$PY" "$APP/report.py" "$@" ;;
+  doctor) exec "$PY" "$APP/doctor.py" "$@" ;;
   quickstart)
     repo="${1:-}"
     if [[ -z "$repo" ]]; then

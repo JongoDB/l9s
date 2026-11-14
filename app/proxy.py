@@ -9,7 +9,7 @@
   so token counts are exact without changing what clients receive.
 * Cancelling a request (from the TUI) closes the upstream connection, which makes the server abort the generation.
 * Watches the container (docker events + readiness polling) and writes a persistent event timeline.
-* Admin API (localhost only): GET /_l9s/requests, GET /_l9s/events, GET /_l9s/pins, GET /_l9s/relays, POST /_l9s/requests/<id>/cancel, GET /_l9s/health
+* Admin API (localhost only): GET /_l9s/requests, GET /_l9s/events, GET /_l9s/pins, GET /_l9s/relays, GET /_l9s/doctor, POST /_l9s/requests/<id>/cancel, GET /_l9s/health
 """
 from __future__ import annotations
 
@@ -866,10 +866,11 @@ def client_ip(request: web.Request) -> str:
     return request.remote or "?"
 
 
-def principal(given: str) -> dict | None:
+def principal(given: str, local: bool = False) -> dict | None:
     """Who is asking: the owner's admin key (API_KEY), a key from `l9s keys`, or nobody."""
     if not API_KEY:
-        return ADMIN  # no key configured: open server (only sensible on a trusted network)
+        # no key set: allowed only for this machine's own tools (Settings only allows it in "this machine only")
+        return ADMIN if local else None
     if given and hmac.compare_digest(given, API_KEY):
         return ADMIN
     return KEYS.lookup(given)
@@ -986,7 +987,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
     given = given[7:] if given.startswith("Bearer ") else request.headers.get("x-api-key", "")
     who = ADMIN
     if request.path.startswith(("/v1/", "/codex/")):
-        who = principal(given)
+        who = principal(given, local)
         if who is None:
             auth_failed(ip)
             return api_error(401, "Invalid or missing API key", "invalid_request_error")
@@ -1305,6 +1306,10 @@ async def admin(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "uptime": time.time() - started_at, "upstream": UPSTREAM,
                                   "active": len(active), "switching": dict(switching) or None,
                                   "waiting": len([r for r in active.values() if r.get("_waiting")])})
+    if path == "/_l9s/doctor":  # the latest health checks (?refresh=1: run them now)
+        if request.query.get("refresh") or _health["results"] is None:
+            return web.json_response(await run_health())
+        return web.json_response(_health["results"])
     if path == "/_l9s/relays":  # tunnels / reverse proxies on other machines that relay clients, not trusted yet
         return web.json_response({"untrusted": sorted(_relay_hinted - TRUST_PROXY), "trusted": sorted(TRUST_PROXY)})
     if path == "/_l9s/pins":  # clients that asked for a model by name recently (they'd undo a manual switch)
@@ -1388,12 +1393,56 @@ async def watch_ready(app: web.Application) -> None:
         await asyncio.sleep(3)
 
 
+HEALTH_EVERY = float(os.environ.get("L9S_HEALTH_EVERY", "300"))
+_health: dict = {"results": None, "seen": {}}
+
+
+async def run_health(app: web.Application | None = None) -> dict:
+    """`l9s doctor` in the background: new problems (and their fixes) go to Events and to alerts."""
+    import doctor
+    d = await asyncio.to_thread(doctor.run)
+    now = {r["id"]: r for r in d["results"] if r["level"] != "ok"}
+    before = _health["seen"]
+    for cid, r in now.items():
+        if cid not in before:
+            event("health", r["title"] + (f": {r['cause']}" if r["cause"] else "")
+                  + (f" (fix: l9s {' '.join(r['fix'])})" if r["fix"] else ""), "error" if r["level"] == "fail" else "warn",
+                  check=cid)
+            await alert("problem", r)
+    for cid, r in before.items():
+        if cid not in now:
+            event("health", f"fixed: {r['title']}", "info", check=cid)
+            await alert("fixed", r)
+    _health["seen"], _health["results"] = now, d
+    return d
+
+
+async def alert(kind: str, r: dict) -> None:
+    """Hook for Settings › Alerts (filled in by alerts.py when configured)."""
+    try:
+        import alerts
+    except ImportError:
+        return
+    await asyncio.to_thread(alerts.on_health, kind, r)
+
+
+async def health_loop(app: web.Application) -> None:
+    await asyncio.sleep(20)  # let the model server come up first
+    while True:
+        try:
+            await run_health(app)
+        except Exception as e:  # noqa: BLE001
+            event("health", f"health checks couldn't run: {e}", "warn")
+        await asyncio.sleep(HEALTH_EVERY)
+
+
 async def on_startup(app: web.Application) -> None:
     app["session"] = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=5),
                                            connector=aiohttp.TCPConnector(limit=0))
     _load_history()
     event("proxy", f"request proxy started on :{PORT} → {BACKEND} server {UPSTREAM}")
-    app["tasks"] = [asyncio.create_task(flush_usage()), asyncio.create_task(poll_links(app))]
+    app["tasks"] = [asyncio.create_task(flush_usage()), asyncio.create_task(poll_links(app)),
+                    asyncio.create_task(health_loop(app))]
     if BACKEND != "remote":
         app["tasks"].append(asyncio.create_task(watch_ready(app)))
     if BACKEND == "vllm":

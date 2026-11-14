@@ -551,6 +551,9 @@ def main(argv: list[str]) -> int:
 
     def opt(flag):
         return rest[rest.index(flag) + 1] if flag in rest and rest.index(flag) + 1 < len(rest) else None
+    if cmd in ("caddy", "cloudflare", "tailscale", "off", "lan", "url", "vpn") and not env().get("API_KEY"):
+        raise SystemExit("this server has no API key, so it can only be reachable from this machine. Set one first: "
+                         "Settings › API key › Generate new, or: l9s config set API_KEY sk-l9s-$(openssl rand -hex 16)")
     if cmd in ("caddy", "cloudflare", "tailscale", "off", "lan", "local", "url", "vpn", "trust") and \
             not (cmd == "vpn" and ("--list" in rest or "--json" in rest)):
         import backup

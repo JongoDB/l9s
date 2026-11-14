@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.13.0
+- **Health.** `l9s doctor` checks everything and says what's wrong, why, and how to fix it. The **Fix** buttons in the TUI's Health window (click the ● in the header, or `:doctor`) run the same thing as `l9s doctor --fix`. The checks:
+  - **Server:** is the server up and its model loaded, or is it stuck loading?
+  - **Memory and disk.**
+  - **Docker and the NVIDIA driver.**
+  - **How it's reached:** does the public URL answer with a valid certificate (and how many days it has left)? Is the tunnel running? Did the free Cloudflare address change? Is a firewall blocking other devices? Is a relay not yet trusted?
+  - **Access:** someone guessing keys; a key hammering its limits; keys unused for 90 days.
+  - **Linked servers:** does each one answer?
+  - **Settings:** are they valid?
+  - **Updates:** is one available, or did the last one fail?
+  - **Backups:** is the newest more than a week old?
+  - **Hugging Face token:** is it still valid?
+
+  The request proxy runs these every 5 minutes, and new or fixed problems go to Events.
+- **`l9s report`** (Settings › Report a problem, `:report`) writes one file with what's needed to debug a problem: versions, hardware, settings, doctor results, profiles, logs, events and request metadata. Every key and token, prompt and reply text, and key names are left out; `--anonymize` also replaces host names and addresses. Nothing is sent: it opens a prefilled GitHub issue to attach the file to.
+- **No API key is allowed only when the server is reachable from this machine alone.** Settings and `l9s config` refuse an empty key otherwise, and `l9s expose` won't open a keyless server to other devices. The proxy turns away keyless requests from anywhere else.
+- **Fixed:** the TUI could crash while closing when a status refresh arrived late.
+
 ## 0.12.0
 - **Backups.** l9s backs up your setup before every update, mode or access change and uninstall, and keeps the newest 10 in `~/.l9s-backups` (readable only by you). A backup holds your settings, keys, linked servers, your tools' l9s setup, model profiles and which one was served, and per-key usage. **Restore** is in Settings › Backups or `l9s restore [<id>]`. It backs up what's there first, puts the backup back, then sets up the way in again and starts the model it was serving. `l9s backup now` takes one any time.
 - **Uninstalling keeps your setup.** `l9s uninstall` removes the program, services and model server, and leaves your setup and backups behind. Installing again picks it all back up, including the served model and the way in. `--purge` removes the setup and backups too.

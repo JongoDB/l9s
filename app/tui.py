@@ -32,6 +32,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import (Button, Checkbox, DataTable, Footer, Header, Input, Label, Markdown,
@@ -913,6 +914,104 @@ class ReachDialog(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
+class HealthModal(ModalScreen[None]):
+    """`l9s doctor` in the TUI: every check, problems first, each with its Fix."""
+    DEFAULT_CSS = """
+    HealthModal { align: center middle; }
+    #box { width: 110; height: 90%; border: thick $primary; padding: 1 2; background: $surface; }
+    .prob { height: auto; margin-top: 1; }
+    .prob Static { width: 1fr; }
+    .prob Button { width: 28; }
+    #hm-out { height: auto; margin-top: 1; }
+    #hm-btns { dock: bottom; height: 2; align-horizontal: right; padding-top: 1; background: $surface; }
+    #hm-btns Button { margin-left: 2; }
+    """
+
+    def __init__(self, data: dict | None):
+        super().__init__()
+        self.data = data
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="box"):
+            yield Static("[b]Health[/b]  [dim](l9s doctor: checked every few minutes; problems also show up in "
+                         "Events)[/dim]", id="hm-head")
+            yield Vertical(id="hm-list")
+            yield Static("", id="hm-out")
+            with Horizontal(id="hm-btns"):
+                yield Button("Check again", id="hm-again")
+                yield Button("Close (esc)", id="hm-close", variant="primary")
+
+    def on_mount(self) -> None:
+        self.show(self.data)
+        if self.data is None:
+            self.recheck()
+
+    def show(self, d: dict | None) -> None:
+        self.data = d
+        box = self.query_one("#hm-list", Vertical)
+        box.remove_children()
+        if d is None:
+            box.mount(Static("[dim]checking…[/dim]"))
+            return
+        color = {"ok": K9["greenyellow"], "warn": K9["gold"], "fail": K9["orangered"]}
+        icon = {"ok": "✓", "warn": "!", "fail": "✗"}
+        rows = []
+        probs = [r for r in d["results"] if r["level"] != "ok"]
+        for i, r in enumerate(sorted(probs, key=lambda r: r["level"] != "fail")):
+            text = (f"[{color[r['level']]}]{icon[r['level']]}[/] [b]{rich_escape(r['title'])}[/b]"
+                    + (f"\n  [dim]{rich_escape(r['cause'])}[/dim]" if r["cause"] else ""))
+            kids = [Static(text)]
+            if r["fix"]:
+                kids.append(Button(r["fix_label"] or "Fix", id=f"hm-fix-{i}", variant="warning"))
+            rows.append(Horizontal(*kids, classes="prob"))
+        self._fixes = {f"hm-fix-{i}": r for i, r in enumerate(sorted(probs, key=lambda r: r["level"] != "fail"))}
+        ok = [r for r in d["results"] if r["level"] == "ok"]
+        rows.append(Static(("" if not probs else "\n") + (f"[{K9['greenyellow']}]✓ everything looks good[/]\n"
+                                                          if not probs else "") +
+                           "\n".join(f"[dim]✓ {rich_escape(r['title'])}[/dim]" for r in ok)))
+        box.mount(*rows)
+        when = time.strftime("%H:%M:%S", time.localtime(d["time"]))
+        self.query_one("#hm-head", Static).update(
+            f"[b]Health[/b]  {len(probs)} problem{'s' if len(probs) != 1 else ''} · checked {when}  [dim](l9s doctor; "
+            "checked every few minutes, and problems show up in Events)[/dim]")
+
+    @on(Button.Pressed)
+    def pressed(self, ev: Button.Pressed) -> None:
+        bid = ev.button.id or ""
+        if bid == "hm-close":
+            self.dismiss(None)
+        elif bid == "hm-again":
+            self.show(None)
+            self.recheck()
+        elif bid in getattr(self, "_fixes", {}):
+            ev.button.disabled = True
+            self.run_fix(self._fixes[bid])
+
+    @work(thread=True, exclusive=True, group="health")
+    def recheck(self) -> None:
+        import doctor
+        d = doctor.run()
+        self.app.call_from_thread(self.show, d)
+        self.app.call_from_thread(self.app.render_info)
+
+    @work(thread=True, group="health-fix")
+    def run_fix(self, r: dict) -> None:
+        out = self.query_one("#hm-out", Static)
+        lines = [f"[dim]$ l9s {' '.join(r['fix'])}[/dim]"]
+        self.app.call_from_thread(out.update, "\n".join(lines))
+        p = subprocess.Popen([LLM_BIN, *r["fix"]], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             stdin=subprocess.DEVNULL, errors="replace")
+        for line in p.stdout:
+            if line.strip():
+                lines.append(rich_escape(line.rstrip()))
+                self.app.call_from_thread(out.update, "\n".join(lines[-8:]))
+        p.wait()
+        self.recheck()
+
+    def key_escape(self) -> None:
+        self.dismiss(None)
+
+
 class SetupWizard(ModalScreen[str | None]):
     """First run: what is this device for? personal / shared / client (change later: Settings › Mode, l9s mode)."""
     DEFAULT_CSS = """
@@ -1115,7 +1214,7 @@ COMMANDS = [
     ("settings", "HF token, API key, memory, port, image"), ("serve <profile>", "switch the server to a profile"),
     ("stop", "stop the server"), ("start", "start the server"), ("restart", "restart the server"),
     ("test", "send a test request"), ("pull <org/repo>", "download a model"), ("info <org/repo>", "full model analysis"),
-    ("search <text>", "search Hugging Face"), ("connect", "coding agents & editors"), ("update", "update l9s"), ("setup", "what this device is for (setup)"),
+    ("search <text>", "search Hugging Face"), ("connect", "coding agents & editors"), ("update", "update l9s"), ("setup", "what this device is for (setup)"), ("report", "report a problem (a file to attach to an issue)"), ("doctor", "health: what's wrong and fixes"),
     ("help", "keys and concepts"),
     ("quit", "exit (server keeps running)"),
 ]
@@ -1539,6 +1638,19 @@ class LLMTui(App):
                    "follow": {"server"}, "save_log": {"server"}, "save_settings": {"settings"},
                    "filter": {"server", "requests", "local", "hub", "events"}}
 
+
+    def call_from_thread(self, callback, *args, **kwargs):
+        """Background work hands results back here; one that lands while the app is closing is dropped (its widgets
+        are already gone), instead of crashing the shutdown."""
+        def safe(*a, **k):
+            try:
+                return callback(*a, **k)
+            except NoMatches:
+                if self._closing or self._closed or not getattr(self, "_running", True):
+                    return None
+                raise
+        return super().call_from_thread(safe, *args, **kwargs)
+
     def __init__(self):
         super().__init__()
         self.env = load_env()
@@ -1780,6 +1892,15 @@ class LLMTui(App):
                         yield Button("Back up now", id="set-backup-now")
                         yield Button("Restore…", id="set-backup-restore", variant="warning")
                     yield Static("", id="set-backup-info")
+                    yield Label("Report a problem", classes="section")
+                    yield Static("[dim]Writes one file with what's needed to debug it: versions, hardware, settings, "
+                                 "logs, recent events and requests. Keys, tokens and prompt / reply text are left out, "
+                                 "and nothing is sent: it opens a new GitHub issue for you to attach the file to. "
+                                 "(`l9s report`)[/dim]")
+                    with Horizontal(classes="frow"):
+                        yield Button("Report a problem…", id="set-report")
+                        yield Checkbox("also replace host names and addresses", False, id="set-report-anon")
+                    yield Static("", id="set-report-info")
                     yield Label("Remove l9s", classes="section")
                     with Horizontal(classes="frow"):
                         yield Button("Uninstall…", id="set-uninstall", variant="error")
@@ -1890,9 +2011,12 @@ class LLMTui(App):
             lab("Server:") + clk("tab('settings')", val(s.get("image") or self.server_name())),
             lab("GPU/MEM:") + val(f"{(sum(util) / len(util)) if util else 0:.0f}% · "
                                   f"{s.get('mem_used', 0) / 1e9:.0f}/{self.mem_total / 1e9:.0f} GB"),
-            lab("l9s:") + self.version_markup(),
+            lab("l9s:") + self.version_markup() + "  " + clk("doctor", self.health_markup()),
         ]
-        self.query_one("#hdr-info", Static).update("\n".join(lines))
+        try:
+            self.query_one("#hdr-info", Static).update("\n".join(lines))
+        except Exception:  # noqa: BLE001  (a status refresh landing while the app shuts down)
+            pass
 
     def on_mount(self) -> None:
         self.register_theme(L9S_THEME)
@@ -2367,6 +2491,10 @@ class LLMTui(App):
             self.hub_search()
         elif word == "setup":
             self.action_setup()
+        elif word == "report":
+            self.action_report()
+        elif word in ("doctor", "health"):
+            self.action_doctor()
         elif word == "update":
             self.action_update()
         elif word == "connect":
@@ -3297,6 +3425,38 @@ class LLMTui(App):
             f"[dim]{self.MODE_HELP[want]}[/dim]" + ("" if want == cur else
                                                      f"\n[{K9['gold']}]now: {cur}. Press Switch mode to change.[/]"))
         self.query_one("#set-mode-go", Button).display = want != cur
+
+    # ------------------------------------------------------------ health (l9s doctor)
+    def health_markup(self) -> str:
+        import doctor
+        d = doctor.load()
+        if not d:
+            return f"[{K9['gray']}]not checked yet[/]"
+        n = d["problems"]
+        if not n:
+            return f"[{K9['greenyellow']}]● healthy[/]"
+        c = K9["orangered"] if d["worst"] == "fail" else K9["gold"]
+        return f"[{c}]● {n} problem{'s' if n > 1 else ''}[/]"
+
+    def action_doctor(self) -> None:
+        import doctor
+        self.push_screen(HealthModal(doctor.load()))
+
+    # ------------------------------------------------------------ report a problem (l9s report)
+    @on(Button.Pressed, "#set-report")
+    def action_report(self) -> None:
+        self.goto_tab("settings")
+        self._run_report(self.query_one("#set-report-anon", Checkbox).value)
+
+    @work(thread=True, exclusive=True, group="report")
+    def _run_report(self, anon: bool) -> None:
+        info = self.query_one("#set-report-info", Static)
+        self.call_from_thread(info.update, "[dim]collecting…[/dim]")
+        r = subprocess.run([LLM_BIN, "report", "--issue"] + (["--anonymize"] if anon else []), capture_output=True,
+                           text=True, stdin=subprocess.DEVNULL)
+        out = rich_escape((r.stdout + r.stderr).strip())
+        self.call_from_thread(info.update, out)
+        self.call_from_thread(self.notify, "report written (see Settings › Report a problem)")
 
     # ------------------------------------------------------------ backups (l9s backup / l9s restore)
     def refresh_backups(self) -> None:

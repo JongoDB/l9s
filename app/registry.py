@@ -58,8 +58,11 @@ class Setting:
 
 
 SETTINGS: list[Setting] = [
-    Setting("API_KEY", "API key", "your own (admin) key: every model, switching, no limits", "",
-            lambda v, e: None if v and " " not in v else "can't be empty or contain spaces", "server",
+    Setting("API_KEY", "API key", "your own (admin) key: every model, switching, no limits (empty: no key, "
+                                  "allowed only when the server is reachable from this machine alone)", "",
+            lambda v, e: "can't contain spaces" if " " in v else None if v or e.get("BIND") == "127.0.0.1" else
+            "can be empty only when the server is reachable from this machine alone (Settings › How other devices "
+            "reach this server › Only this machine)", "server",
             widget="#set-key", secret=True),
     Setting("HF_TOKEN", "Hugging Face token", "for gated models (huggingface.co/settings/tokens)", "",
             lambda v, e: None if not v or v.startswith("hf_") else "Hugging Face tokens start with hf_", "now",
