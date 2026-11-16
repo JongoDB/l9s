@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.2
+- Dependencies: httpcore2 2.16.0 → 2.16.2
+- Dependencies: httpx2 2.16.0 → 2.16.2
+- Dependencies: numpy 2.5.4 → 2.5.5
+- Dependencies: regex 2026.11.9 → 2026.11.15
+- Dependencies: transformers 5.22.2 → 5.23.0
+
 ## 0.14.1
 - **The recommended model is now curated per hardware class, with speeds measured on real hardware:**
   - **GB10 / DGX Spark:** Qwen3.6-35B-A3B (NVIDIA's NVFP4 build), with its DFlash draft model added automatically: about 97 tokens/s for one conversation (59-118 depending on the task), 262K context, a 23 GB download.
