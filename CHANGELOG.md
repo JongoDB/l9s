@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.3
+- Dependencies: annotated-doc 0.0.6 → 0.0.7
+- Dependencies: filelock 4.2.10 → 4.3.1
+- Dependencies: platformdirs 4.14.5 → 4.14.8
+- Dependencies: pydantic 2.14.3 → 2.14.4
+- Dependencies: pydantic-core 2.50.4 → 2.50.5
+- Dependencies: pyyaml 6.0.3 → 6.0.4
+- Dependencies: regex 2026.11.15 → 2026.11.19
+- Dependencies: transformers 5.23.0 → 5.24.0
+- Dependencies: typer 0.29.1 → 0.29.2
+
 ## 0.14.2
 - Dependencies: httpcore2 2.16.0 → 2.16.2
 - Dependencies: httpx2 2.16.0 → 2.16.2

@@ -6,7 +6,7 @@ aiohttp==3.14.5
     # via -r requirements.in
 aiosignal==1.4.0
     # via aiohttp
-annotated-doc==0.0.6 ; platform_machine == 'arm64' and sys_platform == 'darwin'
+annotated-doc==0.0.7 ; platform_machine == 'arm64' and sys_platform == 'darwin'
     # via typer
 annotated-types==0.8.0 ; platform_machine == 'arm64' and sys_platform == 'darwin'
     # via pydantic
@@ -20,7 +20,7 @@ colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   tqdm
     #   typer
-filelock==4.2.10
+filelock==4.3.1
     # via huggingface-hub
 frozenlist==1.8.0
     # via
@@ -81,7 +81,7 @@ packaging==26.3
     # via
     #   huggingface-hub
     #   transformers
-platformdirs==4.14.5
+platformdirs==4.14.8
     # via textual
 propcache==0.5.4
     # via
@@ -89,20 +89,20 @@ propcache==0.5.4
     #   yarl
 protobuf==7.36.2 ; platform_machine == 'arm64' and sys_platform == 'darwin'
     # via mlx-lm
-pydantic==2.14.3 ; platform_machine == 'arm64' and sys_platform == 'darwin'
+pydantic==2.14.4 ; platform_machine == 'arm64' and sys_platform == 'darwin'
     # via typer
-pydantic-core==2.50.4 ; platform_machine == 'arm64' and sys_platform == 'darwin'
+pydantic-core==2.50.5 ; platform_machine == 'arm64' and sys_platform == 'darwin'
     # via pydantic
 pygments==2.21.0
     # via
     #   rich
     #   textual
-pyyaml==6.0.3
+pyyaml==6.0.4
     # via
     #   huggingface-hub
     #   mlx-lm
     #   transformers
-regex==2026.11.15 ; platform_machine == 'arm64' and sys_platform == 'darwin'
+regex==2026.11.19 ; platform_machine == 'arm64' and sys_platform == 'darwin'
     # via transformers
 rich==15.0.0
     # via
@@ -122,13 +122,13 @@ tqdm==4.70.1
     # via
     #   huggingface-hub
     #   transformers
-transformers==5.23.0 ; platform_machine == 'arm64' and sys_platform == 'darwin'
+transformers==5.24.0 ; platform_machine == 'arm64' and sys_platform == 'darwin'
     # via mlx-lm
 truststore==0.10.5 ; sys_platform != 'emscripten'
     # via
     #   httpcore2
     #   httpx2
-typer==0.29.1 ; platform_machine == 'arm64' and sys_platform == 'darwin'
+typer==0.29.2 ; platform_machine == 'arm64' and sys_platform == 'darwin'
     # via transformers
 typing-extensions==4.16.0
     # via
