@@ -39,7 +39,9 @@ async def main():
         while time.time() - t < 600 and "restored" not in str(app.query_one("#set-backup-info").render()):
             await pilot.pause(1)
         info = str(app.query_one("#set-backup-info").render())
-        check("restore ran and set things up again", "restored" in info and "starting" in info, info[-200:])
+        client = bk.envfile.read().get("BACKEND") == "remote"  # client mode: no model server to start
+        check("restore ran and set things up again",
+              "restored" in info and (client or "starting" in info) and not (client and "starting" in info), info[-200:])
         await pilot.pause(2)
     print(f"\n==== {sum(R)} / {len(R)}")
     sys.exit(0 if all(R) else 1)

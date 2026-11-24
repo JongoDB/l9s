@@ -1,12 +1,16 @@
 name: Hardware
 
-# The real-hardware gate on self-hosted runners (a GB10 with vLLM, a Mac with mlx-lm), against their live l9s
-# installs. Never on pull requests: only code already on main (pushed by a maintainer) runs on these machines.
+# The real-hardware gate on self-hosted runners (a GB10 serving with vLLM; a Mac serving with mlx-lm or using the
+# GB10 in client mode), against their live l9s installs. It runs for releases (release.yml calls it) and when started
+# by hand, not on every push: it restarts the servers people use. Never on pull requests: only code already on main
+# (pushed by a maintainer) runs on these machines.
 on:
-  push:
-    branches: [main]
-    paths: ["app/**", "bin/**", "install.sh", "get.sh", "requirements.lock", "tests/live/**", ".github/scripts/hardware.sh"]
   workflow_dispatch:
+    inputs:
+      now:
+        description: "Start right away instead of waiting until each machine has been idle for 15 minutes"
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
@@ -16,14 +20,28 @@ concurrency:
   group: hardware
   cancel-in-progress: false
 
+# Each machine is checked only once nobody has used it for 15 minutes (hardware.sh), so a release never interrupts
+# a real session; it can wait up to 12 hours. The GB10 goes first: the Mac in client mode uses the GB10, so running
+# both at once would send the Mac's tests into the GB10's restarts (and look like someone using the GB10).
+env:
+  L9S_GATE_IDLE_MIN: ${{ inputs.now && '0' || '15' }}
+
 jobs:
-  hardware:
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [l9s-gb10, l9s-mac]
-    runs-on: [self-hosted, "${{ matrix.runner }}"]
-    timeout-minutes: 120
+  gb10:
+    name: hardware (l9s-gb10)
+    runs-on: [self-hosted, l9s-gb10]
+    timeout-minutes: 840
+    steps:
+      - uses: actions/checkout@v4
+      - name: End-to-end on the live install
+        run: .github/scripts/hardware.sh
+
+  mac:
+    name: hardware (l9s-mac)
+    needs: gb10
+    if: ${{ !cancelled() }}
+    runs-on: [self-hosted, l9s-mac]
+    timeout-minutes: 840
     steps:
       - uses: actions/checkout@v4
       - name: End-to-end on the live install

@@ -326,3 +326,17 @@ def test_keys_accepts_the_same_words_as_link(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert keys.main(["frob"]) == 2
     assert "unknown command: keys frob" in capsys.readouterr().err
+
+
+def test_gate_waits_for_real_use_only():
+    """The hardware gate's idle check: only API requests count; one still running counts as now."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "last_use", Path(__file__).resolve().parents[2] / ".github" / "scripts" / "last_use.py")
+    lu = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lu)
+    now = 10_000.0
+    assert lu.idle_seconds([], now) == lu.NEVER
+    assert lu.idle_seconds([{"path": "/v1/models", "start": now - 5}], now) == lu.NEVER  # model lists don't count
+    assert lu.idle_seconds([{"path": "/v1/messages", "start": now - 900, "end": now - 600}], now) == 600
+    assert lu.idle_seconds([{"path": "/v1/chat/completions", "start": now - 3000, "state": "running"}], now) == 0
