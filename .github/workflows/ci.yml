@@ -12,6 +12,10 @@ on:
         description: "Name of an uploaded artifact holding a candidate requirements.lock"
         type: string
         default: ""
+      mac:
+        description: "'skip' leaves out the GitHub-hosted macOS job (the release pipeline tests on the real Mac instead)"
+        type: string
+        default: "hosted"
 
 permissions:
   contents: read
@@ -91,6 +95,9 @@ jobs:
           sudo journalctl -u caddy --no-pager | tail -60; cat "$RUNNER_TEMP/proxy.log" | tail -40
 
   macos-mlx:
+    # Hosted macOS runners are sometimes unavailable for 15+ minutes; inside a release this job is redundant with
+    # the hardware gate on the real Mac, so release.yml and deps.yml skip it (pushes and PRs still run it).
+    if: inputs.mac != 'skip'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4

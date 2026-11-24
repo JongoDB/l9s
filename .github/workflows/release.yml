@@ -12,6 +12,8 @@ permissions:
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
+    with:
+      mac: skip   # the hardware job below runs the full suite on the real Mac
 
   hardware:
     needs: ci

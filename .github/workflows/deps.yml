@@ -40,6 +40,7 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       lock-artifact: candidate-lock
+      mac: skip   # the release pipeline it starts tests the new lock on the real Mac before anything ships
 
   release:
     needs: [resolve, test]
