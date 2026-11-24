@@ -11,6 +11,9 @@ fail=0
 step() { echo; echo "::group::$1"; }
 end() { echo "::endgroup::"; }
 run() { local name="$1"; shift; step "$name"; if "$@"; then end; else end; echo "::error::$name failed"; fail=1; fi; }
+# limit <seconds> <cmd…>: give up on a command that runs too long (an agent session can loop forever on a weak
+# model). Plain perl, since macOS has no `timeout`.
+limit() { local s="$1"; shift; perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$s" "$@"; }
 
 step "install this commit (keeps the setup)"
 ./install.sh --update
@@ -33,11 +36,12 @@ done
 if [[ "$(uname -s)" == "Darwin" ]]; then
   run "TUI: mlx" bash -c "'$PY' tests/live/test_mlx.py; grep -q '22/22 passed\|==== .* passed \[\]' /tmp/test_mlx.out"
 fi
+served="$(basename "$(readlink "$HOME/.l9s/active" 2>/dev/null || echo none)")"
 if command -v claude >/dev/null; then
-  run "Claude Code session (tool call)" bash -c "cd \"\$(mktemp -d)\" && '$L9S' claude -p 'Use the Bash tool to run: echo \$((17*23)). Then reply with only the number it printed.' </dev/null | grep -q 391"
+  run "Claude Code session (tool call) on $served" limit 600 bash -c "cd \"\$(mktemp -d)\" && '$L9S' claude -p 'Use the Bash tool to run: echo \$((17*23)). Then reply with only the number it printed.' </dev/null | grep -q 391"
 fi
 if command -v codex >/dev/null; then
-  run "Codex session (shell)" bash -c "cd \"\$(mktemp -d)\" && '$L9S' codex exec --skip-git-repo-check -s read-only 'Run the shell command: echo \$((19*21)). Then reply with only the number it printed.' </dev/null | grep -q 399"
+  run "Codex session (shell) on $served" limit 600 bash -c "cd \"\$(mktemp -d)\" && '$L9S' codex exec --skip-git-repo-check -s read-only 'Run the shell command: echo \$((19*21)). Then reply with only the number it printed.' </dev/null | grep -q 399"
 fi
 step "state after the run"; "$L9S" status; "$L9S" doctor --quick || true; end
 exit $fail
