@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.4
+- Dependency updates now ship like every other release: CI, the hardware gate on a GB10 and a Mac, a beta, then stable after 3 days. 0.14.2 and 0.14.3 had gone straight to stable.
+- `l9s keys rm <name>` and `l9s keys remove <name>` delete a key, the same words `l9s link` takes; an unknown `keys` command now says so instead of only printing the usage.
+- Tested for real: a Cloudflare Tunnel on your own domain (`l9s expose cloudflare --host …`), from another network: chat, streaming, the Anthropic and Responses APIs, key limits and model access, closed admin routes, the client's real address and the certificate check.
+
 ## 0.14.3
 - Dependencies: annotated-doc 0.0.6 → 0.0.7
 - Dependencies: filelock 4.2.10 → 4.3.1

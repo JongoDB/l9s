@@ -310,3 +310,19 @@ def test_alert_down_needs_two_minutes_and_skips_switches(tmp_path, monkeypatch):
 def test_list_settings_compare_as_sets():
     assert reg.same("ALERT_EVENTS", "down,up,url", "url, down,up") and not reg.same("ALERT_EVENTS", "down", "up")
     assert not reg.same("PORT", "8000", "8000 ")
+
+
+def test_keys_accepts_the_same_words_as_link(tmp_path, monkeypatch, capsys):
+    """`l9s keys rm` / `remove` delete like `l9s link rm`; an unknown command says so."""
+    monkeypatch.setenv("L9S_HOME", str(tmp_path))
+    import importlib
+    import keys
+    importlib.reload(keys)
+    assert keys.main(["add", "zed"]) == 0
+    assert keys.main(["add", "amy"]) == 0
+    assert keys.main(["rm", "zed"]) == 0
+    assert keys.main(["remove", "amy"]) == 0
+    assert keys.load() == {}
+    capsys.readouterr()
+    assert keys.main(["frob"]) == 2
+    assert "unknown command: keys frob" in capsys.readouterr().err

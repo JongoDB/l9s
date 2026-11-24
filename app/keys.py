@@ -6,7 +6,7 @@ key (Settings › API key, `l9s key`) stays the owner's admin key: every model, 
 usage:  keys.py list [--json]
         keys.py add <name> [--switch] [--rpm N] [--concurrent N] [--models a,b] [--note TEXT] [--json]
         keys.py set <name> [--switch|--no-switch] [--rpm N|0] [--concurrent N|0] [--models a,b|all]
-        keys.py revoke <name> | enable <name> | delete <name>
+        keys.py revoke <name> | enable <name> | delete <name>   (rm / remove work too)
         keys.py usage [--days N] [--json]
 """
 from __future__ import annotations
@@ -177,6 +177,7 @@ def _opt(args: list[str], flag: str, cast=str):
 
 def main(argv: list[str]) -> int:
     cmd = argv[0] if argv else "list"
+    cmd = {"rm": "delete", "remove": "delete", "ls": "list", "disable": "revoke"}.get(cmd, cmd)  # same words as `l9s link`
     args = argv[1:]
     as_json = "--json" in args
     d = load()
@@ -248,6 +249,8 @@ def main(argv: list[str]) -> int:
             print(f"{n:20} {u['requests']:6} requests  {u['in']:>10} in  {u['out']:>9} out tokens  "
                   f"(last {days} days) · last used {_ago(u.get('last'))}")
         return 0
+    if cmd not in ("-h", "--help", "help"):
+        print(f"unknown command: keys {cmd}\n", file=sys.stderr)
     print(__doc__, file=sys.stderr)
     return 2
 

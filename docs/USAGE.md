@@ -479,7 +479,7 @@ which only matters for very long prompts on a cold cache.
 l9s keys add alice [--switch] [--rpm 30] [--concurrent 2] [--models qwen3.6-35b-a3b,l9s]
 l9s keys                       # list, with today's usage
 l9s keys set alice --concurrent 4 | --no-switch | --models all
-l9s keys revoke alice          # 401 from the next request on; `enable` undoes it; `delete` removes it
+l9s keys revoke alice          # 401 from the next request on; `enable` undoes it; `delete` (or `rm`) removes it
 l9s keys usage [--days 30]
 ```
 
