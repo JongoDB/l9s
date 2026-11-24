@@ -10,6 +10,9 @@ STATE = {"last": None, "disconnects": 0, "models_seen": []}
 
 async def chat(request):
     body = await request.json()
+    if "RESET" in json.dumps(body.get("messages")):  # the connection dropped (a restarting server behind Docker)
+        request.transport.abort()
+        return web.Response()
     STATE["last"] = body
     STATE["last_auth"] = request.headers.get("Authorization")
     STATE["models_seen"].append(body.get("model"))

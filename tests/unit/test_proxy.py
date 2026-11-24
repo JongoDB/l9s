@@ -74,6 +74,7 @@ ln -sfn "$H/profiles/$2" "$H/active"; echo "==> ready: $2"
             wait_port(up, 10)
             wait_port(px, 10)
             if all(p.poll() is None for p in procs):
+                UP["proc"], UP["port"] = procs[0], up
                 break
         except RuntimeError:
             pass
@@ -86,9 +87,12 @@ ln -sfn "$H/profiles/$2" "$H/active"; echo "==> ready: $2"
     global HOMEDIR
     HOMEDIR = home
     yield px, up
-    for p in procs:
+    for p in {*procs, UP["proc"]}:
         p.terminate()
         p.wait(5)
+
+
+UP: dict = {}  # the mock model server's process and port (a test restarts it)
 
 
 def call(port, path, body=None, key=KEY, method=None):
@@ -659,3 +663,56 @@ def test_late_developer_messages_in_responses_become_user_messages():
     assert j["input"][0]["role"] == "user" and "env info" in j["input"][0]["content"][0]["text"]
     chat = {"messages": [{"role": "system", "content": "s"}, {"role": "developer", "content": "d"}]}
     assert proxy.fold_late_system(chat) and chat["messages"][1]["role"] == "user"
+
+
+def test_a_dropped_connection_to_the_model_server_is_a_clear_503_not_a_bare_500(stack):
+    """vLLM restarting behind Docker: the connection is accepted, then reset (it used to surface as aiohttp's
+    "500 Server got itself in trouble" in Claude Code)."""
+    px, _ = stack
+    for path, body in (("/v1/chat/completions", chat_body("mymodel", messages=[{"role": "user", "content": "RESET"}])),
+                       ("/v1/messages", {"model": "mymodel", "max_tokens": 5,
+                                         "messages": [{"role": "user", "content": "RESET"}]})):
+        with pytest.raises(urllib.error.HTTPError) as e:
+            call(px, path, body)
+        assert e.value.code == 503 and e.value.headers.get("Retry-After")
+        err = json.loads(e.value.read())
+        msg = err["error"]["message"]
+        assert "isn't answering" in msg and "l9s status" in msg
+        if path == "/v1/messages":
+            assert err["type"] == "error" and err["error"]["type"] == "api_error"  # Anthropic-shaped
+    rec = admin(px, "/_l9s/requests")["recent"][-1]
+    assert rec["status"] == 503 and "isn't answering" in rec["error"]
+
+
+def test_a_request_during_a_restart_waits_for_the_model_server(stack):
+    """A request that arrives while the model server restarts (an update, a settings change) waits and succeeds."""
+    import threading
+    px, up = stack
+    UP["proc"].terminate()
+    UP["proc"].wait(5)
+    deadline = time.time() + 15
+    while admin(px, "/_l9s/health").get("ready") is not False and time.time() < deadline:  # noticed within ~3 s
+        time.sleep(0.5)
+    assert admin(px, "/_l9s/health")["ready"] is False
+
+    def start_again():
+        time.sleep(3)
+        UP["proc"] = subprocess.Popen([sys.executable, str(HERE / "mock_upstream.py"), str(up)])
+    threading.Thread(target=start_again, daemon=True).start()
+    t = time.time()
+    out = json.load(call(px, "/v1/chat/completions", chat_body("mymodel")))
+    assert out["choices"][0]["message"]["content"].startswith("hi") and time.time() - t >= 2
+    assert admin(px, "/_l9s/health")["ready"] is True
+
+
+def test_a_server_down_for_long_answers_at_once():
+    """Stopped for over 10 minutes means stopped, not restarting: don't make requests wait."""
+    import asyncio
+    import importlib
+    sys.path.insert(0, str(APP))
+    proxy = importlib.import_module("proxy")
+    proxy.backend_state.update(ok=False, since=time.time() - proxy.FRESH_DOWN - 5)
+    t = time.time()
+    assert asyncio.run(proxy.wait_for_backend(None)) is False and time.time() - t < 1
+    proxy.backend_state.update(ok=True, since=time.time())
+    assert asyncio.run(proxy.wait_for_backend(None)) is True

@@ -310,8 +310,8 @@ l9s connect                     # list: installed? connected? how
 l9s connect codex               # show the change, back up the file once (<file>.l9s-backup), ask, write
 l9s connect codex --print       # only show it
 l9s connect codex --remove      # take l9s' entries back out (nothing else in the file is touched)
-l9s claude [-m model] [args]    # launch with l9s for this session only (also: l9s codex, opencode, crush, grok,
-                                #   qwen, goose, aider, droid; generic: l9s run <tool>)
+l9s claude [-m model] [args]    # launch with l9s for this session only: any tool works the same way
+                                #   (l9s codex, opencode, gemini, crush, …; l9s run <tool> too)
 l9s connect --server gb10       # on another machine with l9s: target that server for every connect / launch
 ```
 
@@ -360,7 +360,7 @@ model is loaded.
 request for it goes to the loaded model and never switches; if a switch is running or queued, it waits for it and
 then goes to the new model. Its `context_window` / `max_output_tokens` are the smallest across your models (ignoring
 ones under 32K, too small for a coding agent), so a client configured once never overflows a model it follows to.
-`l9s claude` / `l9s codex` / `l9s run <tool>` use it unless you pass `-m <model>`; tools whose config lists models get
+`l9s claude` / `l9s codex` / `l9s <tool>` use it unless you pass `-m <model>`; tools whose config lists models get
 it as the first entry.
 
 A client that names a specific model is remembered for 15 minutes (`GET /_l9s/pins`): switching away from it in

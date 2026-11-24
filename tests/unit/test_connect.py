@@ -182,3 +182,14 @@ def test_claude_prompt_is_cache_friendly_and_lean_on_small_context(cx):
     drop = connect.tool("claude").plan(small).argv
     assert "Monitor" in drop[drop.index("--disallowedTools") + 1]
     assert "--strict-mcp-config" in drop and "--strict-mcp-config" not in big.argv  # MCP tools don't fit 40K
+
+
+def test_l9s_word_is_a_tool_to_launch():
+    """`l9s <tool>` launches any tool l9s knows (bin/l9s asks `connect.py is-tool`); l9s' own commands aren't tools."""
+    import subprocess
+    from pathlib import Path
+    py = sys.executable
+    app = Path(__file__).resolve().parents[2] / "app" / "connect.py"
+    code = lambda w: subprocess.run([py, str(app), "is-tool", w], capture_output=True).returncode  # noqa: E731
+    assert code("claude") == 0 and code("gemini") == 0 and code("codex") == 0
+    assert code("frob") == 1 and code("status") == 1 and code("keys") == 1

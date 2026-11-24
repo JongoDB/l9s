@@ -1232,6 +1232,9 @@ async def proxy(request: web.Request) -> web.StreamResponse:
         headers["Authorization"] = f"Bearer {API_KEY}"
     sess: aiohttp.ClientSession = request.app["session"]
     state = "error"
+    resp = None
+    if not remote and request.path.startswith("/v1/") and backend_state["ok"] is False:
+        await wait_for_backend(rec)
     try:
         async with sess.request(request.method, target + upath, data=body, headers=headers,
                                 allow_redirects=False) as up:
@@ -1356,11 +1359,36 @@ async def proxy(request: web.Request) -> web.StreamResponse:
         if rec is not None:
             rec["error"] = "client disconnected"
         return web.Response(status=499)
-    except aiohttp.ClientConnectorError:
+    except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as e:
+        # the connection to the model server (or a linked server) failed: refused, reset or dropped. Say so clearly
+        # (aiohttp would answer a bare "500 Server got itself in trouble").
+        if remote:
+            msg = (f"the linked server `{remote['link']}` couldn't be reached ({type(e).__name__}): "
+                   f"`l9s link` shows its state")
+            status, typ = 502, "linked_server_unreachable"
+        else:
+            msg = ("the model server isn't answering: it's starting, restarting, stopped or switching models. "
+                   "Try again shortly (`l9s status` says which)" + backend_failure_hint())
+            status, typ = 503, "server_unavailable"
         if rec is not None:
-            rec["status"], rec["error"] = 503, "model server is not running (starting, stopped or switching models)"
-        return web.json_response({"error": {"message": "The model server is starting, stopped or switching models. "
-                                                       "Try again shortly.", "type": "server_unavailable"}}, status=503)
+            rec["status"], rec["error"] = status, msg[:300]
+        resp = resp if resp is not None else pre
+        anth = request.path.endswith("/messages")  # Anthropic API clients (Claude Code) get Anthropic-shaped errors
+        if resp is not None and resp.prepared:  # mid-reply: end the stream with an error event
+            try:
+                err = ({"type": "error", "error": {"type": "api_error", "message": msg}} if anth
+                       else {"error": {"message": msg, "type": typ}})
+                await resp.write((b"event: error\n" if anth else b"") + b"data: "
+                                 + json.dumps(err).encode() + b"\n\n")
+                await resp.write_eof()
+            except (ConnectionResetError, RuntimeError):
+                pass
+            return resp
+        retry = {"Retry-After": "10"} if status == 503 else {}
+        if anth:
+            return web.json_response({"type": "error", "error": {"type": "api_error", "message": msg}},
+                                     status=status, headers=retry)
+        return api_error(status, msg, typ, **retry)
     finally:
         if rec is not None:
             finish(rec, state)
@@ -1372,7 +1400,8 @@ async def admin(request: web.Request) -> web.Response:
         return web.json_response({"error": "admin API is localhost-only"}, status=403)
     path = request.path
     if path == "/_l9s/health":
-        return web.json_response({"ok": True, "uptime": time.time() - started_at, "upstream": UPSTREAM,
+        return web.json_response({"ok": True, "ready": backend_state["ok"], "uptime": time.time() - started_at,
+                                  "upstream": UPSTREAM,
                                   "active": len(active), "switching": dict(switching) or None,
                                   "waiting": len([r for r in active.values() if r.get("_waiting")])})
     if path == "/_l9s/doctor":  # the latest health checks (?refresh=1: run them now)
@@ -1437,6 +1466,32 @@ async def watch_docker() -> None:
         await asyncio.sleep(5)
 
 
+# Whether the model server answers, kept by watch_ready (every 3 s): requests that arrive while it restarts wait
+# for it instead of failing.
+backend_state: dict = {"ok": None, "since": time.time()}
+RESTART_WAIT = float(os.environ.get("L9S_RESTART_WAIT", "300"))  # how long a request waits for a restart
+FRESH_DOWN = 600  # down longer than this: it's stopped, not restarting (don't make requests wait)
+
+
+async def wait_for_backend(rec: dict | None) -> bool:
+    """The model server went down recently (a restart, an update): wait for it. True once it answers."""
+    st = backend_state
+    if st["ok"] is not False or switching or pending or time.time() - st["since"] > FRESH_DOWN:
+        return st["ok"] is not False
+    if rec is not None:
+        rec["_waiting"] = True
+    try:
+        end = time.time() + RESTART_WAIT
+        while time.time() < end:
+            if backend_state["ok"]:
+                return True
+            await asyncio.sleep(1)
+        return False
+    finally:
+        if rec is not None:
+            rec.pop("_waiting", None)
+
+
 async def watch_ready(app: web.Application) -> None:
     ready, since, last_start = None, time.time(), None
     key = ENV.get("API_KEY", "")
@@ -1459,6 +1514,7 @@ async def watch_ready(app: web.Application) -> None:
             elif ready is not None:
                 event("down", "server stopped answering (stopping, restarting or switching models)")
             ready, since = ok, time.time()
+            backend_state.update(ok=ok, since=since)
         await asyncio.sleep(3)
 
 

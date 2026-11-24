@@ -2,6 +2,9 @@
 
 ## 0.14.4
 - Dependency updates now ship like every other release: CI, the hardware gate on a GB10 and a Mac, a beta, then stable after 3 days. 0.14.2 and 0.14.3 had gone straight to stable.
+- A request that arrives while the model server restarts (an update, a settings change, a crash) now waits for it, up to 5 minutes, instead of failing; a server that's been down for over 10 minutes answers at once. A dropped connection to the model server is now a clear 503 ("the model server isn't answering…", Anthropic-shaped for Claude Code) instead of a bare "500 Server got itself in trouble", also mid-reply. A linked server that can't be reached is named in a 502.
+- `l9s <tool>` launches any coding agent l9s knows (`l9s gemini`, `l9s amp`, …), not just the nine it had shortcuts for; `l9s run <tool>` still works. An unknown command now says so.
+- `/_l9s/health` reports whether the model server answers (`ready`).
 - Releases no longer wait on GitHub's hosted macOS runners, which can be unavailable for long stretches; the hardware gate on a real Mac covers them.
 - `l9s keys rm <name>` and `l9s keys remove <name>` delete a key, the same words `l9s link` takes; an unknown `keys` command now says so instead of only printing the usage.
 - Tested for real: a Cloudflare Tunnel on your own domain (`l9s expose cloudflare --host …`), from another network: chat, streaming, the Anthropic and Responses APIs, key limits and model access, closed admin routes, the client's real address and the certificate check.

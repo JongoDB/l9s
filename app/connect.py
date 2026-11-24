@@ -9,7 +9,7 @@
   l9s connect --server <URL> --key <key>
                                    use an l9s server you only have a URL and an API key for (from its owner's
                                    `l9s keys add`), e.g. https://llm.example.com
-  l9s run <tool> [args]            launch a tool against l9s without touching its normal setup
+  l9s <tool> [args]                launch a tool against l9s without touching its normal setup (or: l9s run <tool>)
                                    (also: l9s claude, l9s codex, … for the tools that support it)
 
 Every saved profile and every downloaded model that fits is listed as a model. Only one is loaded at a time;
@@ -476,9 +476,9 @@ def status_rows(info: dict) -> list[dict]:
     for t in TOOLS:
         ok, why = api_ok(t, info)
         p = t.plan(info)
-        how = ("launch: l9s run " + t.id) if p.argv and not p.changes else ("config" if p.changes else "manual steps")
+        how = ("launch: l9s " + t.id) if p.argv and not p.changes else ("config" if p.changes else "manual steps")
         if p.argv and p.changes:
-            how = "config + l9s run " + t.id
+            how = "config + l9s " + t.id
         rows.append({"id": t.id, "name": t.name, "kind": t.kind, "installed": installed(t),
                      "connected": connected(t), "supported": ok and p.supported, "why": why or p.why, "how": how,
                      "api": t.api})
@@ -550,6 +550,8 @@ def main(argv: list[str]) -> None:
         info = server_info()
         print(json.dumps({"info": info, "tools": status_rows(info)}))
         return
+    if argv[0] == "is-tool":  # for bin/l9s: is `l9s <word>` a tool to launch?
+        sys.exit(0 if len(argv) > 1 and any(argv[1] in (t.id, *t.aliases) for t in TOOLS) else 1)
     if argv[0] == "run":
         if len(argv) < 2:
             raise SystemExit("usage: l9s run <tool> [-m model] [tool args]")

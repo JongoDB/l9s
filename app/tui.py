@@ -2833,7 +2833,7 @@ class LLMTui(App):
                 elif r["connected"]:
                     st, col = "connected", K9["greenyellow"]
                 elif r["how"].startswith("launch"):
-                    st, col = f"ready: l9s run {r['id']}", K9["sky"]
+                    st, col = f"ready: l9s {r['id']}", K9["sky"]
                 elif r["how"] == "manual steps":
                     st, col = "manual steps", K9["gold"]
                 else:
