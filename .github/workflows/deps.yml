@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   issues: write
+  actions: write   # to start the release pipeline (a push made with this token can't start it)
 
 jobs:
   resolve:
@@ -49,7 +50,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: candidate-lock
-      - name: Bump version, changelog, tag and release
+      - name: Bump version and changelog, then hand off to the release pipeline
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -60,10 +61,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add requirements.lock VERSION CHANGELOG.md
           git commit -m "deps: update pinned dependencies (v$v)"
-          git tag "v$v"
-          git push origin HEAD:main "v$v"
-          python3 .github/scripts/release_notes.py "$v" > notes.md
-          gh release create "v$v" --title "l9s $v" --notes-file notes.md
+          git push origin HEAD:main
+          # Same path as every release: CI, the hardware gate (GB10 + Mac), a beta, then promote.yml after 3 days.
+          # (A push made with this token doesn't start other workflows; dispatching one does.)
+          gh workflow run release.yml -R "$GITHUB_REPOSITORY" --ref main
 
   report-failure:
     needs: [resolve, test, release]
