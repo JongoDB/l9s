@@ -1,23 +1,82 @@
 # l9s
 
-**k9s for local LLMs.** l9s turns a GPU box or an Apple Silicon Mac into an OpenAI-compatible model server for
-your network, and gives you a terminal UI to find, pull, serve and *watch* models: every request in flight,
+**k9s for local LLMs.** Serve models from a GPU box or an Apple Silicon Mac, use them from every machine and every
+coding agent you have, share them with other people, and watch it all from a terminal UI: every request in flight,
 throughput, latency, memory, startup progress, events.
 
-![l9s requests view on an NVIDIA GB10: Claude Code on a MacBook using Qwen3.6 through l9s, with its tool calls, token counts and speed](docs/img/requests.svg)
+## Install
+
+One line, on **any machine**: the box that serves the models, or a laptop that uses them.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash
+```
+
+A short setup asks what this machine is for, and installs only what that needs:
+
+| This machine… | Pick | What l9s sets up |
+|---|---|---|
+| has a GPU or Apple Silicon, and serves **you** | **personal** | the model server (vLLM on Linux, mlx-lm on a Mac) tuned for one conversation at a time, reachable from this machine, your network or your VPN |
+| serves **many people** | **shared** | the model server tuned for many at once, an HTTPS address (Cloudflare, Tailscale, your own domain), and a key per person with limits |
+| **uses** an l9s server: a laptop, any OS, no GPU needed | **client** | no model server: link the server with the URL and key you were given; its models show up in every tool on this machine |
+
+On a server, setup then asks how people reach it (l9s detects your LAN and VPN addresses), offers one recommended
+model for your hardware with its measured speed, and shows your API key. Change any of it later in Settings or with
+`l9s mode`, `l9s expose`, `l9s config`. Without a terminal (scripts, CI) give the choices as options:
+
+```bash
+# a server that serves the recommended model (or --model <repo>, --no-model)
+curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --mode personal
+# a client of a server someone shared with you
+curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --mode client \
+  --link gb10 https://llm.example.com sk-l9s-their-key-for-you
+l9s claude      # Claude Code on gb10's model, from this laptop
+```
+
+You don't need l9s just to use a server: any OpenAI- or Anthropic-compatible client works with its URL and a key.
+Installing it as a client adds `l9s claude` / `l9s codex`, tool setup (`l9s connect`), several servers' models in
+one list, and the TUI.
+
+## How it fits together
 
 ```
-clients ──▶ :8000  l9s-proxy ──▶ 127.0.0.1:8001  model server
-              │  API key, request log,        ▲      vllm: vLLM in Docker (Linux + NVIDIA/AMD GPU)
-              │  events, cancel               │      mlx:  mlx-lm server (Apple Silicon)
-              ▼                               │
-           l9s (TUI + CLI): analyze, pull, serve, switch, observe
+ MacBook (client)            Linux or WSL2 PC (client)         anyone with a URL + key
+ Claude Code, Codex, Zed…    OpenCode, Aider, Continue…        (no l9s needed)
+ l9s proxy :8000             l9s proxy :8000
+       │ links: gb10/<model>        │                                  │
+       └──────────────┬─────────────┴──────────────────────────────────┘
+                      │  HTTPS + API key      (or plain HTTP on your LAN / VPN)
+                      ▼
+ ┌─ l9s server: GB10 / DGX Spark, a Linux GPU box, or an Apple Silicon Mac ─────────────┐
+ │  way in      LAN · VPN · Cloudflare Tunnel · Tailscale · Caddy + Let's Encrypt · own │
+ │     ▼                                                                                │
+ │  l9s proxy  :8000   keys and limits · request log · model switching · health checks  │
+ │     │               Anthropic / Responses → chat (mlx) · waits through restarts      │
+ │     ▼                                                                                │
+ │  model server 127.0.0.1:8001     vLLM in Docker (Linux)  ·  mlx-lm (macOS)           │
+ │                                                                                      │
+ │  l9s TUI + CLI: find, analyze, pull, serve, switch, watch · settings · backups       │
+ └──────────────────────────────────────────────────────────────────────────────────────┘
+          ▲  a server can link other servers too: their models appear as <link>/<model>
 ```
+
+- **Server:** the model server only listens on the machine itself. Everything goes through the l9s proxy, which
+  checks keys, applies each person's limits, records requests and events, loads another model when one is asked
+  for, and turns any connection problem into a clear error. How the outside world reaches the proxy is your choice
+  (Settings › Access); for the internet, an HTTPS front end with a real certificate sits in front of it.
+- **Client:** the same proxy without a model server. It forwards each model to the linked server it came from, so
+  your tools see one list (`gb10/qwen3.6-35b`, `gb10/l9s` = whatever gb10 has loaded) and one endpoint on this
+  machine. Linking works in every mode: a personal server can add a friend's models next to its own.
+- **Tools** talk to the nearest l9s: on a server, to that server; on a client, to the client's proxy.
+  `l9s claude`, `l9s codex` and `l9s connect <tool>` set them up.
+
+![l9s requests view on an NVIDIA GB10: Claude Code on a MacBook using Qwen3.6 through l9s, with its tool calls, token counts and speed](docs/img/requests.svg)
 
 ## Deployments
 
 The installer looks at the machine it runs on and installs only what that machine needs: on a Mac it installs
-mlx-lm (no Docker, no vLLM, no sudo); on Linux with a GPU it installs vLLM in Docker. `l9s hw` shows what it detected.
+mlx-lm (no Docker, no vLLM, no sudo); on Linux with a GPU it installs vLLM in Docker; a client installs neither.
+`l9s hw` shows what it detected.
 
 | Deployment | Hardware | Model server | Status |
 |---|---|---|---|
@@ -102,50 +161,43 @@ downloading.
 
 ![l9s hub view](docs/img/hub-mlx.svg)
 
-## Three ways to use it
+## Quick start
 
-| Mode | For | What l9s sets up |
-|---|---|---|
-| **personal** | a GPU box or Apple Silicon Mac that serves **you** | the model server, tuned for one conversation at a time; your tools on this machine and your LAN / VPN |
-| **shared** | a server for **many people** | the model server tuned for many at once, HTTPS (`l9s expose`: Let's Encrypt via Caddy, Cloudflare Tunnel, Tailscale) and a key per person with limits |
-| **client** | any machine that should **use someone else's l9s** | no model server: link their server with the URL + key they gave you; its models show up for every tool on this machine as `<link>/<model>` |
-
-The first time you open `l9s` it asks which one; change it any time in Settings › Mode or with `l9s mode`.
-Linking works in every mode, so a personal server can add a friend's models next to its own. A machine without a
-GPU l9s can use (an Intel Mac, a laptop) installs as a client.
+On a server:
 
 ```bash
-# client: use a server someone shared with you
-curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --mode client \
-  --link gb1 https://llm.example.com sk-l9s-their-key-for-you
-l9s claude      # Claude Code on gb1's model (gb1/l9s: whatever gb1 has loaded)
+l9s                                   # TUI: watch the server and requests; 5 = Hub, then / to search Hugging Face
+
+l9s quickstart Qwen/Qwen3-8B-FP8      # pull + serve any model with its recommended settings
+l9s info Qwen/Qwen3-8B-FP8            # just the analysis: does it fit, how much context, settings
+l9s test
 ```
 
-## Install
+On a Mac, use MLX builds, e.g. `l9s quickstart mlx-community/Qwen3-8B-4bit`.
 
-One line, on the GPU box or Mac that will serve the model:
+On a client:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash
+l9s                                   # TUI: the linked servers, their models, your requests
+l9s link add gb10 https://llm.example.com --key sk-l9s-…   # link another server (setup links the first one)
+l9s claude                            # Claude Code on gb10/l9s (whatever gb10 has loaded)
+l9s connect                           # set up your other tools
 ```
 
-That downloads l9s, installs it and opens a short **setup**:
+Point any OpenAI-compatible client at it (a server, or a client's own proxy):
 
-1. **Mode:** personal, shared or client.
-2. **Reach:** how people reach the server; l9s detects your LAN and VPN addresses.
-3. **Model:** one recommended model for your hardware, with its download size and the speed measured on that
-   hardware.
-4. **Keys:** your API key.
+```bash
+export OPENAI_BASE_URL=http://<host>:8000/v1
+export OPENAI_API_KEY=<output of: l9s key>
+```
 
-The recommended models are Qwen3.6-35B-A3B on a GB10 / DGX Spark (NVFP4 with its DFlash drafter, ~97 tokens/s) or on a
+On a remote box, run the TUI over SSH: `ssh -t <host> l9s`.
+
+## Install details
+
+**Recommended models:** Qwen3.6-35B-A3B on a GB10 / DGX Spark (NVFP4 with its DFlash drafter, ~97 tokens/s) or on a
 Mac with enough memory (MLX 4-bit, ~113 tokens/s on a 128 GB M-series), otherwise the largest Qwen3 that fits.
-A non-interactive install (scripts, CI) skips the setup and serves that model straight away. Options go after
-`bash -s --`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --model Qwen/Qwen3-4B-FP8
-curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --no-model
-```
+A non-interactive server install serves it straight away (`--model <repo>` picks another, `--no-model` none).
 
 Or from a clone: `git clone https://github.com/JongoDB/l9s.git && cd l9s && ./install.sh [--model <repo>|--no-model]`.
 `--mode personal|shared|client` picks the mode without asking (an interactive install asks); `--link <name> <url>
@@ -156,9 +208,10 @@ environment in `~/.l9s`, installs the `l9s` command, the request proxy as a serv
 the model server (vLLM image, or mlx-lm), generates an API key, and probes what the server supports. Running it again
 updates l9s and keeps your settings, profiles and history (no starter model if you already have one).
 
-**Linux (vllm) needs:** Docker with GPU access (`docker run --gpus all …` works: NVIDIA container toolkit, or ROCm),
-and `sudo` for the `l9s` symlink and the proxy service.
-**macOS (mlx) needs:** an Apple Silicon Mac; nothing else (no Docker, no sudo).
+**A Linux server (vllm) needs:** Docker with GPU access (`docker run --gpus all …` works: NVIDIA container toolkit,
+or ROCm), and `sudo` for the `l9s` symlink and the proxy service.
+**A Mac server (mlx) needs:** an Apple Silicon Mac; nothing else (no Docker, no sudo).
+**A client needs:** nothing special: macOS, Linux or WSL2 (`sudo` on Linux for the proxy service).
 
 **Updates:** l9s checks once a day (and when the TUI opens). When a newer version is out, the TUI header shows
 **↑ … available**: press `U` (or click it) to update and l9s restarts itself on the new version. From a shell,
@@ -179,27 +232,6 @@ every other release: the hardware gate on real machines, a beta, then stable (se
 the command. Your settings, keys, linked servers, profiles and history stay (and a backup is taken), so a reinstall
 picks up where you left off; `--purge` removes them too. Downloaded models stay in the Hugging Face cache unless you
 add `--remove-models`; `--remove-image` also deletes the vLLM Docker image.
-
-## Quick start
-
-```bash
-l9s                                   # TUI: watch the server and requests; 5 = Hub, then / to search Hugging Face
-
-l9s quickstart Qwen/Qwen3-8B-FP8      # pull + serve any model with its recommended settings
-l9s info Qwen/Qwen3-8B-FP8            # just the analysis: does it fit, how much context, settings
-l9s test
-```
-
-On a Mac, use MLX builds, e.g. `l9s quickstart mlx-community/Qwen3-8B-4bit`.
-
-Point any OpenAI-compatible client at it:
-
-```bash
-export OPENAI_BASE_URL=http://<host>:8000/v1
-export OPENAI_API_KEY=<output of: l9s key>
-```
-
-On a remote box, run the TUI over SSH: `ssh -t <host> l9s`.
 
 ## Use it with your coding agent
 
