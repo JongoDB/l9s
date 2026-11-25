@@ -379,8 +379,8 @@ real hardware: AMD ROCm and NVIDIA on WSL2. Any other machine can use l9s in *cl
 servers). `l9s hw` says which this machine is; the installer and the TUI header say so too.
 
 **Releases.** Every release first passes CI and then the hardware gate: the full live test suite (the TUI, the
-setup, the API, Claude Code and Codex sessions) on a GB10 and a Mac, started only once each machine has been idle
-for 15 minutes so it never interrupts anyone using them. It ships as a **beta**, and becomes **stable**
+setup, the API, Claude Code and Codex sessions) on a GB10 and a Mac, run at night
+on the GB10 and only once a machine has been idle for 15 minutes, since it reloads the model. It ships as a **beta**, and becomes **stable**
 after 3 days with no open `regression` issue. New installs and automatic updates get stable. Settings › Updates
 (`l9s config set UPDATE_CHANNEL beta`) gets betas when you update by hand.
 

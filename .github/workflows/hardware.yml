@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       now:
-        description: "Start right away instead of waiting until each machine has been idle for 15 minutes"
+        description: "Start right away: don't wait for the night window or for idle machines (interrupts whoever is using them)"
         type: boolean
         default: false
   workflow_call:
@@ -20,28 +20,36 @@ concurrency:
   group: hardware
   cancel-in-progress: false
 
-# Each machine is checked only once nobody has used it for 15 minutes (hardware.sh), so a release never interrupts
-# a real session; it can wait up to 12 hours. The GB10 goes first: the Mac in client mode uses the GB10, so running
-# both at once would send the Mac's tests into the GB10's restarts (and look like someone using the GB10).
-env:
-  L9S_GATE_IDLE_MIN: ${{ inputs.now && '0' || '15' }}
-
+# The GB10 serves people, and the gate reloads its model: it's checked between 01:00 and 04:00 its local time, once
+# nobody has used it (or loaded a model) for 15 minutes. It's tested on a model that loads quickly, and the one that
+# was loaded is put back, also after a failed or cancelled run. The Mac only waits for 15 idle minutes (a laptop is
+# often asleep at night). The GB10 goes first: the Mac, in client mode, uses it.
 jobs:
   gb10:
     name: hardware (l9s-gb10)
     runs-on: [self-hosted, l9s-gb10]
-    timeout-minutes: 840
+    timeout-minutes: 1560
+    env:
+      L9S_GATE_IDLE_MIN: ${{ inputs.now && '0' || '15' }}
+      L9S_GATE_WINDOW: ${{ !inputs.now && '1-4' || '' }}
+      L9S_GATE_MAX_WAIT_H: "23"
+      L9S_GATE_MODEL: qwen3.6-35b-a3b-nvfp4
     steps:
       - uses: actions/checkout@v4
       - name: End-to-end on the live install
         run: .github/scripts/hardware.sh
+      - name: Put the model back
+        if: always()
+        run: .github/scripts/gate_restore.sh
 
   mac:
     name: hardware (l9s-mac)
     needs: gb10
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.gb10.result == 'success' }}
     runs-on: [self-hosted, l9s-mac]
     timeout-minutes: 840
+    env:
+      L9S_GATE_IDLE_MIN: ${{ inputs.now && '0' || '15' }}
     steps:
       - uses: actions/checkout@v4
       - name: End-to-end on the live install

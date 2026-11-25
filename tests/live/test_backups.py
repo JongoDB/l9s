@@ -36,7 +36,7 @@ async def main():
         check("restore asks first", isinstance(app.screen, Confirm))
         app.screen.query_one("#yes", Button).press()
         t = time.time()
-        while time.time() - t < 600 and "restored" not in str(app.query_one("#set-backup-info").render()):
+        while time.time() - t < 1500 and "restored" not in str(app.query_one("#set-backup-info").render()):
             await pilot.pause(1)
         info = str(app.query_one("#set-backup-info").render())
         client = bk.envfile.read().get("BACKEND") == "remote"  # client mode: no model server to start

@@ -45,7 +45,7 @@ async def main():
         next(b for b in fixes if prof in str(b.label)).press()
         t = time.time()
         ok = False
-        while time.time() - t < 600:
+        while time.time() - t < 1500:
             await pilot.pause(2)
             d = doctor.load() or {}
             if any(r["id"] == "model" and r["level"] == "ok" for r in d.get("results", [])):

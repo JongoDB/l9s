@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # The hardware gate: runs on the self-hosted runners (a GB10 serving with vLLM; a Mac that serves with mlx-lm or,
 # in client mode, uses the GB10), against their live l9s installs. It first waits until the machine has been idle
-# for L9S_GATE_IDLE_MIN minutes (default 15; 0 = don't wait), so it never interrupts a real session, then installs
-# this commit over the live setup (kept) and checks it end to end. The machine stays on this commit afterwards
-# (what's being released is what's tested).
+# for L9S_GATE_IDLE_MIN minutes (default 15; 0 = don't wait) and, where L9S_GATE_WINDOW is set ("1-4": from 01:00
+# until 04:00 local time), for that window. Then it installs this commit over the live setup (kept) and checks it end
+# to end. A vLLM server is tested on L9S_GATE_MODEL (a model that loads quickly); gate_restore.sh, the workflow's last
+# step, puts back the model that was loaded. The machine stays on this commit afterwards (what's released is what's
+# tested).
 set -euo pipefail
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 export L9S_SKIP_SETUP=1
@@ -19,19 +21,25 @@ limit() { local s="$1"; shift; perl -e 'alarm shift; exec @ARGV or die "exec: $!
 
 IDLE_MIN="${L9S_GATE_IDLE_MIN:-15}"
 MAX_WAIT_H="${L9S_GATE_MAX_WAIT_H:-12}"
+WINDOW="${L9S_GATE_WINDOW:-}"
+in_window() {
+  [[ -z "$WINDOW" ]] && return 0
+  local h; h=$(( 10#$(date +%H) ))
+  (( h >= ${WINDOW%-*} && h < ${WINDOW#*-} ))
+}
 if [[ "$IDLE_MIN" -gt 0 && -x "$L9S" ]]; then
-  step "wait until nobody has used this machine for $IDLE_MIN min (up to $MAX_WAIT_H h)"
+  step "wait until nobody has used this machine for $IDLE_MIN min${WINDOW:+, between $WINDOW h local time} (up to $MAX_WAIT_H h)"
   port="$("$L9S" config get PORT 2>/dev/null || echo 8000)"
   deadline=$(( $(date +%s) + MAX_WAIT_H * 3600 ))
   while :; do
     idle="$(python3 .github/scripts/last_use.py "$port")"
-    if (( idle >= IDLE_MIN * 60 )); then
+    if in_window && (( idle >= IDLE_MIN * 60 )); then
       echo "idle for $(( idle >= 1000000000 ? -1 : idle / 60 )) min: starting"; break
     fi
     if (( $(date +%s) >= deadline )); then
-      echo "::error::still in use after $MAX_WAIT_H h: not testing on this machine now (re-run the gate later)"; end; exit 1
+      echo "::error::no free moment in $MAX_WAIT_H h: not testing on this machine now (re-run the gate later)"; end; exit 1
     fi
-    echo "$(date '+%H:%M') in use (last request $(( idle / 60 )) min ago): checking again in 3 min"
+    if in_window; then echo "$(date '+%H:%M') in use ($(( idle / 60 )) min ago): checking again in 3 min"; fi
     sleep 180
   done
   end
@@ -44,8 +52,25 @@ end
 
 client=0; [[ "$("$L9S" config get BACKEND 2>/dev/null || true)" == "remote" ]] && client=1
 active="$(basename "$(readlink "$HOME/.l9s/active" 2>/dev/null || echo)")"
-if [[ $client -eq 0 && -n "$active" ]] && ! "$L9S" status | grep -q "server: running"; then
-  step "start $active"; "$L9S" use "$active"; end
+# (captured, not piped: with pipefail, `status | grep -q` fails when grep stops reading early, so a running server
+# looked stopped and every run reloaded its model)
+status="$("$L9S" status)"
+GATE_MODEL="${L9S_GATE_MODEL:-}"
+STATE="$HOME/.l9s/cache/gate-restore"
+if [[ $client -eq 0 && -f "$STATE" ]]; then
+  if [[ "$active" == "$(sed -n 2p "$STATE")" ]]; then
+    active="$(head -1 "$STATE")"  # an earlier run couldn't put its model back: still put that one back
+  else
+    rm -f "$STATE"  # someone chose another model since
+  fi
+fi
+if [[ $client -eq 0 && -n "$GATE_MODEL" && -n "$active" && "$active" != "$GATE_MODEL" && -f "$HOME/.l9s/profiles/$GATE_MODEL" ]]; then
+  step "test on $GATE_MODEL ($active is put back afterwards)"
+  mkdir -p "$(dirname "$STATE")"; printf '%s\n%s\n' "$active" "$GATE_MODEL" > "$STATE"
+  limit 1800 "$L9S" use "$GATE_MODEL"
+  end
+elif [[ $client -eq 0 && -n "$active" ]] && ! grep -q "server: running" <<<"$status"; then
+  step "start $active"; limit 1800 "$L9S" use "$active"; end
 fi
 
 run "doctor (no failures)" bash -c "'$L9S' doctor --quick; [[ \$? -eq 0 ]]"
@@ -59,6 +84,8 @@ if [[ $client -eq 1 ]]; then  # client mode: the first linked server's "whatever
 fi
 run "API: models, chat, streaming, Anthropic, Responses, wrong keys ($MODEL)" python3 tests/live/e2e_api.py "http://127.0.0.1:$PORT" "$KEY" "$MODEL"
 retry() { "$@" || { echo "::warning::$* failed once; retrying (a flaky run is reported, a real break fails twice)"; "$@"; }; }
+# tests take and restore real backups: in a folder of their own, so they don't push out the machine's (10 are kept)
+L9S_BACKUPS="$(mktemp -d)"; export L9S_BACKUPS
 suites=(test_settings test_nav test_click test_reach test_backups test_health)
 [[ $client -eq 1 ]] && suites=(test_settings test_nav test_click test_reach test_backups)  # no local model server
 for t in "${suites[@]}"; do
