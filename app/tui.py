@@ -2108,7 +2108,7 @@ class LLMTui(App):
         self.set_interval(10, lambda: self.query_one(TabbedContent).active == "keys" and self.refresh_keys())
         self.set_interval(0.25, self.drain_log)
         self.follow_logs()
-        if self.caps is None:
+        if self.caps is None and self.backend != "remote":  # client mode: no model server here to check
             self.probe_caps()
         self.update_info = updater.cached(max_age=10 ** 9)
         self.check_updates()
@@ -2125,6 +2125,8 @@ class LLMTui(App):
     def check_optimizable(self) -> None:
         """After an update l9s may know faster settings than your saved profiles have: check once per l9s version
         (or when profiles change) and say so. Nothing changes until you press o on a profile."""
+        if self.backend == "remote":  # client mode: the profiles here aren't served
+            return
         marker = LLM_HOME / "cache" / "optimize-check.json"
         sig = updater.installed_version() + ":" + ",".join(
             f"{p.name}:{p.stat().st_mtime:.0f}" for p in sorted(PROFILES.glob("*")))
@@ -2234,6 +2236,8 @@ class LLMTui(App):
 
     @work(thread=True, exclusive=True, group="caps")
     def probe_caps(self) -> None:
+        if self.backend == "remote":
+            return
         self.call_from_thread(self.notify, f"checking what {'mlx-lm' if self.image == 'mlx' else self.image} supports (flags, architectures, parsers)…",
                               timeout=8)
         try:

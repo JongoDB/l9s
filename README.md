@@ -24,14 +24,34 @@ mlx-lm (no Docker, no vLLM, no sudo); on Linux with a GPU it installs vLLM in Do
 | **vllm** | Linux + NVIDIA GPU: unified-memory boxes (DGX Spark / GB10, Jetson Thor) and discrete GPUs (RTX, A/L/H/B-series), single or multi-GPU; amd64 and arm64 | [vLLM](https://github.com/vllm-project/vllm) in Docker | **tested** on an NVIDIA GB10 (Dell Pro Max GB10) |
 | **mlx** | Macs with Apple Silicon (M1–M5) | [mlx-lm](https://github.com/ml-explore/mlx-lm) server under launchd | **tested** on an Apple M5 Max |
 | vllm (AMD) | Linux + AMD Instinct/Radeon with ROCm | vLLM ROCm image | experimental, untested |
+| vllm (WSL2) | Windows + NVIDIA GPU, through WSL2 | vLLM in Docker | experimental, untested |
+| **client** | any machine (Linux, macOS, WSL2), no GPU needed | none: uses linked l9s servers | **tested** on a MacBook (M5) using a GB10 |
 
 Discrete-GPU, multi-GPU and AMD support follow the same code paths (hardware detection, per-GPU memory math, tensor
 parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
 
 ## What you get
 
-- **One OpenAI-compatible endpoint** with an API key, one model at a time, restarted automatically after a crash or
-  reboot. Clients use the profile name as `model`, the same on both deployments.
+- **One endpoint for every API your tools speak:** OpenAI chat and completions, the OpenAI Responses API (Codex) and
+  the Anthropic Messages API (Claude Code), with an API key, one model at a time. Clients use the profile name as
+  `model`, the same on both deployments; asking for another model loads it on demand.
+- **Everything in the app, nothing to edit by hand:** every setting is in the TUI (Settings) and the CLI
+  (`l9s config`), from one list, so the two always agree, and both check a value before saving it. Settings
+  migrate themselves on update.
+- **Looks after itself:**
+  - **Health checks:** `l9s doctor` and the Health panel run continuously and offer a **Fix** for each problem
+    (server down, out of memory, disk, certificate, tunnel, firewall, keys being guessed, linked servers, updates).
+  - **Alerts:** to your phone or chat (ntfy, Slack, Discord, any webhook) when the server goes down, its public
+    address changes or a certificate is about to expire.
+  - **Self-healing:**
+    - the server is restarted after a crash or reboot;
+    - requests that arrive during a restart wait for it instead of failing;
+    - a model whose context doesn't fit is lowered to what vLLM measured and started again.
+  - **Backups:** taken before every risky change, kept 10 deep, restored from Settings or `l9s restore`.
+  - **Bug reports:** `l9s report` makes one file to attach to a bug report, with keys, tokens and prompts removed.
+- **Share it safely:** a key per person with limits, and an HTTPS address on your network, your VPN, a free
+  Cloudflare address, Tailscale or your own domain, which l9s sets up and detects for you (see
+  [Share it](#share-it-one-server-many-people)). Or link other people's servers and use their models as your own.
 - **Model analysis before you download** (`l9s info <repo>`, the Hub tab, the serve dialog). l9s reads the model's
   `config.json`, chat template, `generation_config.json` and model card, and checks them against what *your* server
   supports:
@@ -55,8 +75,11 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
     generating). Per-client usage
   - **Events:** server starts, exits, OOM kills, ready times, model switches, error bursts. Recorded even when the
     TUI is closed
-  - **Local / Hub / Downloads / Settings:** profiles, Hugging Face search with fit estimates, background downloads,
-    HF token (with check), API key, memory budget, port, server version (with release check)
+  - **Local / Hub / Downloads:** profiles, Hugging Face search with fit estimates, background downloads
+  - **Connect / Keys / Settings:** coding-agent setup, per-person keys and usage, and every setting: mode, access,
+    API key, HF token (with check), memory budget, ports, model switching, speculative decoding, alerts, updates,
+    backups, Report a problem
+  - **Health** (click the badge in the header, or `:doctor`): every check, with Fix buttons
   - `:` command bar · `/` filter (search, in the Hub) · `d` describe · `ctrl+k` cancel · `y` copy · `?` help
   - **arrow keys** everywhere: `←`/`→` switch views, `↑`/`↓` move through tables and on into the next table or field
   - **mouse-friendly:** every key hint in the header, the breadcrumbs, the header fields and the inline hints are
@@ -106,9 +129,18 @@ One line, on the GPU box or Mac that will serve the model:
 curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash
 ```
 
-That downloads l9s, installs it, and **starts serving a starter model** sized for the machine (the largest of
-Qwen3 8B / 4B / 1.7B / 0.6B that fits with 16K+ context: FP8 builds for vLLM, 4-bit MLX builds on a Mac), so the
-endpoint answers right away. Options go after `bash -s --`:
+That downloads l9s, installs it and opens a short **setup**:
+
+1. **Mode:** personal, shared or client.
+2. **Reach:** how people reach the server; l9s detects your LAN and VPN addresses.
+3. **Model:** one recommended model for your hardware, with its download size and the speed measured on that
+   hardware.
+4. **Keys:** your API key.
+
+The recommended models are Qwen3.6-35B-A3B on a GB10 / DGX Spark (NVFP4 with its DFlash drafter, ~97 tokens/s) or on a
+Mac with enough memory (MLX 4-bit, ~113 tokens/s on a 128 GB M-series), otherwise the largest Qwen3 that fits.
+A non-interactive install (scripts, CI) skips the setup and serves that model straight away. Options go after
+`bash -s --`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JongoDB/l9s/main/get.sh | bash -s -- --model Qwen/Qwen3-4B-FP8
@@ -131,20 +163,22 @@ and `sudo` for the `l9s` symlink and the proxy service.
 **Updates:** l9s checks once a day (and when the TUI opens). When a newer version is out, the TUI header shows
 **↑ … available**: press `U` (or click it) to update and l9s restarts itself on the new version. From a shell,
 `l9s update` does the same (`--check` only reports). In Settings → Updates you can switch to **auto** (installs
-updates in the background without restarting a running model) or **off**. vLLM itself is never upgraded
-automatically; when a newer release exists you're told the exact `l9s upgrade …` command.
+updates in the background without restarting a running model) or **off**, and pick the **stable** or **beta**
+channel. Every update takes a backup first. vLLM itself is never upgraded automatically; when a newer release
+exists you're told the exact `l9s upgrade …` command.
 
 **Releases and dependencies:** every Python package (Textual, aiohttp, huggingface_hub, and mlx-lm + MLX on a Mac)
-is pinned to an exact version in `requirements.lock`, so an install or update always gets a CI-tested set. A weekly
-GitHub Actions job re-resolves the lock to the newest versions; if anything changed it runs the full CI on Linux and
-on an Apple Silicon runner (including a real mlx-lm server behind the proxy), and only when that passes does it bump
-the patch version, write the changelog ("textual 8.2.8 → 8.3.0") and publish a release. `get.sh` and `l9s update`
-install the latest release, not `main`. vLLM image bumps are tested by hand on GPU hardware: the job opens an issue
-when a new vLLM release is out.
+is pinned to an exact version in `requirements.lock`, so an install or update always gets a tested set. A weekly
+GitHub Actions job re-resolves the lock to the newest versions. If anything changed and CI passes, it bumps the
+patch version and writes the changelog ("textual 8.2.8 → 8.3.0"), and the release goes through the same path as
+every other release: the hardware gate on real machines, a beta, then stable (see
+[Releases](#releases-platforms-and-compatibility)). `get.sh` and `l9s update` install the latest release, not
+`main`. vLLM image bumps are tested by hand on GPU hardware: the job opens an issue when a new vLLM release is out.
 
-**Uninstall:** `l9s uninstall` removes the model server, the proxy service, the command and `~/.l9s`.
-Downloaded models stay in the Hugging Face cache unless you add `--remove-models`; `--keep-config` keeps your
-settings, profiles and history; `--remove-image` also deletes the vLLM Docker image.
+**Uninstall:** `l9s uninstall` removes the model server, the proxy service, the update and tunnel services and
+the command. Your settings, keys, linked servers, profiles and history stay (and a backup is taken), so a reinstall
+picks up where you left off; `--purge` removes them too. Downloaded models stay in the Hugging Face cache unless you
+add `--remove-models`; `--remove-image` also deletes the vLLM Docker image.
 
 ## Quick start
 
@@ -185,7 +219,7 @@ change, and connects it with `enter`.
 |---|---|---|
 | **Claude Code** | `l9s claude`: launches it with the right environment; writes nothing. `/model` lists your l9s models (not Claude's), and the model knows it isn't Claude | ✅ vLLM and mlx, with tool calls |
 | **Codex CLI** | adds an `l9s` provider + profile to `~/.codex`; `l9s codex` or `codex --profile l9s`. `/model` lists your l9s models (l9s serves Codex's model catalog) | config from current docs |
-| **OpenCode**, **Crush**, **Grok Build**, **Qwen Code**, **Goose**, **Factory Droid**, **Aider** | adds an `l9s` provider with every model (context and output limits filled in); `l9s run <tool>` launches it | config from current docs |
+| **OpenCode**, **Crush**, **Grok Build**, **Qwen Code**, **Goose**, **Factory Droid**, **Aider** | adds an `l9s` provider with every model (context and output limits filled in); `l9s <tool>` launches it (`l9s opencode`, `l9s goose`, …) | config from current docs |
 | **Kilo Code**, **Continue**, **Zed** | adds an `l9s` provider / models to the editor's config | config from current docs |
 | **Cline**, **GitHub Copilot (VS Code)**, **JetBrains AI** | settings are GUI-only: the exact values to enter, step by step | n/a |
 | **Cursor**, **Amp** | not possible: they send requests from their own cloud, which can't reach your network | n/a |
@@ -214,8 +248,11 @@ updated automatically when you add or remove profiles; `l9s connect <tool> --rem
 
 ```bash
 l9s expose cloudflare               # a free https://….trycloudflare.com address (no account, nothing to open)
-l9s expose caddy llm.example.com    # or: your domain, Let's Encrypt certificate via Caddy
+l9s expose cloudflare --host llm.example.com   # or: your domain on Cloudflare (browser login or --api-token)
+l9s expose caddy llm.example.com    # or: your domain, Let's Encrypt certificate via Caddy (ports 80/443 open)
+l9s expose tailscale [--private]    # or: Tailscale Funnel (public) / your tailnet only
 l9s expose vpn                      # or: only your VPN (l9s finds this machine's VPN address)
+l9s expose lan                      # or: your local network
 l9s keys add alice --concurrent 2   # a key per person; shown once, stored as a hash
 l9s keys usage                      # who used how much
 ```
@@ -231,6 +268,12 @@ person at ~110 tokens/s and 32 at once at ~550 tokens/s in total. The **Keys** v
 today; the Requests view shows who sent what. Someone with l9s installed connects with
 `l9s connect --server https://llm.example.com --key <their key>`, and every `l9s claude` / `l9s connect <tool>`
 then uses your server.
+
+A server with no API key only answers this machine: l9s won't open it to other devices. Keys are stored as hashes,
+someone guessing keys is blocked and shows up in Health, and the admin API only answers on the machine itself.
+
+**Link servers.** `l9s link add gb10 https://llm.example.com --key <key>` adds another l9s server's models to
+yours as `gb10/<model>`, in every tool on this machine; a machine in client mode has only linked models.
 
 ## CLI
 
@@ -249,6 +292,12 @@ then uses your server.
 | `l9s upgrade <image:tag>` | (vllm) switch vLLM version |
 | `l9s connect [tool] [--remove\|--print\|--server host]` | set up Claude Code, Codex, OpenCode, Zed, … to use l9s |
 | `l9s claude` · `l9s codex` · `l9s <tool> [-m model]` | launch a coding agent on l9s without changing its normal setup |
+| `l9s config [list\|get\|set\|reset]` | every setting, the same ones as the TUI's Settings |
+| `l9s mode [personal\|shared\|client]` · `l9s expose …` | who it's for / how people reach it |
+| `l9s keys [add\|set\|revoke\|rm\|usage]` · `l9s link [add\|rm]` | per-person keys / linked servers |
+| `l9s doctor [--fix]` · `l9s alerts [test]` | health checks with fixes / where alerts go |
+| `l9s backup` · `l9s restore [id]` | back up / restore your setup |
+| `l9s report [--anonymize] [--issue]` | one file for a bug report, secrets removed |
 | `l9s hw` · `l9s key` | detected hardware / API key |
 | `l9s update [--check] [-y]` | check for / install a newer l9s (and mlx-lm on a Mac) |
 | `l9s uninstall [-y] [--purge] [--remove-models] [--remove-image]` | remove l9s (your setup stays for a reinstall unless `--purge`) |
@@ -275,15 +324,20 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 | `app/updater.py` | update checks: l9s (GitHub), mlx-lm (PyPI), vLLM releases (Docker Hub); cached daily |
 | `app/proxy.py` | request-tracking reverse proxy ([aiohttp](https://github.com/aio-libs/aiohttp)): API key, model list, on-demand model loading, event recorder |
 | `app/translate.py` | Anthropic Messages and OpenAI Responses ⇄ chat completions, for mlx-lm (tool calls and streaming) |
-| `app/connect.py` · `app/tools.py` | `l9s connect` / `l9s run`: safe config merges (backup, only l9s' own entries) and each tool's setup |
+| `app/connect.py` · `app/tools.py` | `l9s connect` / `l9s <tool>`: safe config merges (backup, only l9s' own entries) and each tool's setup |
+| `app/registry.py` · `app/config.py` · `app/envfile.py` | the one list of settings (checks, defaults, what each change restarts) behind Settings, `l9s config` and the docs; config migrations |
+| `app/expose.py` · `app/mode.py` | how people reach the server (LAN, VPN, Cloudflare, Tailscale, Caddy, your own proxy) / personal, shared, client |
+| `app/keys.py` · `app/links.py` | per-person keys and limits / linked servers |
+| `app/doctor.py` · `app/alerts.py` · `app/backup.py` · `app/report.py` | health checks and fixes / alerts / backups and restore / bug-report file |
 | `app/vllm_caps.py` / `app/mlx_caps.py` | ask the installed server which flags, architectures, parsers and quant methods it supports |
 | `requirements.in` / `requirements.lock` | allowed ranges / exact pinned versions (`uv pip compile --universal`) |
-| `.github/workflows/` | `ci.yml` (Linux + Apple Silicon MLX), `deps.yml` (weekly lock refresh → release), `release.yml` (tag on `VERSION` change) |
+| `.github/workflows/` | `ci.yml` (Linux, Apple Silicon MLX, Caddy + ACME), `release.yml` (on a `VERSION` change: CI → hardware gate → beta), `hardware.yml` (the live suite on a GB10 and a Mac), `promote.yml` (beta → stable after 3 days), `deps.yml` (weekly lock refresh) |
 | `tests/unit/` | fast tests run in CI: model analysis math, updater, proxy against a mock server, real mlx-lm on Apple Silicon |
-| `tests/live/` | end-to-end tests that drive the real TUI and proxy against a live server (some switch models: run them on a box you can interrupt) |
+| `tests/live/` | end-to-end tests that drive the real TUI and proxy against a live server (the hardware gate runs them; some switch models: run them on a box you can interrupt) |
 
-State lives in `~/.l9s` (config `env`, `profiles/`, `requests.jsonl`, `events.jsonl`, `logs/`); model weights stay
-in the standard Hugging Face cache, shared with other tools.
+State lives in `~/.l9s` (config `env`, `profiles/`, `keys.json`, `links.json`, `requests.jsonl`, `events.jsonl`,
+`logs/`) and backups in `~/.l9s-backups`; model weights stay in the standard Hugging Face cache, shared with other
+tools.
 
 ## Releases, platforms and compatibility
 
@@ -307,8 +361,10 @@ flags, the API that tools connect to, and the files l9s keeps (config, keys, lin
 
 ## Privacy
 
-Everything stays on your machine. The proxy keeps the first ~400 characters of each prompt and response in
-`~/.l9s/requests.jsonl` (mode 600) so the Requests view can show them; turn that off in Settings (`LOG_PROMPTS=0`).
+Everything stays on your machine: l9s sends no telemetry. The proxy keeps the first ~400 characters of each prompt
+and response in `~/.l9s/requests.jsonl` (mode 600) so the Requests view can show them; turn that off in Settings
+(`LOG_PROMPTS=0`). `l9s report` writes a file you attach yourself, with keys, tokens, prompts and replies removed
+(`--anonymize` also replaces host names and addresses). Alerts go only to the webhook you set.
 
 ## License
 

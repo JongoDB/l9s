@@ -877,19 +877,21 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
     overhead = OVERHEAD * tp if backend == "vllm" else 1.5 * GIB
     A["reserves"] = []
     if backend == "vllm":
-        # memory vLLM uses beyond the weights that the fixed overhead doesn't cover (measured: Gemma 4 31B with a
-        # DFlash drafter and vision had ~11 GiB less KV room than weights + 3 GiB predicted)
+        # memory vLLM uses beyond the weights that the fixed overhead doesn't cover (measured on a GB10: Gemma 4 31B
+        # with a DFlash drafter and vision had 31.5 GiB of KV room where weights + 3 GiB predicted 42)
         if meta.get("drafters") and not spec_off():
             r = max(2 * GIB, 0.10 * weights)
             overhead += r
             A["reserves"].append(f"~{fmt_bytes(r)} for a speculative drafter")
         if [k for k in ("vision_config", "audio_config", "speech_config") if cfg.get(k)]:
-            overhead += 2 * GIB
-            A["reserves"].append(f"~{fmt_bytes(2 * GIB)} for the vision/audio encoder")
+            overhead += 3 * GIB
+            A["reserves"].append(f"~{fmt_bytes(3 * GIB)} for the vision/audio encoder")
     A["overhead"] = overhead
     A["kv"] = {}
     for kvname, b in (("bf16", 2), ("fp8", 1)):
         per = kv_bytes_per_token(tc, layout, b, sliding_too=backend == "vllm")
+        if per and backend == "vllm" and meta.get("drafters") and not spec_off():
+            per = int(per * 1.07)  # the drafter keeps KV too (Gemma 4 31B + DFlash: 938 KiB/token measured vs 880)
         avail = budget - weights - overhead
         cap = int(avail / per) if per and avail > 0 else (0 if per else None)
         A["kv"][kvname] = {"per_token": per, "capacity": cap}

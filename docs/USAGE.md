@@ -11,6 +11,10 @@ One OpenAI-compatible endpoint for a local model, plus a CLI (`l9s`) and a k9s-s
 
 The model server restarts on its own after a crash or reboot (Docker `--restart unless-stopped` / launchd `KeepAlive`)
 with whatever model was last served; `l9s stop` keeps it stopped.
+While it restarts (a crash, an update, a settings change), requests that arrive wait for it, up to 5 minutes,
+instead of failing; once it's been down for over 10 minutes, requests get a clear "the model server isn't answering"
+error at once. If vLLM refuses to start because the model's context doesn't fit in memory, l9s lowers the profile's
+context to just under what vLLM measured, starts it again and records it in Events.
 
 ## Deployments
 

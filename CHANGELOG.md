@@ -2,6 +2,8 @@
 
 ## 0.14.4
 - Dependency updates now ship like every other release: CI, the hardware gate on a GB10 and a Mac, a beta, then stable after 3 days. 0.14.2 and 0.14.3 had gone straight to stable.
+- In client mode the TUI no longer tries to check a vLLM server ("couldn't probe vLLM capabilities … 'docker'") or offers to optimize profiles it doesn't serve.
+- README brought up to date: setup on first run, settings in the TUI and CLI, health checks, alerts, backups, reports, every way to reach a server, linked servers, release channels.
 - A model whose context doesn't fit in memory no longer crash-loops: when vLLM refuses to start for that reason it says how much context fits, and l9s lowers the profile to just under that, starts it again and says so in Events. (Gemma 4 31B on a GB10 was restarting every ~10 minutes with a 262K context that needed 48 GiB of KV cache when 31.5 GiB was left.)
 - Better memory estimates for vLLM: full-attention layers with their own shape (Gemma 4) are sized correctly, sliding-window layers count (vLLM sizes them like the rest), and room is kept for a speculative drafter, a vision encoder and a 10% margin.
 - A request that arrives while the model server restarts (an update, a settings change, a crash) now waits for it, up to 5 minutes, instead of failing; a server that's been down for over 10 minutes answers at once. A dropped connection to the model server is now a clear 503 ("the model server isn't answering…", Anthropic-shaped for Claude Code) instead of a bare "500 Server got itself in trouble", also mid-reply. A linked server that can't be reached is named in a 502.
