@@ -12,6 +12,10 @@ on:
         type: boolean
         default: false
   workflow_call:
+    inputs:
+      now:
+        type: boolean
+        default: false
 
 permissions:
   contents: read

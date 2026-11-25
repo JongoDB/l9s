@@ -5,6 +5,11 @@ on:
     branches: [main]
     paths: [VERSION]
   workflow_dispatch:
+    inputs:
+      now:
+        description: "Run the hardware gate right away: don't wait for the night window or for idle machines"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -18,6 +23,8 @@ jobs:
   hardware:
     needs: ci
     uses: ./.github/workflows/hardware.yml
+    with:
+      now: ${{ inputs.now || false }}
 
   release:
     needs: hardware
