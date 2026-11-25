@@ -1850,6 +1850,14 @@ class LLMTui(App):
                         with Horizontal(classes="frow"):
                             yield Input(id="set-mem", restrict=r"[0-9.]*")
                             yield Static("", id="set-mem-info")
+                        yield Label("Fast model loading", classes="section")
+                        yield Static("[dim]auto: a model's first start is a normal one, which measures its memory; after "
+                                     "that its weights stream from disk (several times faster), with the KV cache size "
+                                     "pinned so it fits. A model whose context wouldn't fit, or whose fast start fails, "
+                                     "loads the normal way. off: always the normal way.[/dim]")
+                        with Horizontal(classes="frow"):
+                            yield Select([("auto (fast after the first start)", "auto"), ("off", "off")], value="auto",
+                                         allow_blank=False, id="set-fastload")
                         yield Label("vLLM image", classes="section")
                         yield Static("[dim]Docker image the server runs. Newer releases add model architectures, parsers and "
                                      "speed-ups. Applying a new image downloads it (~20 GB) and restarts the server.[/dim]")
@@ -3237,6 +3245,7 @@ class LLMTui(App):
     @on(Select.Changed, "#set-update")
     @on(Select.Changed, "#set-switch")
     @on(Select.Changed, "#set-spec")
+    @on(Select.Changed, "#set-fastload")
     @on(Select.Changed, "#set-channel")
     @on(SelectionList.SelectedChanged, "#set-alert-events")
     def settings_changed(self, *_) -> None:

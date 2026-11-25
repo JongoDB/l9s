@@ -11,9 +11,11 @@ One OpenAI-compatible endpoint for a local model, plus a CLI (`l9s`) and a k9s-s
 
 The model server restarts on its own after a crash or reboot (Docker `--restart unless-stopped` / launchd `KeepAlive`)
 with whatever model was last served; `l9s stop` keeps it stopped.
-While it restarts (a crash, an update, a settings change), requests that arrive wait for it, up to 5 minutes,
-instead of failing; once it's been down for over 10 minutes, requests get a clear "the model server isn't answering"
-error at once. If vLLM refuses to start because the model's context doesn't fit in memory, l9s lowers the profile's
+While it restarts (a crash, an update, a settings change), requests that arrive wait for it, as long as the model
+usually takes to load (at least 5 minutes), instead of failing. Streaming requests get keep-alives meanwhile; plain
+requests through Cloudflare, which cuts silent ones off after 2 minutes, get a clear, retryable 503 before that. Once
+it's been down for much longer than a load takes (at least 10 minutes), requests get a clear "the model server isn't
+answering" error at once. If vLLM refuses to start because the model's context doesn't fit in memory, l9s lowers the profile's
 context to just under what vLLM measured, starts it again and records it in Events.
 
 ## Deployments
@@ -241,6 +243,7 @@ l9s keys add alice                # keys for other people
 | `ALERT_URL` | Alerts | a webhook for alerts when the server needs you: ntfy (phone push), Slack, Discord, or any URL (JSON) | right away |
 | `ALERT_EVENTS` | Alerts | which alerts: down, up, url, cert, link, abuse, update, disk | right away |
 | `GPU_MEM` | Memory for vLLM (GPU_MEM) | fraction of GPU memory vLLM may use (vllm only) | when the model server restarts |
+| `FAST_LOAD` | Fast model loading | auto: a model that has started before streams its weights from disk, with its KV cache size pinned · off: always load the normal way (vllm only) | when the model server restarts |
 | `IMAGE` | vLLM image | the vLLM Docker image (vllm only) | when the model server restarts |
 | `GPU_ARGS` | Advanced | how Docker gets the GPUs (NVIDIA: --gpus all; AMD: --device=/dev/kfd --device=/dev/dri …) (vllm only) | when the model server restarts |
 | `CONTAINER` | Advanced | the Docker container's name (vllm only) | when the model server restarts |
@@ -507,6 +510,19 @@ errors. GB10 + Qwen3.6-35B-A3B (DFlash): 1 stream 110 tok/s, 8 streams 315 tok/s
 `--concurrent` keeps one person's agents from taking every slot. On a Mac with a draft model, mlx-lm runs requests
 one at a time: set Settings › Speculative decoding to off for a Mac shared by several people.
 
+## Fast model loading (vllm)
+
+- What vLLM compiles and tunes at a start (minutes on a GB10) is kept for the next one, in the Docker volumes
+  `l9s-cache-*`.
+- From a profile's second start on, its weights are streamed from disk instead of read through mmap. Streaming keeps
+  its read buffer, and vLLM's own KV cache sizing varies between starts, so l9s pins the KV cache
+  (`--kv-cache-memory-bytes`) to what a normal start of that profile really used, minus the buffer. The first start
+  after you change a profile, `GPU_MEM`, `IMAGE` or `GPU_ARGS` is a normal one again, to measure.
+- It loads the normal way when the profile's context wouldn't fit next to the buffer, when the weights aren't all
+  downloaded safetensors, when the profile sets `--load-format`, a KV cache size or several GPUs itself, and after a
+  fast start of it has failed (Events says so).
+- `l9s config set FAST_LOAD off` (Settings › Fast model loading) turns streaming off.
+
 ## Upgrading the server
 
 mlx: `l9s update` (mlx-lm comes with each l9s release, pinned and CI-tested). vllm:
@@ -544,6 +560,6 @@ Roll back the same way with the old tag.
 | `~/.local/bin/hf` | Hugging Face CLI (`hf download`, `hf cache ls`, `hf auth login`) |
 | `~/.l9s/requests.jsonl`, `~/.l9s/events.jsonl` | request history and server events (from l9s-proxy) |
 | `/etc/systemd/system/l9s-proxy.service` (Linux) · `~/Library/LaunchAgents/dev.l9s.*.plist` (macOS) | services |
-| `~/.l9s/cache/` | server capability probe (per vLLM image / mlx-lm) |
+| `~/.l9s/cache/` | server capability probe (per vLLM image / mlx-lm), load times, each profile's memory numbers for fast loading |
 | `~/.l9s/logs/` | mlx-lm server log, proxy log (macOS), saved logs |
 

@@ -1519,6 +1519,31 @@ async def fit_after_crash(profile: str) -> None:
                                          stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
 
 
+async def note_memory(profile: str) -> None:
+    """A model is ready: keep the memory numbers vLLM logged, which a later fast start needs."""
+    import fastload
+    try:
+        p = await asyncio.create_subprocess_exec("docker", "logs", CONTAINER, stdout=asyncio.subprocess.PIPE,
+                                                 stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(p.communicate(), 60)
+        await asyncio.to_thread(fastload.record, profile, out.decode(errors="replace"))
+    except (OSError, ValueError, asyncio.TimeoutError):
+        pass
+
+
+async def after_failed_start(profile: str, streamed: bool) -> None:
+    """The container died. A fast start that never got to serving: this profile loads the normal way from now on."""
+    if streamed and backend_state.get("served") is False:
+        import fastload
+        fastload.failed(profile)
+        event("fastload", f"{profile}: the fast start failed, so it loads the normal way from now on "
+                          "(Settings › Fast model loading)", "warning", profile=profile)
+        await asyncio.create_subprocess_exec(str(L9S_HOME / "bin" / "l9s"), "use", profile, stdout=asyncio.subprocess.DEVNULL,
+                                             stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+        return
+    await fit_after_crash(profile)
+
+
 def note_server_start(after_crash: bool) -> None:
     """The model server starts loading: its load time counts from now (not from when it was stopped), and requests
     wait for it. Docker restarting a server that crashed isn't a fresh start (a crash loop must not hold requests)."""
@@ -1548,6 +1573,7 @@ async def watch_docker() -> None:
                     event("start", f"container started: profile {prof}", profile=prof)
                     note_server_start(after_crash)
                     after_crash = False
+                    backend_state["served"] = False
                 elif st == "die":
                     code = attrs.get("exitCode", "?")
                     crash = code not in ("0", "137", "143")  # 137/143 = stopped by docker stop / restart
@@ -1555,9 +1581,11 @@ async def watch_docker() -> None:
                           "error" if crash else "info", profile=prof)
                     after_crash = crash
                     if crash:
-                        asyncio.ensure_future(fit_after_crash(prof))
+                        asyncio.ensure_future(after_failed_start(prof, bool(attrs.get("l9s.fastload"))))
                 elif st == "oom":
                     event("oom", "container ran out of memory", "error", profile=prof)
+                    if attrs.get("l9s.fastload"):  # (it exits with 137, like a stopped one)
+                        asyncio.ensure_future(after_failed_start(prof, True))
                 elif st in ("kill", "stop"):
                     pass
                 elif st == "destroy":
@@ -1624,6 +1652,9 @@ async def watch_ready(app: web.Application) -> None:
             if ok:
                 took = time.time() - max(since, backend_state.get("started") or 0)
                 event("ready", f"serving {model} (became ready after {took:.0f}s)", model=model)
+                backend_state["served"] = True
+                if BACKEND == "vllm":
+                    asyncio.ensure_future(note_memory(active_model()[0]))
                 if ready is False and (backend_state.get("started") if BACKEND == "vllm" else took < FRESH_DOWN):
                     # a real down → up transition: remember how long this model takes to load
                     record_load_time(active_model()[0], took)

@@ -105,7 +105,8 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
   - **Self-healing:**
     - the server is restarted after a crash or reboot;
     - requests that arrive during a restart wait for it instead of failing;
-    - a model whose context doesn't fit is lowered to what vLLM measured and started again.
+    - a model whose context doesn't fit is lowered to what vLLM measured and started again;
+    - models load several times faster after their first start (weights streamed from disk, vLLM's compiled work kept).
   - **Backups:** taken before every risky change, kept 10 deep, restored from Settings or `l9s restore`.
   - **Bug reports:** `l9s report` makes one file to attach to a bug report, with keys, tokens and prompts removed.
 - **Share it safely:** a key per person with limits, over your network or VPN (plain HTTP), or HTTPS through a
@@ -353,6 +354,7 @@ speculative decoding. The result was **26–30 tok/s** with a 262K context (sing
 | `app/tui.py` | terminal UI ([Textual](https://github.com/Textualize/textual)) |
 | `app/hfmeta.py` | model analysis: Hub metadata, memory and KV math, card command extraction and sanitizing, presets |
 | `app/hw.py` | hardware detection: vendor, GPUs, unified vs dedicated memory, Docker GPU flags, live GPU stats |
+| `app/fastload.py` | (vllm) fast starts: streamed weights with the KV cache pinned to a size that fits |
 | `app/updater.py` | update checks: l9s (GitHub), mlx-lm (PyPI), vLLM releases (Docker Hub); cached daily |
 | `app/proxy.py` | request-tracking reverse proxy ([aiohttp](https://github.com/aio-libs/aiohttp)): API key, model list, on-demand model loading, event recorder |
 | `app/translate.py` | Anthropic Messages and OpenAI Responses ⇄ chat completions, for mlx-lm (tool calls and streaming) |

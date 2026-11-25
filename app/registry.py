@@ -105,6 +105,10 @@ SETTINGS: list[Setting] = [
             widget="#set-alert-events"),
     Setting("GPU_MEM", "Memory for vLLM (GPU_MEM)", "fraction of GPU memory vLLM may use", "0.85", _gpu_mem,
             "server", backends=("vllm",), widget="#set-mem"),
+    Setting("FAST_LOAD", "Fast model loading",
+            "auto: a model that has started before streams its weights from disk, with its KV cache size pinned · "
+            "off: always load the normal way", "auto",
+            _choice("auto", "off"), "server", backends=("vllm",), widget="#set-fastload"),
     Setting("IMAGE", "vLLM image", "the vLLM Docker image", "vllm/vllm-openai:v0.33.0",
             lambda v, e: None if re.match(r"^[\w./:-]+:[\w.-]+$", v) else "an image with a tag, e.g. "
                                                                           "vllm/vllm-openai:v0.33.0",

@@ -88,6 +88,7 @@ host_ip() {
 
 # ------------------------------------------------------------------ backend: vllm (docker)
 CACHE_DIRS=(vllm:/root/.cache/vllm flashinfer:/root/.cache/flashinfer triton:/root/.triton nv:/root/.nv)
+fast_flags() { [[ -x "$PY" ]] && HF_HOME="$HF_CACHE" "$PY" "$APP/fastload.py" flags "$1" 2>/dev/null || true; }
 vllm_start_profile() {
   local name="$1" repo="$2"; shift 2
   local -a envs=() flags=() gpu_args=()
@@ -99,6 +100,11 @@ vllm_start_profile() {
   # Docker volumes (the files belong to root, so not in a folder of the user's)
   local -a caches=(); local c
   for c in "${CACHE_DIRS[@]}"; do caches+=(-v "l9s-cache-${c%%:*}:${c#*:}"); done
+  # a profile that has started before reads its weights the fast way (app/fastload.py)
+  local f; local -a label=()
+  while IFS= read -r f; do
+    case "$f" in "") ;; "ENV "*) envs+=(-e "${f#ENV }"); label=(--label l9s.fastload=1) ;; *) flags+=("$f") ;; esac
+  done < <(fast_flags "$name")
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker run -d --name "$CONTAINER" \
     ${gpu_args[@]+"${gpu_args[@]}"} --ipc=host --restart unless-stopped \
@@ -108,7 +114,7 @@ vllm_start_profile() {
     -e HF_TOKEN="${HF_TOKEN:-}" \
     -e VLLM_API_KEY="$API_KEY" \
     ${envs[@]+"${envs[@]}"} \
-    --label l9s.profile="$name" --label llm.profile="$name" \
+    --label l9s.profile="$name" --label llm.profile="$name" ${label[@]+"${label[@]}"} \
     "$IMAGE" \
     "$repo" --served-model-name "$name" --host 0.0.0.0 --port 8000 \
     --gpu-memory-utilization "$GPU_MEM" ${flags[@]+"${flags[@]}"} >/dev/null
@@ -203,6 +209,14 @@ run_profile() {
 backend_exists() {
   if [[ "$BACKEND" == "mlx" ]]; then [[ -f "$(plist_path "$LABEL")" ]]
   else docker inspect "$CONTAINER" >/dev/null 2>&1; fi
+}
+# the container was made for a normal start and this profile can now start the fast way (or the other way round)
+start_changed() {
+  [[ "$BACKEND" == "vllm" ]] || return 1
+  local name has=""; name="$(active_profile)"
+  [[ -n "$name" && "$(docker inspect -f '{{index .Config.Labels "l9s.profile"}}' "$CONTAINER" 2>/dev/null)" == "$name" ]] || return 1
+  [[ -n "$(fast_flags "$name")" ]] && has=1
+  [[ "$(docker inspect -f '{{index .Config.Labels "l9s.fastload"}}' "$CONTAINER" 2>/dev/null)" != "$has" ]]
 }
 start_active() {  # ...then the chosen model is set up from its profile
   local name; name="$(active_profile)"
@@ -354,7 +368,7 @@ case "$cmd" in
     else docker stop "$CONTAINER" >/dev/null; fi; echo "stopped" ;;
   start)
     need_key
-    if ! backend_exists; then start_active; exit 0; fi
+    if ! backend_exists || { ! backend_running && start_changed; }; then start_active; exit 0; fi
     if [[ "$BACKEND" == "mlx" ]]; then
       launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || launchd_load "$LABEL"
     else docker start "$CONTAINER" >/dev/null; fi
@@ -362,7 +376,7 @@ case "$cmd" in
   restart)
     need_key
     rm -f "$L9S_HOME/cache/restart-pending"
-    if ! backend_exists; then start_active; exit 0; fi
+    if ! backend_exists || start_changed; then start_active; exit 0; fi
     if [[ "$BACKEND" == "mlx" ]]; then launchctl kickstart -k "gui/$UID/$LABEL"; else docker restart "$CONTAINER" >/dev/null; fi
     wait_ready ;;
   test)

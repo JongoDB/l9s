@@ -2,6 +2,7 @@
 
 ## Unreleased
 - vLLM starts faster: what it compiles and tunes at every start is kept between starts (measured on a GB10: Qwen3-8B 214 s → 100 s, Qwen3.6-35B 444 s → 289 s at a slightly lower GPU_MEM). Kept in Docker volumes; `l9s uninstall` removes them.
+- From a model's second start on (vllm), its weights stream from disk, with the KV cache size pinned to what its first start really used, so streaming can't run a unified-memory machine out of memory. A model whose context wouldn't fit that way, or whose fast start fails, loads the normal way. Setting: `FAST_LOAD` (Settings › Fast model loading).
 - A request that arrives during a restart waits as long as the model usually takes to load (it gave up after 5 minutes; Gemma 4 31B takes 12 on a GB10). Streaming requests get signs of life meanwhile, so Cloudflare no longer cuts them off with a 524 after 2 minutes; plain requests through Cloudflare get a clear, retryable 503 before that. Starting a server that had been stopped for a while makes requests wait too.
 - Load times count from when the model starts loading, not from when the server was stopped.
 - `l9s start`, `l9s restart` and switching from client mode to personal or shared set the chosen model up from its profile when there is no server to start again (they failed, and the mode switch reported success).
