@@ -153,8 +153,16 @@ def test_a_fast_start_that_dies_before_serving_falls_back(fl, monkeypatch):
     async def fit(p):
         fitted.append(p)
     monkeypatch.setattr(proxy.asyncio, "create_subprocess_exec", execp)
+    retrying = False
+
+    async def docker_is_retrying(p):
+        return retrying
     monkeypatch.setattr(proxy, "fit_after_crash", fit)
+    monkeypatch.setattr(proxy, "docker_is_retrying", docker_is_retrying)
     proxy.backend_state["served"] = False
+    asyncio.run(proxy.after_failed_start("m", True))  # stopped while loading
+    assert not ran and not fl.load().get("m", {}).get("failed")
+    retrying = True
     asyncio.run(proxy.after_failed_start("m", True))
     assert ran == [("use", "m")] and fl.load()["m"]["failed"] and not fitted
     proxy.backend_state["served"] = True  # it served for a while and crashed: not the fast start's fault

@@ -437,6 +437,8 @@ def models_list() -> dict:
             note = "downloaded, " + note
         e = {"id": n, "object": "model", "created": now, "owned_by": "l9s", "root": r, "loaded": loaded,
              "display_name": n + (f" ({note})" if note else ""), **limits(n, r)}
+        if loaded:  # the chosen model; whether its server answers right now is something else
+            e["ready"] = backend_state["ok"] is not False
         if n in times:
             e["load_seconds"] = times[n]
         if e["context_window"]:
@@ -1531,9 +1533,21 @@ async def note_memory(profile: str) -> None:
         pass
 
 
+async def docker_is_retrying(profile: str) -> bool:
+    """After a crash Docker starts the container again (unless-stopped); after `l9s stop` / `l9s use` it doesn't."""
+    await asyncio.sleep(1)
+    p = await asyncio.create_subprocess_exec(
+        "docker", "inspect", "-f", '{{.State.Status}} {{index .Config.Labels "l9s.profile"}}', CONTAINER,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    out, _ = await p.communicate()
+    return out.decode().split() in (["restarting", profile], ["running", profile])
+
+
 async def after_failed_start(profile: str, streamed: bool) -> None:
     """The container died. A fast start that never got to serving: this profile loads the normal way from now on."""
     if streamed and backend_state.get("served") is False:
+        if not await docker_is_retrying(profile):
+            return  # stopped, removed or replaced by someone: not a failure
         import fastload
         fastload.failed(profile)
         event("fastload", f"{profile}: the fast start failed, so it loads the normal way from now on "

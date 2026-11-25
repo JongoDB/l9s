@@ -95,7 +95,9 @@ def main(argv: list[str]) -> int:
                 ms = fetch_models(d[n]["url"], d[n]["key"])
                 rows.append({"name": n, "url": d[n]["url"], "ok": True,
                              "models": [m["id"] for m in ms if "/" not in m["id"]],
-                             "loaded": next((m["id"] for m in ms if m.get("loaded") and not m.get("follows")), None)})
+                             "loaded": next((m["id"] for m in ms if m.get("loaded") and not m.get("follows")), None),
+                             # (servers before 0.14.5 don't say)
+                             "ready": next((m.get("ready", True) for m in ms if m.get("loaded") and not m.get("follows")), True)})
             except Exception as e:  # noqa: BLE001
                 rows.append({"name": n, "url": d[n]["url"], "ok": False, "error": describe_error(e)})
         if "--json" in args:
@@ -105,7 +107,8 @@ def main(argv: list[str]) -> int:
             print("no linked servers.  link one: l9s link add <name> https://their.host --key <key they gave you>")
         for r in rows:
             if r["ok"]:
-                print(f"{r['name']:12} {r['url']}  ✓ {len(r['models'])} models (loaded: {r['loaded'] or '-'})\n"
+                mark, down = ("✓", "") if r["ready"] else ("!", ", not answering right now: starting, stopped or switching")
+                print(f"{r['name']:12} {r['url']}  {mark} {len(r['models'])} models (loaded: {r['loaded'] or '-'}{down})\n"
                       f"{'':12} use as: " + ", ".join(f"{r['name']}/{m}" for m in r["models"]))
             else:
                 print(f"{r['name']:12} {r['url']}  ✗ {r['error']}")

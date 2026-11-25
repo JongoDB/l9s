@@ -3035,8 +3035,9 @@ class LLMTui(App):
             row = t.cursor_row
             t.clear()
             for r in rows:
-                t.add_row(r["name"], r["url"], Text("✓ reachable", style="green") if r["ok"] else
-                          Text("✗ " + r.get("error", "?"), style="red"),
+                t.add_row(r["name"], r["url"], Text("✗ " + r.get("error", "?"), style="red") if not r["ok"] else
+                          Text("✓ reachable", style="green") if r.get("ready", True) else
+                          Text("! model not answering now", style="yellow"),
                           ", ".join(f"{r['name']}/{m}" for m in r.get("models", []))[:90] or "-",
                           r.get("loaded") or "-", key=r["name"])
             if not rows:

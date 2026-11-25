@@ -7,6 +7,7 @@
 - Load times count from when the model starts loading, not from when the server was stopped.
 - `l9s start`, `l9s restart` and switching from client mode to personal or shared set the chosen model up from its profile when there is no server to start again (they failed, and the mode switch reported success).
 - `l9s codex` respects CODEX_HOME. Its settings went to ~/.codex, which Codex ignores when CODEX_HOME is set, so it used OpenAI instead of l9s.
+- `l9s status`, `l9s link` and the Links view of a client say when a linked server's model isn't answering right now (they showed it as loaded while its server was down).
 - `l9s connect <tool> --help` shows help instead of connecting the tool.
 
 ## 0.14.4
