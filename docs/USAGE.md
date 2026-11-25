@@ -314,8 +314,8 @@ l9s connect                     # list: installed? connected? how
 l9s connect codex               # show the change, back up the file once (<file>.l9s-backup), ask, write
 l9s connect codex --print       # only show it
 l9s connect codex --remove      # take l9s' entries back out (nothing else in the file is touched)
-l9s claude [-m model] [args]    # launch with l9s for this session only: any tool works the same way
-                                #   (l9s codex, opencode, gemini, crush, …; l9s run <tool> too)
+l9s claude [-m model] [args]    # launch with l9s for this session only (also: l9s codex, opencode, crush, grok,
+                                #   qwen, goose, aider, droid; l9s run <tool> works too)
 l9s connect --server gb10       # on another machine with l9s: target that server for every connect / launch
 ```
 

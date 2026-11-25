@@ -97,7 +97,9 @@ def check(channel: str | None = None) -> dict:
             res["l9s"]["notes"] = changelog_between(_get(f"{RAW}/{ref}/CHANGELOG.md"), cur, latest)
     except Exception as e:  # noqa: BLE001
         res["errors"].append(f"l9s: {e}")
-    if backend == "mlx":
+    if backend == "remote":
+        pass  # client mode: no model server here to update
+    elif backend == "mlx":
         try:
             from importlib.metadata import version
             res["server"] = {"name": "mlx-lm", "installed": version("mlx-lm"), "latest": version("mlx-lm"),

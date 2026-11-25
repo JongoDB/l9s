@@ -340,3 +340,20 @@ def test_gate_waits_for_real_use_only():
     assert lu.idle_seconds([{"path": "/v1/models", "start": now - 5}], now) == lu.NEVER  # model lists don't count
     assert lu.idle_seconds([{"path": "/v1/messages", "start": now - 900, "end": now - 600}], now) == 600
     assert lu.idle_seconds([{"path": "/v1/chat/completions", "start": now - 3000, "state": "running"}], now) == 0
+    old = [{"path": "/v1/messages", "end": now - 9000}]
+    assert lu.idle_seconds(old, now, [{"kind": "ready", "t": now - 540}]) == 540  # a model someone just loaded
+    assert lu.idle_seconds(old, now, [{"kind": "start", "t": now - 60}]) == 9000  # a crash loop's restarts aren't use
+
+
+def test_client_mode_has_no_model_server_update_to_announce(tmp_path, monkeypatch):
+    """A client (BACKEND=remote) runs no vLLM / mlx-lm: the update check doesn't report one (no 'vLLM … out')."""
+    monkeypatch.setenv("L9S_HOME", str(tmp_path))
+    (tmp_path / "env").write_text("BACKEND=remote\n")
+    import importlib
+    import updater
+    importlib.reload(updater)
+    monkeypatch.setattr(updater, "_get", lambda url, *a, **k: (_ for _ in ()).throw(AssertionError(url))
+                        if "hub.docker.com" in url else "0.0.1")
+    monkeypatch.setattr(updater, "latest_release", lambda channel=None: ("v0.0.1", False))
+    res = updater.check()
+    assert res["backend"] == "remote" and res["server"] == {}

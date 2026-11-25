@@ -108,8 +108,8 @@ parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
     - a model whose context doesn't fit is lowered to what vLLM measured and started again.
   - **Backups:** taken before every risky change, kept 10 deep, restored from Settings or `l9s restore`.
   - **Bug reports:** `l9s report` makes one file to attach to a bug report, with keys, tokens and prompts removed.
-- **Share it safely:** a key per person with limits, and an HTTPS address on your network, your VPN, a free
-  Cloudflare address, Tailscale or your own domain, which l9s sets up and detects for you (see
+- **Share it safely:** a key per person with limits, over your network or VPN (plain HTTP), or HTTPS through a
+  free Cloudflare address, Tailscale or your own domain, which l9s sets up for you (see
   [Share it](#share-it-one-server-many-people)). Or link other people's servers and use their models as your own.
 - **Model analysis before you download** (`l9s info <repo>`, the Hub tab, the serve dialog). l9s reads the model's
   `config.json`, chat template, `generation_config.json` and model card, and checks them against what *your* server

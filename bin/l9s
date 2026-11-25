@@ -64,7 +64,7 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
   connect [tool] [--remove|--print]      set up Claude Code, Codex, OpenCode, Cursor, … to use this server
                                          (no tool: list them; --server <ssh-host>: target another l9s)
   <tool> [-m model] [args]               launch a coding agent on l9s without changing its normal setup:
-                                         l9s claude, l9s codex, l9s opencode, l9s gemini, … (l9s connect lists
+                                         l9s claude, l9s codex, l9s opencode, l9s qwen, … (l9s connect lists
                                          them; l9s run <tool> works too)
   tui                                    open the terminal UI
   update [--check] [-y]                  check for / install a newer l9s (and mlx-lm on a Mac)
@@ -498,7 +498,7 @@ PYEOF2
     exit 0 ;;
   help|-h|--help) usage ;;
   *)
-    # any coding agent l9s knows: `l9s claude`, `l9s gemini`, … (the same as `l9s run <tool>`)
+    # any coding agent l9s knows: `l9s claude`, `l9s qwen`, … (the same as `l9s run <tool>`)
     if "$PY" "$APP/connect.py" is-tool "$cmd" 2>/dev/null; then exec "$PY" "$APP/connect.py" run "$cmd" "$@"; fi
     echo "l9s: unknown command: $cmd (coding agents l9s can launch: l9s connect)" >&2; echo >&2; usage >&2; exit 1 ;;
 esac

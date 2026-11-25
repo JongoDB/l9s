@@ -2170,7 +2170,7 @@ class LLMTui(App):
         bits = []
         if (d.get("l9s") or {}).get("update"):
             bits.append(f"l9s {d['l9s']['latest']}")
-        srv = d.get("server") or {}
+        srv = {} if self.backend == "remote" else d.get("server") or {}  # client mode: no model server here
         if srv.get("update") and srv.get("auto"):
             bits.append(f"{srv['name']} {srv['latest']}")
         if bits:
