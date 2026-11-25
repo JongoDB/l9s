@@ -489,7 +489,11 @@ def attention_layout(tc: dict) -> dict:
             "kind": kind, "mla": bool(mla), "sliding_window": tc.get("sliding_window")}
 
 
-def kv_bytes_per_token(tc: dict, layout: dict, kv_bytes: int) -> int | None:
+def kv_bytes_per_token(tc: dict, layout: dict, kv_bytes: int, sliding_too: bool = False) -> int | None:
+    """KV bytes per token of context. Full-attention layers can have their own shape (Gemma 4: 4 KV heads of 512).
+    sliding_too: count sliding-window layers as well. vLLM 0.33 sizes its KV cache that way (its startup check for
+    Gemma 4 31B works out to ~880 KiB/token: 50 sliding + 10 global layers), while mlx-lm keeps a small rotating cache
+    for them."""
     n = layout["attn_layers"]
     if not n:
         return None
@@ -500,7 +504,12 @@ def kv_bytes_per_token(tc: dict, layout: dict, kv_bytes: int) -> int | None:
     hd = tc.get("head_dim") or (tc.get("hidden_size") // heads if heads and tc.get("hidden_size") else None)
     if not kvh or not hd:
         return None
-    return 2 * n * kvh * hd * kv_bytes
+    gkvh = tc.get("num_global_key_value_heads") or kvh
+    ghd = tc.get("global_head_dim") or hd
+    per = 2 * n * gkvh * ghd * kv_bytes
+    if sliding_too and layout.get("sliding_layers"):
+        per += 2 * layout["sliding_layers"] * kvh * hd * kv_bytes
+    return per
 
 
 # ======================================================================= chat template / parsers
@@ -866,9 +875,21 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
     A["budget"] = budget
     A["weights"] = weights
     overhead = OVERHEAD * tp if backend == "vllm" else 1.5 * GIB
+    A["reserves"] = []
+    if backend == "vllm":
+        # memory vLLM uses beyond the weights that the fixed overhead doesn't cover (measured: Gemma 4 31B with a
+        # DFlash drafter and vision had ~11 GiB less KV room than weights + 3 GiB predicted)
+        if meta.get("drafters") and not spec_off():
+            r = max(2 * GIB, 0.10 * weights)
+            overhead += r
+            A["reserves"].append(f"~{fmt_bytes(r)} for a speculative drafter")
+        if [k for k in ("vision_config", "audio_config", "speech_config") if cfg.get(k)]:
+            overhead += 2 * GIB
+            A["reserves"].append(f"~{fmt_bytes(2 * GIB)} for the vision/audio encoder")
+    A["overhead"] = overhead
     A["kv"] = {}
     for kvname, b in (("bf16", 2), ("fp8", 1)):
-        per = kv_bytes_per_token(tc, layout, b)
+        per = kv_bytes_per_token(tc, layout, b, sliding_too=backend == "vllm")
         avail = budget - weights - overhead
         cap = int(avail / per) if per and avail > 0 else (0 if per else None)
         A["kv"][kvname] = {"per_token": per, "capacity": cap}
@@ -885,6 +906,8 @@ def analyze(meta: dict, caps: dict | None, mem_total: float, gpu_mem: float, bac
         use_fp8 = True
     A["kv_dtype"] = "fp8" if use_fp8 else "auto"
     cap = cap8 if use_fp8 else cap16
+    if cap and backend == "vllm":
+        cap = int(cap * 0.9)  # estimates: keep a margin (vLLM measures the real capacity at startup)
     if A["max_ctx"]:
         ctx = min(A["max_ctx"], cap) if cap else min(A["max_ctx"], 65536)
     else:
@@ -1174,10 +1197,13 @@ def render_markdown(A: dict, caps: dict | None) -> str:
           f"| budget | {fmt_bytes(A['budget'])}" + (f" ({A['tp']} GPUs, tensor parallel)" if A.get("tp", 1) > 1 else "")
           + (" (Metal's GPU memory limit)" if A.get("backend") == "mlx" else " (GPU_MEM)") + " |",
           f"| weights | {fmt_bytes(A['weights'])} |",
-          f"| left for KV cache | ≈{fmt_bytes(max(0, A['kv_avail']))} (after ~3 GiB runtime overhead) |"]
+          f"| left for KV cache | ≈{fmt_bytes(max(0, A['kv_avail']))} (after ~3 GiB runtime overhead"
+          + "".join(f", {r}" for r in A.get("reserves", [])) + ") |"]
     if kv16["per_token"]:
         L.append(f"| KV per token | {kv16['per_token'] / 1024:.0f} KiB (bf16) · {kv8['per_token'] / 1024:.0f} KiB (fp8) · "
-                 f"{lay['attn_layers']} of {lay['layers']} layers keep KV |")
+                 + (f"all {lay['layers']} layers counted (vLLM sizes sliding-window layers like the rest) |"
+                    if lay.get("sliding_layers") and A.get("backend") == "vllm"
+                    else f"{lay['attn_layers']} of {lay['layers']} layers keep KV |"))
         L.append(f"| KV capacity | ≈{fmt_tokens(kv16['capacity'])} tokens (bf16) · ≈{fmt_tokens(kv8['capacity'])} (fp8) |")
     if A["ctx"]:
         L.append(f"| **suggested context** | **{A['ctx']:,}** tokens, KV {A['kv_dtype']}"

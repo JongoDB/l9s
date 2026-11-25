@@ -716,3 +716,22 @@ def test_a_server_down_for_long_answers_at_once():
     assert asyncio.run(proxy.wait_for_backend(None)) is False and time.time() - t < 1
     proxy.backend_state.update(ok=True, since=time.time())
     assert asyncio.run(proxy.wait_for_backend(None)) is True
+
+
+def test_context_that_does_not_fit_is_lowered_to_what_vllm_measured(tmp_path, monkeypatch):
+    """vLLM refuses to start when the profile's context doesn't fit and says how much does: the profile is fixed."""
+    import importlib
+    sys.path.insert(0, str(APP))
+    proxy = importlib.import_module("proxy")
+    monkeypatch.setattr(proxy, "L9S_HOME", tmp_path)
+    (tmp_path / "profiles").mkdir()
+    prof = tmp_path / "profiles" / "gemma"
+    prof.write_text("google/gemma-4-31B-it\n--max-model-len\n262144\n--enable-auto-tool-choice")
+    log = ("ValueError: To serve at least one request with the model's max seq len (262144), (48.45 GiB KV cache is "
+           "needed, which is larger than the available KV cache memory (31.53 GiB). Based on the available memory, "
+           "the estimated maximum model length is 40384. Try increasing `gpu_memory_utilization`")
+    assert proxy.fit_profile_context("gemma", log) == (262144, 37888)
+    assert prof.read_text().split("\n")[1:3] == ["--max-model-len", "37888"]
+    assert proxy.fit_profile_context("gemma", log) is None  # already fits: nothing to do
+    assert proxy.fit_profile_context("gemma", "CUDA error: something else") is None
+    assert proxy.fit_profile_context("missing", log) is None

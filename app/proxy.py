@@ -1433,6 +1433,59 @@ async def admin(request: web.Request) -> web.Response:
 
 
 # ------------------------------------------------------------------ container watcher
+FIT_RE = re.compile(r"estimated maximum model length is (\d+)")
+_fit_tries: dict = {}  # profile -> times its context was lowered (stops a loop if vLLM keeps refusing)
+
+
+def fit_profile_context(profile: str, log_tail: str) -> tuple[int, int] | None:
+    """vLLM refused to start because the profile's context doesn't fit in memory, and said how much does: lower the
+    profile's --max-model-len to a little under that. Returns (old, new), or None when the log isn't that failure."""
+    m = FIT_RE.search(log_tail)
+    path = L9S_HOME / "profiles" / profile
+    if not m or not profile or not path.is_file():
+        return None
+    room = int(m.group(1))
+    new = (room * 95 // 100) // 1024 * 1024  # a little under what vLLM measured
+    lines = path.read_text().split("\n")
+    try:
+        i = lines.index("--max-model-len")
+        old = int(lines[i + 1])
+    except (ValueError, IndexError):
+        return None
+    if new < 4096 or new >= old:
+        return None
+    lines[i + 1] = str(new)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(lines))
+    os.replace(tmp, path)
+    return old, new
+
+
+async def fit_after_crash(profile: str) -> None:
+    """A crashed vLLM start: if it's 'the context doesn't fit', fix the profile and start it again (Docker would
+    otherwise restart it with the same settings, which fail the same way, every ~10 minutes)."""
+    if _fit_tries.get(profile, 0) >= 2:
+        return
+    try:
+        p = await asyncio.create_subprocess_exec("docker", "logs", "--tail", "400", CONTAINER,
+                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(p.communicate(), 30)
+    except (OSError, asyncio.TimeoutError):
+        return
+    tail = out.decode(errors="replace")
+    start = tail.rfind("non-default args")  # vLLM prints its settings at every start: look at the latest only
+    tail = tail[start:] if start >= 0 else tail
+    fixed = fit_profile_context(profile, tail)
+    if not fixed:
+        return
+    _fit_tries[profile] = _fit_tries.get(profile, 0) + 1
+    old, new = fixed
+    event("fit", f"{profile}: {old:,} tokens of context don't fit in memory here (vLLM measured room for "
+                 f"{FIT_RE.search(tail).group(1)}); lowered it to {new:,} and starting it again", "warning", profile=profile)
+    await asyncio.create_subprocess_exec(str(L9S_HOME / "bin" / "l9s"), "use", profile, stdout=asyncio.subprocess.DEVNULL,
+                                         stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+
+
 async def watch_docker() -> None:
     while True:
         try:
@@ -1454,6 +1507,8 @@ async def watch_docker() -> None:
                     crash = code not in ("0", "137", "143")  # 137/143 = stopped by docker stop / restart
                     event("exit", f"container exited with code {code}" + (" (crash)" if crash else " (stopped)"),
                           "error" if crash else "info", profile=prof)
+                    if crash:
+                        asyncio.ensure_future(fit_after_crash(prof))
                 elif st == "oom":
                     event("oom", "container ran out of memory", "error", profile=prof)
                 elif st in ("kill", "stop"):
