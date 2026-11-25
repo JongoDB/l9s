@@ -1057,6 +1057,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
         except json.JSONDecodeError:
             return web.json_response({"input_tokens": 1})
     pre = None  # a streaming response already started while a model loaded
+    streaming = False  # the client asked for a streamed reply
     remote = None  # {"link", "model"}: a model on a linked server
     inject_usage = False
     if record:
@@ -1068,6 +1069,7 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 j = json.loads(body)
                 if isinstance(j, dict):
                     inspect_request(rec, j)
+                    streaming = bool(j.get("stream"))
                     remote = remote_target(j.get("model")) if request.path.startswith("/v1/") else None
                     if remote:
                         # a linked server's model: forward as is (that l9s does its own switching / translation)
@@ -1234,7 +1236,38 @@ async def proxy(request: web.Request) -> web.StreamResponse:
     state = "error"
     resp = None
     if not remote and request.path.startswith("/v1/") and backend_state["ok"] is False:
-        await wait_for_backend(rec)
+        # streaming clients get an answer now and SSE comments while they wait: otherwise whatever is in between
+        # (Cloudflare: ~2 minutes) gives up on a silent request
+        gone, last_ka, shown = False, 0.0, time.time()
+
+        async def tick() -> bool:
+            nonlocal pre, gone, last_ka
+            tr = request.transport
+            if tr is None or tr.is_closing():
+                gone = True
+            elif streaming and time.time() - last_ka >= 5:
+                last_ka = time.time()
+                try:
+                    if pre is None:
+                        pre = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream",
+                                                                      "Cache-Control": "no-cache"})
+                        await pre.prepare(request)
+                    est = load_times().get(active_model()[0])
+                    await pre.write((": l9s: the model server is restarting"
+                                     + (f" (usually ~{human_secs(est)})" if est else "")
+                                     + f", {time.time() - shown:.0f}s so far…\n\n").encode())
+                except (ConnectionResetError, RuntimeError):
+                    gone = True
+            # a plain reply can't show signs of life: answer "try again shortly" before Cloudflare cuts it off
+            return not gone and (streaming or not behind_cf or time.time() - shown < CF_WAIT)
+
+        behind_cf = bool(request.headers.get("CF-Ray"))
+        await wait_for_backend(rec, tick)
+        if gone:
+            if rec is not None:
+                rec["status"], rec["error"] = 499, "client disconnected while the model server was restarting"
+                finish(rec, "cancelled")
+            return pre or web.Response(status=499)
     try:
         async with sess.request(request.method, target + upath, data=body, headers=headers,
                                 allow_redirects=False) as up:
@@ -1486,7 +1519,18 @@ async def fit_after_crash(profile: str) -> None:
                                          stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
 
 
+def note_server_start(after_crash: bool) -> None:
+    """The model server starts loading: its load time counts from now (not from when it was stopped), and requests
+    wait for it. Docker restarting a server that crashed isn't a fresh start (a crash loop must not hold requests)."""
+    if after_crash:
+        return
+    backend_state["started"] = time.time()
+    if backend_state["ok"] is False:
+        backend_state["since"] = time.time()
+
+
 async def watch_docker() -> None:
+    after_crash = False
     while True:
         try:
             p = await asyncio.create_subprocess_exec(
@@ -1502,11 +1546,14 @@ async def watch_docker() -> None:
                 prof = attrs.get("l9s.profile") or attrs.get("llm.profile", "")
                 if st == "start":
                     event("start", f"container started: profile {prof}", profile=prof)
+                    note_server_start(after_crash)
+                    after_crash = False
                 elif st == "die":
                     code = attrs.get("exitCode", "?")
                     crash = code not in ("0", "137", "143")  # 137/143 = stopped by docker stop / restart
                     event("exit", f"container exited with code {code}" + (" (crash)" if crash else " (stopped)"),
                           "error" if crash else "info", profile=prof)
+                    after_crash = crash
                     if crash:
                         asyncio.ensure_future(fit_after_crash(prof))
                 elif st == "oom":
@@ -1524,22 +1571,34 @@ async def watch_docker() -> None:
 # Whether the model server answers, kept by watch_ready (every 3 s): requests that arrive while it restarts wait
 # for it instead of failing.
 backend_state: dict = {"ok": None, "since": time.time()}
-RESTART_WAIT = float(os.environ.get("L9S_RESTART_WAIT", "300"))  # how long a request waits for a restart
-FRESH_DOWN = 600  # down longer than this: it's stopped, not restarting (don't make requests wait)
+RESTART_WAIT = float(os.environ.get("L9S_RESTART_WAIT", "300"))  # how long a request waits for a restart, at least
+CF_WAIT = float(os.environ.get("L9S_CF_WAIT", "100"))  # Cloudflare answers 524 itself after ~2 min of silence
+FRESH_DOWN = 600  # down longer than this (at least): it's stopped, not restarting (don't make requests wait)
 
 
-async def wait_for_backend(rec: dict | None) -> bool:
-    """The model server went down recently (a restart, an update): wait for it. True once it answers."""
+def restart_limits() -> tuple[float, float]:
+    """(how long a request waits for a restart, how long after going down it still counts as restarting): a big model
+    takes longer than the defaults to load, so both follow the time the loaded model usually takes."""
+    est = load_times().get(active_model()[0]) or 0
+    return max(RESTART_WAIT, 1.5 * est), max(FRESH_DOWN, 2 * est)
+
+
+async def wait_for_backend(rec: dict | None, tick=None) -> bool:
+    """The model server went down recently (a restart, an update): wait for it. True once it answers. `tick` is
+    awaited every second meanwhile; when it returns False (the client is gone) the wait ends."""
     st = backend_state
-    if st["ok"] is not False or switching or pending or time.time() - st["since"] > FRESH_DOWN:
+    wait, fresh = restart_limits()
+    if st["ok"] is not False or switching or pending or time.time() - st["since"] > fresh:
         return st["ok"] is not False
     if rec is not None:
         rec["_waiting"] = True
     try:
-        end = time.time() + RESTART_WAIT
+        end = time.time() + wait
         while time.time() < end:
             if backend_state["ok"]:
                 return True
+            if tick is not None and not await tick():
+                return False
             await asyncio.sleep(1)
         return False
     finally:
@@ -1563,9 +1622,11 @@ async def watch_ready(app: web.Application) -> None:
             pass
         if ok != ready:
             if ok:
-                event("ready", f"serving {model} (became ready after {time.time() - since:.0f}s)", model=model)
-                if ready is False:  # a real down → up transition: remember how long this model takes to load
-                    record_load_time(active_model()[0], time.time() - since)
+                took = time.time() - max(since, backend_state.get("started") or 0)
+                event("ready", f"serving {model} (became ready after {took:.0f}s)", model=model)
+                if ready is False and (backend_state.get("started") if BACKEND == "vllm" else took < FRESH_DOWN):
+                    # a real down → up transition: remember how long this model takes to load
+                    record_load_time(active_model()[0], took)
             elif ready is not None:
                 event("down", "server stopped answering (stopping, restarting or switching models)")
             ready, since = ok, time.time()

@@ -16,6 +16,7 @@ INFO = {"base": "http://192.168.10.100:8000", "key": "sk-l9s-test", "backend": "
 def cx(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("L9S_HOME", str(tmp_path / ".l9s"))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     for m in ("connect", "tools"):
         sys.modules.pop(m, None)
     connect = importlib.import_module("connect")
@@ -111,6 +112,21 @@ def test_commented_json_is_never_rewritten(cx):
     assert not p.changes and "has comments" in p.steps[0] and "openai_compatible" in p.steps[1]
     connect.apply(connect.tool("zed"), INFO)
     assert "// my theme" in z.read_text()
+
+
+def test_codex_settings_go_where_codex_looks(cx, monkeypatch):
+    """With CODEX_HOME set, settings in ~/.codex are ignored and Codex would send the prompts to OpenAI."""
+    connect, home = cx
+    monkeypatch.setenv("CODEX_HOME", str(home / "elsewhere"))
+    connect.apply(connect.tool("codex"), INFO)
+    assert (home / "elsewhere/config.toml").exists() and (home / "elsewhere/l9s.config.toml").exists()
+    assert not (home / ".codex").exists()
+
+
+def test_help_for_a_tool_changes_nothing(cx, capsys):
+    connect, home = cx
+    connect.main(["codex", "--help"])
+    assert "l9s connect" in capsys.readouterr().out and not (home / ".codex").exists()
 
 
 def test_codex_model_profile_and_launch(cx):

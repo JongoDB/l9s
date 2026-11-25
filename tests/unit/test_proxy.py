@@ -66,7 +66,7 @@ ln -sfn "$H/profiles/$2" "$H/active"; echo "==> ready: $2"
     (part / "model.safetensors").write_bytes(b"0")
     (hub / "models--org--partial" / "blobs").mkdir()
     (hub / "models--org--partial" / "blobs" / "x.incomplete").write_bytes(b"")
-    env = dict(os.environ, L9S_HOME=str(home), HF_HUB_CACHE=str(hub), FAKE_SWITCH_SECS="0")
+    env = dict(os.environ, L9S_HOME=str(home), HF_HUB_CACHE=str(hub), FAKE_SWITCH_SECS="0", L9S_CF_WAIT="4")
     for attempt in range(4):  # a port picked as free can be taken before the servers bind it (seen on CI runners)
         procs = [subprocess.Popen([sys.executable, str(HERE / "mock_upstream.py"), str(up)]),
                  subprocess.Popen([sys.executable, str(APP / "proxy.py")], env=env)]
@@ -703,6 +703,76 @@ def test_a_request_during_a_restart_waits_for_the_model_server(stack):
     out = json.load(call(px, "/v1/chat/completions", chat_body("mymodel")))
     assert out["choices"][0]["message"]["content"].startswith("hi") and time.time() - t >= 2
     assert admin(px, "/_l9s/health")["ready"] is True
+
+
+def test_a_streamed_request_during_a_restart_gets_signs_of_life(stack):
+    """Silent for ~2 minutes and Cloudflare gives up: a streaming client gets SSE comments while it waits."""
+    import threading
+    px, up = stack
+    UP["proc"].terminate()
+    UP["proc"].wait(5)
+    deadline = time.time() + 15
+    while admin(px, "/_l9s/health").get("ready") is not False and time.time() < deadline:
+        time.sleep(0.5)
+
+    def start_again():
+        time.sleep(8)
+        UP["proc"] = subprocess.Popen([sys.executable, str(HERE / "mock_upstream.py"), str(up)])
+    threading.Thread(target=start_again, daemon=True).start()
+    t = time.time()
+    r = call(px, "/v1/chat/completions", chat_body("mymodel", stream=True))
+    first = r.readline()
+    assert first.startswith(b": l9s") and time.time() - t < 5
+    rest = r.read()
+    assert rest.count(b": l9s") >= 1 and b"data: [DONE]" in rest and b"error" not in rest
+    assert admin(px, "/_l9s/requests")["recent"][-1]["state"] == "done"
+
+
+def test_a_plain_request_through_cloudflare_is_answered_before_cloudflare_gives_up(stack):
+    """No signs of life possible on a plain reply: a clear, retryable 503 instead of Cloudflare's 524."""
+    px, up = stack
+    UP["proc"].terminate()
+    UP["proc"].wait(5)
+    deadline = time.time() + 15
+    while admin(px, "/_l9s/health").get("ready") is not False and time.time() < deadline:
+        time.sleep(0.5)
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{px}/v1/chat/completions", json.dumps(chat_body("mymodel")).encode(),
+                                     {"Content-Type": "application/json", "Authorization": f"Bearer {KEY}", "CF-Ray": "abc-EWR"})
+        t = time.time()
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=60)
+        assert e.value.code == 503 and e.value.headers.get("Retry-After") and 3 <= time.time() - t < 15
+    finally:
+        UP["proc"] = subprocess.Popen([sys.executable, str(HERE / "mock_upstream.py"), str(up)])
+        while not admin(px, "/_l9s/health")["ready"] and time.time() < deadline + 60:
+            time.sleep(0.5)
+
+
+def test_waiting_follows_how_long_the_model_takes_to_load(monkeypatch):
+    import importlib
+    sys.path.insert(0, str(APP))
+    proxy = importlib.import_module("proxy")
+    monkeypatch.setattr(proxy, "active_model", lambda: ("big", "org/big"))
+    monkeypatch.setattr(proxy, "load_times", lambda: {"big": 769})
+    wait, fresh = proxy.restart_limits()
+    assert wait > 1100 and fresh > 1500  # a 13-minute load is waited for
+    monkeypatch.setattr(proxy, "load_times", lambda: {"big": 40})
+    assert proxy.restart_limits() == (proxy.RESTART_WAIT, proxy.FRESH_DOWN)
+
+
+def test_starting_a_long_stopped_server_makes_requests_wait_but_a_crash_loop_does_not():
+    import importlib
+    sys.path.insert(0, str(APP))
+    proxy = importlib.import_module("proxy")
+    long_ago = time.time() - 5000
+    proxy.backend_state.update(ok=False, since=long_ago)
+    proxy.note_server_start(after_crash=True)  # Docker restarting what just crashed
+    assert proxy.backend_state["since"] == long_ago
+    proxy.note_server_start(after_crash=False)  # l9s use / start
+    assert time.time() - proxy.backend_state["since"] < 5
+    assert time.time() - proxy.backend_state["started"] < 5  # load time counts from here, not from 5,000 s ago
+    proxy.backend_state.update(ok=True, since=time.time(), started=None)
 
 
 def test_a_server_down_for_long_answers_at_once():

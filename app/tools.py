@@ -10,6 +10,7 @@ run end to end against l9s.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from pathlib import Path
 
@@ -164,6 +165,9 @@ def claude(info: dict) -> Plan:
 # ------------------------------------------------------------------ Codex CLI (Responses API)
 def codex(info: dict) -> Plan:
     m = cur(info)
+    # where Codex itself looks: settings written elsewhere would be ignored, and Codex would use OpenAI instead
+    cdir = Path(os.environ.get("CODEX_HOME") or HOME / ".codex").expanduser()
+    shown = str(cdir).replace(str(HOME), "~", 1)
     provider = (f"[model_providers.{MARK}]\nname = \"l9s\"\nbase_url = {toml_str(v1(info))}\n"
                 f"env_key = \"L9S_API_KEY\"\nwire_api = \"responses\"\n"
                 # /model lists l9s's models (Codex's catalog format, served by the l9s proxy)
@@ -171,11 +175,11 @@ def codex(info: dict) -> Plan:
     profile = (f"# written by `l9s connect codex`; refreshed when the loaded model changes\n"
                f"model = {toml_str(m['id'])}\nmodel_provider = \"{MARK}\"\n"
                f"model_context_window = {ctx(m)}\nmodel_auto_compact_token_limit = {int(ctx(m) * 0.85)}\n")
-    return Plan(changes=[Change(HOME / ".codex" / "config.toml", "block", provider),
-                         Change(HOME / ".codex" / f"{MARK}.config.toml", "text", profile)],
+    return Plan(changes=[Change(cdir / "config.toml", "block", provider),
+                         Change(cdir / f"{MARK}.config.toml", "text", profile)],
                 env={"L9S_API_KEY": info["key"]}, argv=["codex", "--profile", MARK],
                 use="l9s codex    (another model: l9s codex -m <model>)",
-                snippet=f"# ~/.codex/config.toml\n{provider}\n# ~/.codex/{MARK}.config.toml\n{profile}\n"
+                snippet=f"# {shown}/config.toml\n{provider}\n# {shown}/{MARK}.config.toml\n{profile}\n"
                         f"export L9S_API_KEY={info['key']}\ncodex --profile {MARK}",
                 notes=["Adds an `l9s` provider and profile; plain `codex` is unchanged.",
                        "/model lists your l9s models (and only those) while you're on the l9s profile, with "

@@ -86,7 +86,10 @@ def switch(to: str, yes: bool = False) -> int:
     if cur == "client":
         if (L9S_HOME / "active").is_symlink():
             print("==> starting the model server again")
-            l9s("start")
+            if l9s("start"):
+                print(f"{to} mode is on, but the model server didn't start (l9s logs shows why): "
+                      f"l9s use <profile> tries again", file=sys.stderr)
+                return 1
         else:
             print("    serve a model: l9s quickstart  (or the Hub view in the TUI)")
     act = L9S_HOME / "active"

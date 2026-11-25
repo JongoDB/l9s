@@ -562,6 +562,9 @@ def main(argv: list[str]) -> None:
         return
     t = tool(argv[0])
     flags = set(argv[1:])
+    if flags & {"-h", "--help"}:
+        print(__doc__)
+        return
     srv = None
     if "--server" in argv:
         srv = argv[argv.index("--server") + 1]

@@ -87,6 +87,7 @@ host_ip() {
 }
 
 # ------------------------------------------------------------------ backend: vllm (docker)
+CACHE_DIRS=(vllm:/root/.cache/vllm flashinfer:/root/.cache/flashinfer triton:/root/.triton nv:/root/.nv)
 vllm_start_profile() {
   local name="$1" repo="$2"; shift 2
   local -a envs=() flags=() gpu_args=()
@@ -94,11 +95,16 @@ vllm_start_profile() {
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "ENV "* ]]; then envs+=(-e "${1#ENV }"); else flags+=("$1"); fi; shift
   done
+  # what vLLM works out at every start (compiled graphs, tuned kernels: minutes on a GB10) is kept between starts, in
+  # Docker volumes (the files belong to root, so not in a folder of the user's)
+  local -a caches=(); local c
+  for c in "${CACHE_DIRS[@]}"; do caches+=(-v "l9s-cache-${c%%:*}:${c#*:}"); done
   docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   docker run -d --name "$CONTAINER" \
     ${gpu_args[@]+"${gpu_args[@]}"} --ipc=host --restart unless-stopped \
     -p "127.0.0.1:$BACKEND_PORT:8000" \
     -v "$HF_CACHE:/root/.cache/huggingface" \
+    "${caches[@]}" \
     -e HF_TOKEN="${HF_TOKEN:-}" \
     -e VLLM_API_KEY="$API_KEY" \
     ${envs[@]+"${envs[@]}"} \
@@ -190,6 +196,18 @@ run_profile() {
   rm -f "$L9S_HOME/cache/restart-pending"
   "$PY" "$APP/connect.py" refresh -q >/dev/null 2>&1 || true   # tools whose config lists the models
   wait_ready
+}
+
+# whether there is a model server to start again (the container / launchd agent of an earlier `l9s use`): a
+# reinstall that kept the setup, or a machine that was set up in client mode, has none
+backend_exists() {
+  if [[ "$BACKEND" == "mlx" ]]; then [[ -f "$(plist_path "$LABEL")" ]]
+  else docker inspect "$CONTAINER" >/dev/null 2>&1; fi
+}
+start_active() {  # ...then the chosen model is set up from its profile
+  local name; name="$(active_profile)"
+  [[ -n "$name" && -f "$PROFILES/$name" ]] || die "no model chosen yet: l9s use <profile> (l9s profiles lists them), or l9s quickstart"
+  run_profile "$name"
 }
 
 backend_running() { if [[ "$BACKEND" == "mlx" ]]; then mlx_running; else vllm_running; fi; }
@@ -336,6 +354,7 @@ case "$cmd" in
     else docker stop "$CONTAINER" >/dev/null; fi; echo "stopped" ;;
   start)
     need_key
+    if ! backend_exists; then start_active; exit 0; fi
     if [[ "$BACKEND" == "mlx" ]]; then
       launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || launchd_load "$LABEL"
     else docker start "$CONTAINER" >/dev/null; fi
@@ -343,6 +362,7 @@ case "$cmd" in
   restart)
     need_key
     rm -f "$L9S_HOME/cache/restart-pending"
+    if ! backend_exists; then start_active; exit 0; fi
     if [[ "$BACKEND" == "mlx" ]]; then launchctl kickstart -k "gui/$UID/$LABEL"; else docker restart "$CONTAINER" >/dev/null; fi
     wait_ready ;;
   test)
@@ -453,6 +473,7 @@ case "$cmd" in
       rm -f "$(plist_path $LABEL)"
     elif command -v docker >/dev/null 2>&1; then
       docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+      for c in "${CACHE_DIRS[@]}"; do docker volume rm "l9s-cache-${c%%:*}" >/dev/null 2>&1 || true; done
       [[ $rmimage -eq 1 ]] && docker rmi "$IMAGE" >/dev/null 2>&1 || true
     fi
     echo "==> model server removed"
