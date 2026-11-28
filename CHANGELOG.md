@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- **l9s turbo** (experimental): `l9s turbo on` serves models with [Magnitude](https://magnitude.dev), which spreads mixture-of-experts models over GPU memory, RAM and the SSD so models larger than memory run. The proxy maps l9s's routes to Magnitude's (`/v1/…` → `/inference/v1/…`, `/v1/messages` → `/inference/anthropic/v1/messages`) and passes the Anthropic and Responses APIs through untranslated. Turbo profiles name Magnitude model IDs (`l9s serve qwen3.8-flash-next:gguf:nvfp4 --name flash`); `l9s pull <magnitude-id>` downloads with Magnitude; `l9s turbo off` goes back to mlx-lm / vLLM. Mode switches keep turbo on.
+- Installing and running l9s over SSH on a Mac nobody is logged in to works: launchd refuses agents there (`Bootstrap failed: 125`), so the request proxy and the model server now run as detached processes tracked in `~/.l9s/run/`, and the daily update check waits for the next login. The installer stopped at "couldn't start dev.l9s.proxy with launchctl".
+
 ## 0.14.5
 - vLLM starts faster: what it compiles and tunes at every start is kept between starts (measured on a GB10: Qwen3-8B 214 s → 100 s, Qwen3.6-35B 444 s → 289 s at a slightly lower GPU_MEM). Kept in Docker volumes; `l9s uninstall` removes them.
 - From a model's second start on (vllm), its weights stream from disk, with the KV cache size pinned to what its first start really used, so streaming can't run a unified-memory machine out of memory. Measured on a GB10 at the default GPU_MEM, first start → later starts: Qwen3-8B 233 s → 42 s, Qwen3.6-35B 413 s → 104 s, Gemma 4 31B NVFP4 (262K context) 695 s → 168 s. A model whose context wouldn't fit that way, or whose fast start fails, loads the normal way. Setting: `FAST_LOAD` (Settings › Fast model loading).

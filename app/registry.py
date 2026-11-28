@@ -50,7 +50,7 @@ class Setting:
     default: str = ""
     check: object = None       # (value, env) -> error message or None
     applies: str = "now"       # now | proxy | server | profiles
-    backends: tuple = ("vllm", "mlx", "remote")  # where it means anything (the TUI hides it elsewhere)
+    backends: tuple = ("vllm", "mlx", "magnitude", "remote")  # where it means anything (the TUI hides it elsewhere)
     widget: str = ""           # the TUI widget that edits it
     cli: str = "config"        # "config" (l9s config set) or the command that owns it
     secret: bool = False
@@ -132,7 +132,7 @@ OWNED = {
     "EXPOSE_CF_ACCOUNT": ("l9s expose cloudflare --api-token", "#set-expose-mode"),
 }
 # Bookkeeping l9s keeps for itself (never shown as settings).
-INTERNAL = {"SERVER_BACKEND", "SETUP_DONE", "CONFIG_VERSION"}
+INTERNAL = {"SERVER_BACKEND", "SETUP_DONE", "CONFIG_VERSION", "TURBO_PORT"}
 BY_KEY = {s.key: s for s in SETTINGS}
 
 

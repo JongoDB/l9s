@@ -20,15 +20,40 @@ context to just under what vLLM measured, starts it again and records it in Even
 
 ## Deployments
 
-| | vllm | mlx |
-|---|---|---|
-| Platform | Linux, NVIDIA GPU (unified-memory GB10 / DGX Spark, or discrete; multi-GPU via tensor parallel). AMD ROCm: experimental | macOS on Apple Silicon |
-| Server | vLLM (`IMAGE`) in Docker, container `CONTAINER` | `mlx_lm.server` as a launchd agent (`dev.l9s.backend`) |
-| Model formats | safetensors: BF16, FP8, NVFP4, AWQ, GPTQ, MXFP4… | MLX repos (`mlx-community/…`), or original BF16 safetensors |
-| Memory | reserves `GPU_MEM` of GPU memory up front (weights + KV cache) | grows with use, up to Metal's GPU memory limit |
-| Metrics | vLLM `/metrics` (KV cache, queue, TTFT, ITL, prefix cache) + proxy | from the proxy (requests, tokens, TTFT, tok/s) |
-| API key | checked by vLLM | checked by l9s-proxy |
-| Logs | `docker logs` | `~/.l9s/logs/backend.log` |
+| | vllm | mlx | magnitude (l9s turbo) |
+|---|---|---|---|
+| Platform | Linux, NVIDIA GPU (unified-memory GB10 / DGX Spark, or discrete; multi-GPU via tensor parallel). AMD ROCm: experimental | macOS on Apple Silicon | Apple Silicon; Linux / Windows with NVIDIA (Ampere+), Vulkan or CPU. Opt-in: `l9s turbo on` |
+| Server | vLLM (`IMAGE`) in Docker, container `CONTAINER` | `mlx_lm.server` as a launchd agent (`dev.l9s.backend`) | Magnitude's `magnitude serve` on 127.0.0.1:10100 (`dev.l9s.turbo`), or Magnitude's app if it is already serving |
+| Model formats | safetensors: BF16, FP8, NVFP4, AWQ, GPTQ, MXFP4… | MLX repos (`mlx-community/…`), or original BF16 safetensors | Magnitude model IDs (`magnitude models recommend`): GGUF mixture-of-experts and dense models of the families Magnitude has kernels for |
+| Memory | reserves `GPU_MEM` of GPU memory up front (weights + KV cache) | grows with use, up to Metal's GPU memory limit | experts the model uses most in GPU memory, the rest in RAM and on the SSD: models larger than memory run |
+| Metrics | vLLM `/metrics` (KV cache, queue, TTFT, ITL, prefix cache) + proxy | from the proxy (requests, tokens, TTFT, tok/s) | from the proxy |
+| API key | checked by vLLM | checked by l9s-proxy | checked by l9s-proxy |
+| Logs | `docker logs` | `~/.l9s/logs/backend.log` | `~/.l9s/logs/turbo.log` (or `~/.magnitude/logs/`) |
+
+### l9s turbo
+
+`l9s turbo on` (or Settings › l9s turbo in the TUI) serves through [Magnitude](https://magnitude.dev) instead of
+mlx-lm / vLLM; `l9s turbo off` goes back. Install Magnitude first (`curl -fsSL https://magnitude.dev/install.sh | sh`,
+no sudo). With turbo on:
+
+```bash
+l9s turbo status                                        # on / off, Magnitude's version, whether its server answers
+magnitude models recommend                              # models for this machine and their Magnitude IDs
+l9s serve qwen3.8-flash-next:gguf:nvfp4 --name flash   # download (Magnitude), tune, load; profile "flash"
+l9s pull deepseek-v4.1-flash:gguf:iq2-xxs               # download only (same as magnitude models pull)
+```
+
+The TUI's Settings › l9s turbo shows the same status, turns turbo on and off, and lists Magnitude's recommended models
+to serve. Requests to `/v1/…` go to Magnitude's `/inference/v1/…` and the Anthropic API to `/inference/anthropic`,
+untranslated. Each deployment lists and serves only its own profiles (turbo profiles name Magnitude IDs; the others
+Hugging Face repos). Mode switches keep turbo on.
+
+### A Mac nobody is logged in to
+
+Over SSH with no one logged in at the screen, launchd has no session for agents. l9s then runs the proxy and the
+model server as detached processes (pid files in `~/.l9s/run/`; `l9s proxy status` says "detached"). They aren't
+restarted after a crash or reboot: `l9s start` / `l9s proxy start` bring them back. The daily update check starts at
+the next login.
 
 ## Terminal UI
 
@@ -149,6 +174,7 @@ l9s proxy status        # request proxy (status | restart | logs)
 l9s test                # quick chat completion sanity check
 l9s key                 # print API key
 l9s stop | start | restart
+l9s turbo on | off | status   # serve through Magnitude (l9s turbo) or not
 ```
 
 ## Pull & switch models

@@ -43,6 +43,7 @@ from textual.widgets._data_table import Column
 import hfmeta
 import hw
 import updater
+import turbo
 from rich.markup import escape as rich_escape
 
 HOME = Path.home()
@@ -460,6 +461,14 @@ class StartupTracker:
 
 
 LOG_PREFIX = re.compile(r"^(\(\w+ pid=\d+\) )?(INFO|DEBUG|WARNING|ERROR)? ?(\d\d-\d\d \d\d:\d\d:\d\d )?(\[[\w./]+:\d+\] )?")
+
+
+def turbo_log() -> Path:
+    """Magnitude's log: the server l9s started, or Magnitude's own when its app / your `magnitude serve` serves."""
+    own = L9S_HOME / "logs" / "turbo.log"
+    if own.exists() and own.stat().st_size:
+        return own
+    return Path.home() / ".magnitude" / "logs" / "inference.log"
 
 
 class LogHighlighter(Highlighter):
@@ -1701,19 +1710,19 @@ class LLMTui(App):
         self.gen_hist: collections.deque = collections.deque([0.0] * 120, maxlen=120)
         self.kv_hist: collections.deque = collections.deque([0.0] * 120, maxlen=120)
         self.state = {"status": "unknown", "ready": False}
-        self.image = "mlx" if self.backend == "mlx" else self.env.get("IMAGE", self.hw.default_image())
+        self.image = "mlx" if self.backend in ("mlx", "magnitude") else self.env.get("IMAGE", self.hw.default_image())
         self.caps = hfmeta.load_caps(self.image)
         self.budget_gb = self.compute_budget() / 1e9
         self.analyses: dict[str, tuple] = {}
 
     def compute_budget(self) -> float:
         """Bytes the model server may use for weights + KV cache (all GPUs it could use)."""
-        if self.backend == "mlx":
+        if self.backend in ("mlx", "magnitude"):
             return (self.caps or {}).get("max_working_set") or self.pool * 0.75
         return self.pool * float(self.env.get("GPU_MEM", "0.85")) * max(1, self.hw.n_gpus)
 
     def server_name(self) -> str:
-        return "mlx-lm" if self.backend == "mlx" else "vLLM"
+        return {"mlx": "mlx-lm", "magnitude": "Magnitude"}.get(self.backend, "vLLM")
 
     # ------------------------------------------------------------ layout
     def compose(self) -> ComposeResult:
@@ -1795,6 +1804,19 @@ class LLMTui(App):
                                      value="personal", allow_blank=False, id="set-mode")
                         yield Button("Switch mode", id="set-mode-go")
                         yield Button("Run setup again", id="set-mode-wizard")
+                    yield Label("l9s turbo: Magnitude", classes="section")
+                    yield Static("[dim]Magnitude (magnitude.dev) runs mixture-of-experts models larger than memory: the "
+                                 "experts a model uses most stay in GPU memory, the rest are read from RAM and the SSD. "
+                                 "With turbo on, l9s serves through Magnitude instead of mlx-lm / vLLM; keys, limits and "
+                                 "the request log work as before. Same as [b]l9s turbo on|off|status[/b].[/dim]")
+                    yield Static("", id="turbo-info")
+                    with Horizontal(classes="frow"):
+                        yield Button("Turn turbo on", id="turbo-go", variant="primary")
+                        yield Button("Refresh", id="turbo-refresh")
+                    with Horizontal(classes="frow", id="turbo-serve-row"):
+                        yield Select([], prompt="Magnitude models for this machine", id="turbo-model")
+                        yield Input(id="turbo-name", placeholder="profile name")
+                        yield Button("Serve", id="turbo-serve", variant="primary")
                     yield Label("Hugging Face token", classes="section")
                     yield Static("[dim]Needed for gated models (Llama, Gemma, …) and faster downloads. Create one at "
                                  "huggingface.co/settings/tokens; read access is enough.[/dim]")
@@ -2337,7 +2359,7 @@ class LLMTui(App):
         elif pid == "settings":
             if not self.settings_dirty():
                 self.load_settings_form()
-            if self.backend != "mlx" and not getattr(self, "_releases_checked", False):
+            if self.backend not in ("mlx", "magnitude") and not getattr(self, "_releases_checked", False):
                 self._releases_checked = True
                 self._check_releases(self.query_one("#set-image", Input).value.strip())
             self.query_one("#settings-form").focus()
@@ -2639,8 +2661,8 @@ class LLMTui(App):
         d.mkdir(exist_ok=True)
         path = d / f"vllm-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
         with path.open("w") as f:
-            if self.backend == "mlx":
-                src = L9S_HOME / "logs/backend.log"
+            if self.backend in ("mlx", "magnitude"):
+                src = turbo_log() if self.backend == "magnitude" else L9S_HOME / "logs/backend.log"
                 f.write(src.read_text(errors="replace") if src.exists() else "")
             else:
                 subprocess.run(["docker", "logs", self.container], stdout=f, stderr=subprocess.STDOUT, timeout=60)
@@ -3198,7 +3220,8 @@ class LLMTui(App):
 
     def load_settings_form(self) -> None:
         self._settings_loaded = True
-        self.query_one("#vllm-settings").display = self.backend not in ("mlx",)
+        self.query_one("#vllm-settings").display = self.backend not in ("mlx", "magnitude")
+        self.refresh_turbo()
         env = load_env()
         for x in reg.SETTINGS:
             self.w_set(x.widget, reg.get(env, x.key))
@@ -3293,7 +3316,7 @@ class LLMTui(App):
         self.port = self.env.get("PORT", "8000")
         self.endpoint = f"http://{self.ip}:{self.port}/v1"
         self.analyses.clear()
-        img = "mlx" if self.backend == "mlx" else self.env.get("IMAGE", self.image)
+        img = "mlx" if self.backend in ("mlx", "magnitude") else self.env.get("IMAGE", self.image)
         if img != self.image:
             self.image = img
             self.caps = hfmeta.load_caps(img)
@@ -3680,6 +3703,120 @@ class LLMTui(App):
                 self.goto_tab("keys")
         self.call_from_thread(done)
 
+    # ------------------------------------------------------------ l9s turbo (Magnitude): the same as `l9s turbo …`
+    _turbo_version: str | None = None
+    _turbo_models: list = []
+
+    @work(thread=True, exclusive=True, group="turbo")
+    def refresh_turbo(self) -> None:
+        """Turbo on/off, Magnitude installed / serving, and the models it recommends for this machine."""
+        mag = turbo.binary()
+        on = load_env().get("BACKEND") == "magnitude"
+        lines, models = [], []
+        if not mag:
+            lines.append(f"[{K9['gold']}]Magnitude isn't installed.[/] Install it in a terminal (no sudo; it goes in "
+                         "~/.magnitude), then press Refresh:\n  [b]curl -fsSL https://magnitude.dev/install.sh | sh[/b]")
+        else:
+            ver = subprocess.run([mag, "--version"], capture_output=True, text=True).stdout.strip()
+            self._turbo_version = ver
+            serving = turbo.up(turbo.port(load_env()))
+            lines.append(f"turbo: [b]{'on' if on else 'off'}[/b]" + (f" · profile [b]{active_profile() or '—'}[/b]" if on else
+                                                                     f" ({self.backend})")
+                         + f" · Magnitude {ver} · server {'[green]answering[/]' if serving else '[dim]not running[/]'}")
+            if serving:
+                try:
+                    r = subprocess.run([mag, "models", "recommend", "--json", "--limit", "20"], capture_output=True,
+                                       text=True, timeout=60)
+                    for rec in json.loads(r.stdout).get("models", []):
+                        m = rec.get("model") or {}
+                        pres = m.get("presentation") or {}
+                        a = ((m.get("servingState") or {}).get("assessment") or {})
+                        place = "fits in memory" if a.get("_tag") == "Fits" else "streams from SSD"
+                        installed = (m.get("acquisitionState") or {}).get("_tag") == "Installed"
+                        label = (f"{pres.get('displayName', m.get('modelId'))} {pres.get('variantLabel', '')} · "
+                                 f"{(m.get('storageBytes') or 0) / 1e9:.0f} GB · {place}"
+                                 + (" · downloaded" if installed else ""))
+                        models.append((label, m["modelId"]))
+                except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError) as e:
+                    lines.append(f"[dim]couldn't list Magnitude's models ({e})[/dim]")
+            elif on:
+                lines.append("[dim]Start a model below, or `l9s start`: l9s starts Magnitude's server.[/dim]")
+            else:
+                lines.append("[dim]Turning turbo on starts Magnitude's server and frees the current model server's "
+                             "memory.[/dim]")
+
+        def show():
+            self.query_one("#turbo-info", Static).update("\n".join(lines))
+            go = self.query_one("#turbo-go", Button)
+            go.label = "Turn turbo off" if on else "Turn turbo on"
+            go.variant = "warning" if on else "primary"
+            go.disabled = not mag
+            self._turbo_models = models
+            sel = self.query_one("#turbo-model", Select)
+            sel.set_options(models)
+            self.query_one("#turbo-serve-row").display = on and bool(models)
+        self.call_from_thread(show)
+
+    @on(Button.Pressed, "#turbo-refresh")
+    def turbo_refresh(self) -> None:
+        self.refresh_turbo()
+
+    @on(Select.Changed, "#turbo-model")
+    def turbo_model_changed(self, *_) -> None:
+        v = self.query_one("#turbo-model", Select).value
+        if isinstance(v, str):
+            self.query_one("#turbo-name", Input).value = v.split(":")[0].replace(".", "-")
+
+    @on(Button.Pressed, "#turbo-go")
+    def turbo_go(self) -> None:
+        on = load_env().get("BACKEND") == "magnitude"
+        want = "off" if on else "on"
+        text = ("Turn [b]turbo off[/b]? Magnitude's model is unloaded and l9s goes back to "
+                f"{load_env().get('SERVER_BACKEND') or 'mlx-lm / vLLM'} and its profiles." if on else
+                "Turn [b]turbo on[/b]? The current model server stops (its memory goes to Magnitude), and l9s serves "
+                "through Magnitude. Turbo profiles name Magnitude models: pick one below once it's on.")
+
+        def cb(ok):
+            if ok:
+                self._run_l9s(["turbo", want], f"turbo {want}")
+        self.push_screen(Confirm(text, f"Turbo {want}", danger=on), cb)
+
+    @on(Button.Pressed, "#turbo-serve")
+    def turbo_serve(self) -> None:
+        model = self.query_one("#turbo-model", Select).value
+        name = self.query_one("#turbo-name", Input).value.strip()
+        if not isinstance(model, str):
+            self.notify("pick a model first", severity="warning")
+            return
+        if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+            self.notify("give the profile a name (letters, digits, . _ -)", severity="warning")
+            return
+        self._run_l9s(["serve", model, "--name", name], f"serving {name} (Magnitude downloads it first if needed)")
+
+    @work(thread=True, exclusive=True, group="llm")
+    def _run_l9s(self, args: list[str], what: str) -> None:
+        """Run an `l9s` command, its output in the Server log, then reload what it may have changed."""
+        self.call_from_thread(self.notify, what + " (the Server log shows progress)")
+        self.call_from_thread(self.slog, "$ l9s " + " ".join(args))
+        p = subprocess.Popen([LLM_BIN, *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             stdin=subprocess.DEVNULL, errors="replace")
+        for line in p.stdout:
+            self.call_from_thread(self.slog, line.rstrip())
+        ok = p.wait() == 0
+
+        def done():
+            self.env = load_env()
+            self.backend = self.env.get("BACKEND", self.backend)
+            self.image = "mlx" if self.backend in ("mlx", "magnitude") else self.env.get("IMAGE", self.image)
+            if hasattr(self, "_applied_env"):
+                self._applied_env = load_env()
+            self.query_one("#vllm-settings").display = self.backend not in ("mlx", "magnitude")
+            self.render_chrome()
+            self.refresh_turbo()
+            self.notify(("done: " if ok else "failed: ") + " ".join(["l9s", *args])
+                        + ("" if ok else " (see the Server log)"), severity="information" if ok else "error")
+        self.call_from_thread(done)
+
     # ------------------------------------------------------------ access: how other devices reach it (l9s expose)
     def load_reach_form(self) -> None:
         env = load_env()
@@ -3885,7 +4022,7 @@ class LLMTui(App):
     def _settings_check_updates(self) -> None:
         info_w = self.query_one("#set-update-info", Static)
         self.call_from_thread(info_w.update, "[dim]checking GitHub / PyPI / Docker Hub…[/dim]")
-        if self.backend != "mlx":
+        if self.backend not in ("mlx", "magnitude"):
             self.call_from_thread(lambda: self._check_releases(self.query_one("#set-image", Input).value.strip()))
         try:
             self.update_info = updater.check()
@@ -3984,6 +4121,8 @@ class LLMTui(App):
         snap: dict = {"t": time.time()}
         if self.backend == "mlx":
             snap.update(self.mlx_state())
+        elif self.backend == "magnitude":
+            snap.update(self.turbo_state())
         else:
             try:
                 info = json.loads(sh(["docker", "inspect", self.container]) or "[]")
@@ -4002,7 +4141,8 @@ class LLMTui(App):
         snap["models"] = []
         if snap["status"] == "running":
             try:
-                req = urllib.request.Request(f"http://localhost:{self.vllm_port}/v1/models",
+                req = urllib.request.Request(f"http://localhost:{turbo.port(self.env)}/inference/v1/models"
+                                             if self.backend == "magnitude" else f"http://localhost:{self.vllm_port}/v1/models",
                                              headers={"Authorization": f"Bearer {self.env.get('API_KEY', '')}"})
                 data = json.load(urllib.request.urlopen(req, timeout=2))
                 snap["models"] = [(m["id"], m.get("max_model_len")) for m in data["data"]]
@@ -4019,7 +4159,7 @@ class LLMTui(App):
             snap["proxy"] = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/health", timeout=2))
         except Exception:
             snap["proxy"] = None
-        if self.backend == "mlx" and snap["proxy"] and snap["ready"]:
+        if self.backend in ("mlx", "magnitude") and snap["proxy"] and snap["ready"]:
             # mlx-lm has no Prometheus endpoint: derive the same numbers from the proxy's request records
             try:
                 d = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self.port}/_l9s/requests?limit=2000", timeout=2))
@@ -4034,7 +4174,12 @@ class LLMTui(App):
         # unified memory: the GPU-side reservation of vLLM shows up as used system RAM
         snap["vllm_gpu"] = hw.vllm_reserved(self.hw) if self.backend == "vllm" else 0
         rss = 0
-        if self.backend == "mlx":
+        if self.backend == "magnitude":
+            for line in sh(["ps", "-axo", "rss=,comm="]).splitlines():
+                parts = line.split(None, 1)
+                if len(parts) == 2 and os.path.basename(parts[1]).startswith("magnitude"):
+                    rss += int(parts[0]) * 1024
+        elif self.backend == "mlx":
             if snap.get("pid"):
                 out = sh(["ps", "-o", "rss=", "-p", str(snap["pid"])]).strip()
                 rss = int(out) * 1024 if out.isdigit() else 0
@@ -4048,6 +4193,12 @@ class LLMTui(App):
         snap["disk_free"], snap["disk_total"] = du.free, du.total
         snap["load"] = os.getloadavg()[0]
         self.call_from_thread(self.render_status, snap)
+
+    def turbo_state(self) -> dict:
+        """Magnitude's server, in the same shape `docker inspect` gives for vLLM."""
+        snap: dict = {"image": f"Magnitude {self._turbo_version or ''}".strip(), "cprofile": active_profile(),
+                      "exit": 0, "status": "running" if turbo.up(turbo.port(self.env)) else "exited"}
+        return snap
 
     def mlx_state(self) -> dict:
         """State of the mlx-lm launchd agent, in the same shape `docker inspect` gives for vLLM."""
@@ -4204,11 +4355,11 @@ class LLMTui(App):
             sysl.append("GPU   [dim]none detected[/dim]")
         sysl.append(f"mem   {bar(memf, 14)} {s['mem_used'] / 1e9:.0f}/{self.mem_total / 1e9:.0f} GB · "
                     f"[b]{s['mem_avail'] / 1e9:.0f} free[/b]")
-        if self.backend == "mlx":
+        if self.backend in ("mlx", "magnitude"):
             metal = (gpus[0].get("mem_used") if gpus else None) or 0
             other = max(0, s["mem_used"] - max(metal, vr))
             sysl += [f"├ GPU (Metal) in use {metal / 1e9:5.1f} GB [dim]model + context[/dim]",
-                     f"├ mlx-lm server   {vr / 1e9:5.1f} GB",
+                     f"├ {'Magnitude      ' if self.backend == 'magnitude' else 'mlx-lm server  '} {vr / 1e9:5.1f} GB",
                      f"├ system & apps   {other / 1e9:5.1f} GB",
                      f"└ file cache      {s.get('mem_cache', 0) / 1e9:5.1f} GB [dim]reclaimable[/dim]"]
         elif self.hw.unified:
@@ -4242,6 +4393,8 @@ class LLMTui(App):
         """Stream the server log: `docker logs -f` (vllm) or the launchd log file (mlx), from server start."""
         if self.backend == "mlx":
             return self._follow_file(L9S_HOME / "logs/backend.log")
+        if self.backend == "magnitude":
+            return self._follow_file(turbo_log())
         last_started, since = None, None
         while not self.stopping:
             started = sh(["docker", "inspect", "-f", "{{.State.StartedAt}}", self.container])
