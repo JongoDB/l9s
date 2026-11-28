@@ -125,6 +125,11 @@ def answers(model_id: str, p: int | None = None, timeout: float = 600) -> bool:
     return code == 200
 
 
+# Magnitude is still working on a model in these states: wait. Installing (downloading, then Optimizing: kernel
+# tuning) a new model; Updating an installed one that is fetching a missing part (its drafter) or a new revision.
+BUSY = ("Installing", "Optimizing", "Updating")
+
+
 def _gb(n) -> str:
     return f"{(n or 0) / 1e9:.1f} GB"
 
@@ -137,7 +142,7 @@ def ensure(model_id: str, timeout: float = 6 * 3600, say=print) -> None:
     if not st["known"]:
         raise RuntimeError(f"Magnitude doesn't know {model_id}: pick an ID from `magnitude models recommend` "
                            f"(or `magnitude models search <name>`)")
-    if st["acquisition"] not in ("Installed", "Installing"):
+    if st["acquisition"] not in ("Installed",) + BUSY:
         say(f"==> downloading {model_id} with Magnitude ({_gb(st.get('total_bytes'))})")
         r = _cli("models", "pull", model_id)
         if r.returncode != 0:
@@ -147,7 +152,7 @@ def ensure(model_id: str, timeout: float = 6 * 3600, say=print) -> None:
         st = state(model_id)
         if st["acquisition"] == "Installed":
             break
-        if st["acquisition"] not in ("Installing",):
+        if st["acquisition"] not in BUSY:
             raise RuntimeError(f"Magnitude stopped downloading {model_id} ({st['acquisition']}); "
                                f"see: magnitude models show {model_id}")
         if time.time() - last > 30:
