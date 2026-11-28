@@ -602,7 +602,7 @@ def wants_no_thinking(j: dict) -> bool:
     if (j.get("thinking") or {}).get("type") == "disabled":
         return True
     eff = j.get("reasoning_effort") or (j.get("reasoning") or {}).get("effort")
-    return str(eff).lower() in ("none", "minimal")
+    return eff is not None and str(eff).lower() in ("none", "minimal")  # (no setting: the model's own default)
 
 
 def thinking_off(j: dict) -> None:
