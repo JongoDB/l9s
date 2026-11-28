@@ -1371,6 +1371,8 @@ def _cli() -> None:
         import hw
         h = hw.detect()
         backend = env.get("BACKEND", h.backend)
+        if backend == "magnitude":  # (l9s turbo serves Magnitude IDs; a Hugging Face repo is for this machine's own server)
+            backend = h.backend
         caps = load_caps("mlx" if backend == "mlx" else env.get("IMAGE", h.default_image()))
 
         def analysis(repo: str) -> dict:
@@ -1407,6 +1409,8 @@ def _cli() -> None:
     import hw
     h = hw.detect()
     backend = env.get("BACKEND", h.backend)
+    if backend == "magnitude":  # (l9s turbo serves Magnitude IDs; a Hugging Face repo is for this machine's own server)
+        backend = h.backend
     caps = load_caps("mlx" if backend == "mlx" else env.get("IMAGE", h.default_image()))
     A = analyze(meta, caps, h.pool_per_gpu(), float(env.get("GPU_MEM", "0.85")), backend, max(1, h.n_gpus), h.card_tags())
     print(f"# {sys.argv[2]}\n")
@@ -1434,6 +1438,8 @@ def _cli_optimize(args: list[str]) -> None:
     api = HfApi(token=token)
     h = hw.detect()
     backend = env.get("BACKEND", h.backend)
+    if backend == "magnitude":  # (l9s turbo serves Magnitude IDs; a Hugging Face repo is for this machine's own server)
+        backend = h.backend
     caps = load_caps("mlx" if backend == "mlx" else env.get("IMAGE", h.default_image()))
     try:
         active = os.path.basename(os.readlink(L9S_HOME / "active"))
