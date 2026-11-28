@@ -116,6 +116,37 @@ uses it; otherwise it runs `magnitude serve` itself. Magnitude updates itself un
 is in `~/.magnitude/config.json`. Don't use Magnitude's own "connections" for Claude Code or Codex alongside l9s:
 they rewrite those tools' global settings; `l9s connect` / `l9s claude` already point them at l9s.
 
+#### Measured: Qwen3.8 Flash Next, three ways
+
+One model (Qwen3.8 Flash Next: 180B parameters, 6B active, 512 experts), 4-bit, on a MacBook Pro M3 Max with 128 GB,
+macOS 27.0.1, November 2026. Same prompts, temperature 0, up to 256 tokens, thinking off for all three.
+
+| | l9s + mlx-lm | l9s turbo | Magnitude alone |
+|---|---|---|---|
+| Weights | MLX 4-bit, 111.5 GB | NVFP4 GGUF, 132 GB (54 GB of it stays on the SSD) | same as turbo |
+| Speculative decoding | none (mlx-lm has no drafter for this model) | MTP (Magnitude's default) | MTP |
+| Cold start to first answer | ~63 s | 54 s | 49 s |
+| Output, short prompt | 27 tok/s | **58 tok/s** | 56 tok/s |
+| 9.1K-token prompt: first token / output | 18.1 s / 11 tok/s | 18.3 s / **35 tok/s** | 17.5 s / 40 tok/s |
+| 37.6K-token prompt: first token / output | **out of GPU memory** (also with a 1 GB prompt cache) | 94 s / **40 tok/s** | 92 s / 40 tok/s |
+| Same prompt again (prefix cache): first token | 0.15 s | 0.12–0.15 s | 0.09–0.14 s |
+| 3 requests at once, all output | 49 tok/s | 55 tok/s | 37 tok/s |
+| Peak memory used / swap | 127.8 GB / 6.5 GB | 110.8 GB / 3.8 GB | 101 GB / 3.8 GB |
+
+What it shows:
+- Turbo runs a model that nearly fills memory with room to spare: mlx-lm's weights take 111.5 of 128 GB and a 32K
+  prompt runs out of GPU memory (after which the next start once hit a Metal GPU timeout); Magnitude keeps ~78 GB
+  resident and answered the 37.6K-token prompt.
+- Output is 2–3x faster with turbo here, mostly from MTP speculative decoding, which mlx-lm can't use for this model.
+  Reading the prompt runs at the same ~400–520 tok/s on both, so a long first prompt takes as long (about 1.5 min
+  for 37K tokens); after that the prefix cache answers in a fraction of a second.
+- l9s adds no measurable cost in front of Magnitude: turbo and Magnitude alone are within run-to-run noise (the
+  3-at-once row varies between runs; each row is one or two runs).
+- Swap: the 3.8 GB in the Magnitude columns was left over from the mlx-lm runs before them.
+
+Versions: l9s 0.15.0, Magnitude 0.3.7, mlx-lm from its main branch (commit 2d4df8d9): mlx-lm 0.32.2, the newest
+release and the one l9s installs, can't load this model's architecture (`qwen4_exp`) yet.
+
 ## What you get
 
 - **One endpoint for every API your tools speak:** OpenAI chat and completions, the OpenAI Responses API (Codex) and
