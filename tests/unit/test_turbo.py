@@ -205,3 +205,18 @@ def test_turbo_status(tmp_path):
     r = l9s(tmp_path, "turbo", "status", magnitude=True)
     assert r.returncode == 0, r.stderr
     assert "turbo: on" in r.stdout and "0.3.7" in r.stdout and "not running" in r.stdout
+
+
+def test_ensure_waits_for_an_update_instead_of_downloading_again(monkeypatch):
+    """A model found in another app's folder that is fetching its drafter is "Updating": no new pull."""
+    states = iter([{"known": True, "acquisition": "Updating", "total_bytes": 1},
+                   {"known": True, "acquisition": "Updating", "stage": "downloading", "done_bytes": 1, "total_bytes": 2},
+                   {"known": True, "acquisition": "Installed"}])
+    calls = []
+    monkeypatch.setattr(turbo, "up", lambda *a: True)
+    monkeypatch.setattr(turbo, "state", lambda mid: next(states))
+    monkeypatch.setattr(turbo, "_cli", lambda *a, **k: calls.append(a) or type("R", (), {"returncode": 0})())
+    monkeypatch.setattr(turbo, "answers", lambda *a, **k: True)
+    monkeypatch.setattr(turbo.time, "sleep", lambda s: None)
+    turbo.ensure(MODEL_ID, say=lambda *a: None)
+    assert ("models", "pull", MODEL_ID) not in calls and ("models", "load", MODEL_ID) in calls
