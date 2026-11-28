@@ -93,7 +93,9 @@ def check_server(env: dict) -> list[dict]:
             out.append(R("loading", "server", "ok", f"loading {sw.get('to')} ({since:.0f}s)"))
         return out
     try:
-        st, _ = http(f"http://127.0.0.1:{reg.get(env, 'BACKEND_PORT')}/v1/models", env.get("API_KEY"), timeout=5)
+        url = (f"http://127.0.0.1:{env.get('TURBO_PORT') or 10100}/inference/v1/models" if env.get("BACKEND") == "magnitude"
+               else f"http://127.0.0.1:{reg.get(env, 'BACKEND_PORT')}/v1/models")
+        st, _ = http(url, env.get("API_KEY"), timeout=5)
         out.append(R("model", "server", "ok", f"serving {prof}"))
     except urllib.error.HTTPError as e:
         out.append(R("model", "server", "warn", f"the model server answers {e.code}", "see the Server log"))

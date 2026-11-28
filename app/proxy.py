@@ -1,9 +1,11 @@
 """l9s-proxy: transparent request-tracking proxy in front of the model server (the "pods" view for l9s).
 
   clients ──▶ 0.0.0.0:$PORT (this proxy) ──▶ 127.0.0.1:$BACKEND_PORT (vLLM container or mlx-lm server)
+                                           ╰─▶ 127.0.0.1:$TURBO_PORT (Magnitude, BACKEND=magnitude: l9s turbo)
 
 * Passes every route through unchanged, including SSE streaming. vLLM checks the API key itself; mlx-lm has no
-  auth, so for BACKEND=mlx the proxy enforces API_KEY on /v1/*.
+  auth, so for BACKEND=mlx the proxy enforces API_KEY on /v1/*. Magnitude (l9s turbo) serves the OpenAI and
+  Anthropic APIs itself under /inference: requests pass through untranslated, with their paths mapped.
 * Records each inference request: client, model, params, prompt/response previews, status, TTFT, tokens, tok/s.
   For streaming requests it asks vLLM for a usage chunk and strips it again if the client didn't ask for one,
   so token counts are exact without changing what clients receive.
@@ -34,6 +36,7 @@ from aiohttp import web
 import keys as keystore
 import links as linkstore
 import translate
+import turbo
 
 HOME = Path.home()
 L9S_HOME = Path(os.environ.get("L9S_HOME", HOME / ".l9s"))
@@ -50,6 +53,8 @@ ENV = load_env()
 PORT = int(os.environ.get("LLMPROXY_PORT") or ENV.get("PORT", "8000"))
 VLLM_PORT = int(os.environ.get("LLMPROXY_VLLM_PORT") or ENV.get("BACKEND_PORT") or ENV.get("VLLM_PORT", "8001"))
 BACKEND = ENV.get("BACKEND", "vllm")
+if BACKEND == "magnitude":  # l9s turbo: Magnitude's own server
+    VLLM_PORT = int(os.environ.get("LLMPROXY_VLLM_PORT") or turbo.port(ENV))
 CONTAINER = ENV.get("CONTAINER", "l9s-vllm")
 API_KEY = ENV.get("API_KEY", "")
 UPSTREAM = f"http://127.0.0.1:{VLLM_PORT}"
@@ -122,14 +127,21 @@ def active_model() -> tuple[str, str]:
         return "", ""
 
 
+def for_this_backend(repo: str) -> bool:
+    """Turbo profiles name Magnitude model IDs, the others Hugging Face repos: each backend serves only its own."""
+    return turbo.is_model_id(repo) == (BACKEND == "magnitude")
+
+
 def profiles() -> list[tuple[str, str]]:
-    """Saved profiles as (name, repo), the active one first."""
+    """Saved profiles this model server can serve as (name, repo), the active one first."""
     act, _ = active_model()
     out = []
     try:
         for f in sorted((L9S_HOME / "profiles").iterdir()):
             try:
-                out.append((f.name, f.read_text().splitlines()[0].strip()))
+                repo = f.read_text().splitlines()[0].strip()
+                if for_this_backend(repo):
+                    out.append((f.name, repo))
             except (OSError, IndexError):
                 pass
     except OSError:
@@ -163,6 +175,8 @@ def downloaded() -> list[tuple[str, str]]:
     """Fully downloaded models that this server can load and that fit, but have no profile yet, as (name, repo).
     The name is what `l9s quickstart <repo>` would call the profile."""
     global _catalog
+    if BACKEND == "magnitude":  # Magnitude keeps its own models (magnitude models list)
+        return []
     if time.time() - _catalog[0] < 30:
         return _catalog[1]
     try:
@@ -1191,8 +1205,9 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                         elif request.path == "/v1/chat/completions" and wants_no_thinking(j):
                             thinking_off(j)  # (vLLM's own Anthropic endpoint maps `thinking: disabled` itself)
                             body = json.dumps(j).encode()
-                        if BACKEND == "mlx" and "model" in j:
-                            # mlx-lm loads whatever `model` names; map the profile name to the loaded repo
+                        if BACKEND in ("mlx", "magnitude") and "model" in j:
+                            # mlx-lm loads whatever `model` names, Magnitude knows its own model IDs: map the profile
+                            # name to the loaded repo / ID
                             name, repo = active_model()
                             if j["model"] in (name, repo, "", None) and repo:
                                 if not xlate:
@@ -1271,6 +1286,8 @@ async def proxy(request: web.Request) -> web.StreamResponse:
                 finish(rec, "cancelled")
             return pre or web.Response(status=499)
     try:
+        if BACKEND == "magnitude" and not remote:
+            upath = turbo.upstream_path(upath)  # /v1/… → /inference/v1/…, /v1/messages → /inference/anthropic/…
         async with sess.request(request.method, target + upath, data=body, headers=headers,
                                 allow_redirects=False) as up:
             out_headers = {k: v for k, v in up.headers.items() if k.lower() not in HOP | {"content-encoding"}}
@@ -1655,7 +1672,8 @@ async def watch_ready(app: web.Application) -> None:
         ok = False
         model = ""
         try:
-            async with app["session"].get(f"{UPSTREAM}/v1/models", headers={"Authorization": f"Bearer {key}"},
+            async with app["session"].get(f"{UPSTREAM}{turbo.upstream_path('/v1/models') if BACKEND == 'magnitude' else '/v1/models'}",
+                                          headers={"Authorization": f"Bearer {key}"},
                                           timeout=aiohttp.ClientTimeout(total=3)) as r:
                 if r.status == 200:
                     ok = True

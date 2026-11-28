@@ -85,9 +85,36 @@ mlx-lm (no Docker, no vLLM, no sudo); on Linux with a GPU it installs vLLM in Do
 | vllm (AMD) | Linux + AMD Instinct/Radeon with ROCm | vLLM ROCm image | experimental, untested |
 | vllm (WSL2) | Windows + NVIDIA GPU, through WSL2 | vLLM in Docker | experimental, untested |
 | **client** | any machine (Linux, macOS, WSL2), no GPU needed | none: uses linked l9s servers | **tested** on a MacBook (M5) using a GB10 |
+| **turbo** (magnitude) | Macs with Apple Silicon; Linux / Windows with NVIDIA (Ampere+), Vulkan or CPU | [Magnitude](https://magnitude.dev), opt-in: `l9s turbo on` | **experimental**, tested on an Apple M3 Max |
 
 Discrete-GPU, multi-GPU and AMD support follow the same code paths (hardware detection, per-GPU memory math, tensor
 parallel), but haven't been run on that hardware yet. Reports and fixes welcome.
+
+On a Mac nobody is logged in to (set up and used over SSH), launchd has no session for l9s's services: l9s then runs
+the request proxy and the model server as detached processes (`l9s proxy status` says "detached"). They aren't
+restarted after a crash or a reboot in that case; `l9s start` and `l9s proxy start` bring them back.
+
+### l9s turbo (Magnitude)
+
+Most large open models are sparse mixture-of-experts models: each token uses a few of hundreds of experts.
+[Magnitude](https://magnitude.dev) (open source, Apache-2.0) keeps the experts a model uses most in GPU memory, the
+next ones in RAM and the rest on the SSD, so a model larger than memory still runs, more slowly. `l9s turbo on` puts
+l9s's proxy in front of Magnitude's server instead of mlx-lm / vLLM: keys, limits, the request log, the TUI and
+`l9s claude` work as before, and the Anthropic and Responses APIs go to Magnitude untranslated.
+
+```bash
+curl -fsSL https://magnitude.dev/install.sh | sh       # Magnitude's CLI, in ~/.magnitude (no sudo)
+l9s turbo on                                           # l9s now serves through Magnitude
+magnitude models recommend                             # models for this machine, with their Magnitude IDs
+l9s serve qwen3.8-flash-next:gguf:nvfp4 --name flash   # Magnitude downloads, tunes and loads it
+l9s turbo off                                          # back to mlx-lm / vLLM and their profiles
+```
+
+Turbo profiles name Magnitude model IDs (`family:gguf:quant`) instead of Hugging Face repos; each deployment lists
+and serves only its own profiles. If Magnitude's desktop app or your own `magnitude serve` is already running, l9s
+uses it; otherwise it runs `magnitude serve` itself. Magnitude updates itself unless `"autoDownloadUpdates": false`
+is in `~/.magnitude/config.json`. Don't use Magnitude's own "connections" for Claude Code or Codex alongside l9s:
+they rewrite those tools' global settings; `l9s connect` / `l9s claude` already point them at l9s.
 
 ## What you get
 

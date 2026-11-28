@@ -5,6 +5,8 @@
 #   vllm  Linux + NVIDIA (or AMD ROCm) GPU, vLLM in Docker. Tuned automatically for unified-memory boxes
 #         such as the NVIDIA GB10 / DGX Spark; works on discrete and multi-GPU machines too.
 #   mlx   Apple Silicon Macs: mlx-lm's OpenAI-compatible server, run as a launchd agent.
+#   magnitude  "l9s turbo": Magnitude's server (magnitude.dev), which spreads mixture-of-experts models over GPU
+#         memory, RAM and the SSD. Turned on / off with `l9s turbo on|off`; profiles name Magnitude model IDs.
 #
 # Config:   ~/.l9s/env, written by l9s itself (TUI Settings, l9s config / mode / expose): not meant for hand edits
 # Profiles: ~/.l9s/profiles/<name>  (line 1: HF repo id, `ENV K=V` lines, then one server flag per line)
@@ -20,6 +22,7 @@ mkdir -p "$PROFILES" "$L9S_HOME/logs"
 BACKEND="${BACKEND:-vllm}"
 PORT="${PORT:-8000}"                                 # public endpoint (l9s-proxy)
 BACKEND_PORT="${BACKEND_PORT:-${VLLM_PORT:-8001}}"   # model server, localhost only
+TURBO_PORT="${TURBO_PORT:-10100}"                    # Magnitude's server (l9s turbo), localhost only
 GPU_MEM="${GPU_MEM:-0.85}"
 IMAGE="${IMAGE:-vllm/vllm-openai:v0.33.0}"
 CONTAINER="${CONTAINER:-l9s-vllm}"
@@ -28,6 +31,7 @@ HF="$HOME/.local/bin/hf"
 OS="$(uname -s)"
 LABEL="dev.l9s.backend"
 PROXY_LABEL="dev.l9s.proxy"
+TURBO_LABEL="dev.l9s.turbo"
 LOG="$L9S_HOME/logs/backend.log"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -67,6 +71,8 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
                                          l9s claude, l9s codex, l9s opencode, l9s qwen, … (l9s connect lists
                                          them; l9s run <tool> works too)
   tui                                    open the terminal UI
+  turbo [on|off|status]                  l9s turbo: serve with Magnitude, which runs mixture-of-experts models
+                                         larger than memory by reading experts from the SSD (magnitude.dev)
   update [--check] [-y]                  check for / install a newer l9s (and mlx-lm on a Mac)
   alerts [test]                          where alerts go (set: l9s config set ALERT_URL …) / send a test one
   doctor [--fix [-y]]                    is everything working? what's wrong, why, and fixes
@@ -77,7 +83,7 @@ usage: l9s [command] [args]          (no command: open the terminal UI)
   uninstall [-y] [--purge] [--remove-models] [--remove-image]
                                          remove l9s; your setup stays for a reinstall unless --purge
 
-deployment: $BACKEND   endpoint: $(endpoint)/v1
+deployment: $(deployment)   endpoint: $(endpoint)/v1
 EOF
 }
 
@@ -153,10 +159,15 @@ mlx_start_profile() {
 EOF
   launchd_load "$LABEL"
 }
-# (re)load a launchd agent. bootout returns before the old job is gone, and bootstrapping too early fails with
-# "Input/output error", so wait for it to disappear and retry.
+# (re)start a service from its plist: a launchd agent when someone is logged in at the screen, otherwise (over SSH
+# on a Mac nobody is logged in to) the same program started detached (app/svc.py)
 launchd_load() {
   local label="$1" i
+  if [[ -x "$PY" && -f "$APP/svc.py" ]]; then
+    "$PY" "$APP/svc.py" start "$(plist_path "$label")" >/dev/null || die "couldn't start $label"
+    return 0
+  fi
+  # bootout returns before the old job is gone, and bootstrapping too early fails with "Input/output error"
   launchctl bootout "gui/$UID/$label" 2>/dev/null || true
   for i in $(seq 1 50); do launchctl print "gui/$UID/$label" >/dev/null 2>&1 || break; sleep 0.2; done
   launchctl enable "gui/$UID/$label"
@@ -166,7 +177,64 @@ launchd_load() {
   done
   die "launchctl couldn't start $label"
 }
-mlx_running() { launchctl print "gui/$UID/$LABEL" 2>/dev/null | grep -q "state = running"; }
+svc_running() {
+  if [[ -x "$PY" && -f "$APP/svc.py" ]]; then "$PY" "$APP/svc.py" running "$1"
+  else launchctl print "gui/$UID/$1" 2>/dev/null | grep -q "state = running"; fi
+}
+svc_stop() {
+  if [[ -x "$PY" && -f "$APP/svc.py" ]]; then "$PY" "$APP/svc.py" stop "$1"
+  else launchctl bootout "gui/$UID/$1" 2>/dev/null || true; launchctl disable "gui/$UID/$1"; fi
+}
+svc_restart() {
+  if [[ -x "$PY" && -f "$APP/svc.py" ]]; then "$PY" "$APP/svc.py" restart "$1" >/dev/null
+  else launchctl kickstart -k "gui/$UID/$1"; fi
+}
+mlx_running() { svc_running "$LABEL"; }
+
+# ------------------------------------------------------------------ backend: magnitude (l9s turbo)
+turbo() { "$PY" "$APP/turbo.py" "$@"; }
+# Magnitude's own server. One serves per computer: when the desktop app or someone's `magnitude serve` already
+# answers, l9s uses it; otherwise l9s runs `magnitude serve` as its service.
+turbo_service_start() {
+  turbo up && return 0
+  local mag; mag="$(turbo available)" || die "Magnitude isn't installed: curl -fsSL https://magnitude.dev/install.sh | sh"
+  if [[ "$OS" == "Darwin" ]]; then
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$(plist_path $TURBO_LABEL)" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$TURBO_LABEL</string>
+  <key>ProgramArguments</key><array><string>$(xml "$mag")</string><string>serve</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardOutPath</key><string>$L9S_HOME/logs/turbo.log</string>
+  <key>StandardErrorPath</key><string>$L9S_HOME/logs/turbo.log</string>
+</dict></plist>
+EOF
+    launchd_load "$TURBO_LABEL"
+  else
+    mkdir -p "$L9S_HOME/run"
+    nohup "$mag" serve >> "$L9S_HOME/logs/turbo.log" 2>&1 < /dev/null &
+    echo $! > "$L9S_HOME/run/$TURBO_LABEL.pid"
+  fi
+  echo -n "==> starting Magnitude's server"
+  for _ in $(seq 1 60); do turbo up && { echo; return 0; }; echo -n .; sleep 2; done
+  echo; tail -n 20 "$L9S_HOME/logs/turbo.log" 2>/dev/null; die "Magnitude's server didn't start (l9s logs)"
+}
+turbo_start_profile() {
+  local name="$1" model="$2"
+  turbo is-id "$model" || die "'$model' is a Hugging Face repo, and turbo serves Magnitude models: pick an ID from
+       \`magnitude models recommend\` (l9s serve <id> --name $name), or turn turbo off: l9s turbo off"
+  turbo_service_start
+  turbo ensure "$model" || die "Magnitude couldn't serve $model (l9s logs shows Magnitude's log)"
+}
+deployment() { if [[ "$BACKEND" == "magnitude" ]]; then echo "magnitude (l9s turbo)"; else echo "$BACKEND"; fi; }
+# the model server's own /v1/models, for readiness checks
+backend_models_url() {
+  if [[ "$BACKEND" == "magnitude" ]]; then echo "localhost:$TURBO_PORT/inference/v1/models"
+  else echo "localhost:$BACKEND_PORT/v1/models"; fi
+}
 
 # ------------------------------------------------------------------ common
 # clients that recently asked for another model by name will switch the server back on their next request
@@ -197,6 +265,7 @@ run_profile() {
   while IFS= read -r l; do [[ -n "$l" ]] && lines+=("$l"); done < <(tail -n +2 "$file")
   echo "==> starting $name ($repo) [$BACKEND]"
   if [[ "$BACKEND" == "mlx" ]]; then mlx_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}
+  elif [[ "$BACKEND" == "magnitude" ]]; then turbo_start_profile "$name" "$repo"
   else vllm_start_profile "$name" "$repo" ${lines[@]+"${lines[@]}"}; fi
   ln -sfn "$file" "$L9S_HOME/active"
   rm -f "$L9S_HOME/cache/restart-pending"
@@ -208,6 +277,7 @@ run_profile() {
 # reinstall that kept the setup, or a machine that was set up in client mode, has none
 backend_exists() {
   if [[ "$BACKEND" == "mlx" ]]; then [[ -f "$(plist_path "$LABEL")" ]]
+  elif [[ "$BACKEND" == "magnitude" ]]; then return 1   # (always set up from the profile: Magnitude loads the model)
   else docker inspect "$CONTAINER" >/dev/null 2>&1; fi
 }
 # the container was made for a normal start and this profile can now start the fast way (or the other way round)
@@ -224,12 +294,16 @@ start_active() {  # ...then the chosen model is set up from its profile
   run_profile "$name"
 }
 
-backend_running() { if [[ "$BACKEND" == "mlx" ]]; then mlx_running; else vllm_running; fi; }
+backend_running() {
+  if [[ "$BACKEND" == "mlx" ]]; then mlx_running
+  elif [[ "$BACKEND" == "magnitude" ]]; then turbo up
+  else vllm_running; fi
+}
 
 wait_ready() {
   echo -n "==> waiting for the model server (first load of a model can take a few minutes)"
   for _ in $(seq 1 720); do
-    if curl -sf -H "Authorization: Bearer $API_KEY" "localhost:$BACKEND_PORT/v1/models" >/dev/null 2>&1; then
+    if curl -sf -H "Authorization: Bearer $API_KEY" "$(backend_models_url)" >/dev/null 2>&1; then
       echo; echo "==> ready: $(active_profile) on $(endpoint)/v1"; return 0
     fi
     if ! backend_running; then
@@ -241,7 +315,11 @@ wait_ready() {
 }
 
 backend_logs() {
-  if [[ "$BACKEND" == "mlx" ]]; then
+  if [[ "$BACKEND" == "magnitude" ]]; then
+    local f="$L9S_HOME/logs/turbo.log"
+    [[ -s "$f" ]] || f="$HOME/.magnitude/logs/service.log"   # (Magnitude served by its app or a `magnitude serve` of yours)
+    if [[ "${1:-}" == "-f" ]]; then tail -n 100 -F "$f"; else tail -n "${2:-100}" "$f" 2>/dev/null; fi
+  elif [[ "$BACKEND" == "mlx" ]]; then
     if [[ "${1:-}" == "-f" ]]; then tail -n 100 -F "$LOG"; else tail -n "${2:-100}" "$LOG" 2>/dev/null; fi
   else
     if [[ "${1:-}" == "-f" ]]; then docker logs -f --tail 100 "$CONTAINER"; else docker logs --tail "${2:-100}" "$CONTAINER" 2>&1; fi
@@ -252,10 +330,11 @@ proxy_ctl() {
   local action="${1:-status}"
   if [[ "$OS" == "Darwin" ]]; then
     case "$action" in
-      status) launchctl print "gui/$UID/$PROXY_LABEL" 2>/dev/null | grep -E "state =|pid =" || echo "l9s-proxy: not running" ;;
+      status) if p="$("$PY" "$APP/svc.py" pid "$PROXY_LABEL" 2>/dev/null)"; then echo "l9s-proxy: running (pid $p, $("$PY" "$APP/svc.py" mode))"
+              else echo "l9s-proxy: not running"; fi ;;
       start) launchd_load "$PROXY_LABEL" ;;
-      stop) launchctl bootout "gui/$UID/$PROXY_LABEL" ;;
-      restart) launchctl kickstart -k "gui/$UID/$PROXY_LABEL" ;;
+      stop) svc_stop "$PROXY_LABEL" ;;
+      restart) svc_restart "$PROXY_LABEL" ;;
       logs) tail -n 100 "$L9S_HOME/logs/proxy.log" ;;
       *) die "usage: l9s proxy status|start|stop|restart|logs" ;;
     esac
@@ -290,6 +369,10 @@ fi
 case "$cmd" in
   pull)
     [[ $# -ge 1 ]] || die "usage: l9s pull <org/repo>"
+    if turbo is-id "$1" 2>/dev/null; then  # a Magnitude model ID: Magnitude downloads its own models
+      mag="$(turbo available)" || die "Magnitude isn't installed: curl -fsSL https://magnitude.dev/install.sh | sh"
+      exec "$mag" models pull "$@"
+    fi
     extra=()
     if [[ " $* " != *" --include "* && " $* " != *" --exclude "* ]]; then
       pats=()
@@ -356,28 +439,29 @@ case "$cmd" in
   status)
     echo "mode: $("$PY" -c "import sys; sys.path.insert(0, '$APP'); import mode; print(mode.current())" 2>/dev/null)   endpoint: $(endpoint)/v1"
     if [[ "${BACKEND:-}" == "remote" ]]; then "$PY" "$APP/links.py" list; exit 0; fi
-    echo "deployment: $BACKEND   profile: $(active_profile)"
+    echo "deployment: $(deployment)   profile: $(active_profile)"
     backend_running && echo "server: running" || echo "server: stopped"
     proxy_ctl status | head -2
-    need_key; curl -s -m 3 -H "Authorization: Bearer $API_KEY" "localhost:$BACKEND_PORT/v1/models" \
+    need_key; curl -s -m 3 -H "Authorization: Bearer $API_KEY" "$(backend_models_url)" \
       | python3 -c 'import sys,json;[print("serving:",m["id"]) for m in json.load(sys.stdin)["data"]]' 2>/dev/null \
       || echo "serving: (not ready)" ;;
   logs) backend_logs "${1:-}" ;;
   stop)
-    if [[ "$BACKEND" == "mlx" ]]; then launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true; launchctl disable "gui/$UID/$LABEL"
+    if [[ "$BACKEND" == "mlx" ]]; then svc_stop "$LABEL"
+    elif [[ "$BACKEND" == "magnitude" ]]; then turbo up && turbo stop   # unloads the model; Magnitude's server stays
     else docker stop "$CONTAINER" >/dev/null; fi; echo "stopped" ;;
   start)
     need_key
     if ! backend_exists || { ! backend_running && start_changed; }; then start_active; exit 0; fi
     if [[ "$BACKEND" == "mlx" ]]; then
-      launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || launchd_load "$LABEL"
+      mlx_running || launchd_load "$LABEL"
     else docker start "$CONTAINER" >/dev/null; fi
     wait_ready ;;
   restart)
     need_key
     rm -f "$L9S_HOME/cache/restart-pending"
     if ! backend_exists || start_changed; then start_active; exit 0; fi
-    if [[ "$BACKEND" == "mlx" ]]; then launchctl kickstart -k "gui/$UID/$LABEL"; else docker restart "$CONTAINER" >/dev/null; fi
+    if [[ "$BACKEND" == "mlx" ]]; then svc_restart "$LABEL"; else docker restart "$CONTAINER" >/dev/null; fi
     wait_ready ;;
   test)
     need_key; m="$(active_profile)"
@@ -395,6 +479,50 @@ case "$cmd" in
     sed -i '/^IMAGE=/d' "$L9S_HOME/env"; echo "IMAGE=$1" >> "$L9S_HOME/env"; IMAGE="$1"
     a="$(active_profile)"; [[ -n "$a" ]] && run_profile "$a" ;;
   proxy) proxy_ctl "${1:-status}" ;;
+  turbo)
+    case "${1:-status}" in
+      on)
+        mag="$(turbo available)" || die "Magnitude isn't installed. Install it (no sudo; it goes in ~/.magnitude):
+       curl -fsSL https://magnitude.dev/install.sh | sh
+       then run: l9s turbo on"
+        [[ "$BACKEND" == "remote" ]] && die "client mode has no model server of its own (l9s mode personal first)"
+        if [[ "$BACKEND" == "magnitude" ]]; then echo "turbo is already on"; exit 0; fi
+        prev="$BACKEND"
+        "$PY" "$APP/backup.py" now "turbo on" >/dev/null 2>&1 || true
+        # the old model server's memory goes to Magnitude
+        if backend_running 2>/dev/null; then echo "==> stopping the $BACKEND model server"; "$0" stop >/dev/null || true; fi
+        "$PY" -c "import sys; sys.path.insert(0, '$APP'); import expose; expose.set_env(BACKEND='magnitude', SERVER_BACKEND='$BACKEND')"
+        "$PY" -c "import sys; sys.path.insert(0, '$APP'); import expose; expose.restart_proxy()"
+        echo "==> turbo is on: Magnitude ($("$mag" --version 2>/dev/null)) serves models through l9s"
+        BACKEND=magnitude
+        a="$(active_profile)"
+        if [[ -n "$a" ]] && turbo is-id "$(head -1 "$PROFILES/$a" 2>/dev/null)"; then run_profile "$a"
+        else
+          echo "    models for this machine:   magnitude models recommend"
+          echo "    serve one:                 l9s serve <model-id> --name <name>   (e.g. qwen3.8-flash-next:gguf:nvfp4)"
+          echo "    back to $prev:              l9s turbo off"
+        fi ;;
+      off)
+        if [[ "$BACKEND" != "magnitude" ]]; then echo "turbo is off"; exit 0; fi
+        to="${SERVER_BACKEND:-}"; [[ "$to" == "vllm" || "$to" == "mlx" ]] || to="$([[ "$OS" == "Darwin" ]] && echo mlx || echo vllm)"
+        "$PY" "$APP/backup.py" now "turbo off" >/dev/null 2>&1 || true
+        turbo up && { echo "==> unloading Magnitude's model"; turbo stop || true; }
+        svc_running "$TURBO_LABEL" 2>/dev/null && svc_stop "$TURBO_LABEL"   # (only the server l9s started)
+        "$PY" -c "import sys; sys.path.insert(0, '$APP'); import expose; expose.set_env(BACKEND='$to', SERVER_BACKEND=None)"
+        "$PY" -c "import sys; sys.path.insert(0, '$APP'); import expose; expose.restart_proxy()"
+        echo "==> turbo is off: back to $to"
+        BACKEND="$to"
+        a="$(active_profile)"
+        if [[ -n "$a" ]] && ! turbo is-id "$(head -1 "$PROFILES/$a" 2>/dev/null)"; then run_profile "$a"
+        else echo "    serve a model: l9s use <profile> (l9s profiles), or l9s quickstart"; fi ;;
+      status)
+        if [[ "$BACKEND" == "magnitude" ]]; then echo "turbo: on   profile: $(active_profile)"; else echo "turbo: off ($BACKEND)"; fi
+        if mag="$(turbo available)"; then
+          echo "magnitude: $mag ($("$mag" --version 2>/dev/null))"
+          turbo up && echo "magnitude server: answering on 127.0.0.1:$TURBO_PORT" || echo "magnitude server: not running"
+        else echo "magnitude: not installed (curl -fsSL https://magnitude.dev/install.sh | sh)"; fi ;;
+      *) die "usage: l9s turbo on|off|status" ;;
+    esac ;;
   tui|ui)
     # exit code 75 = the TUI updated l9s and asks to be relaunched on the new version
     while :; do
@@ -483,8 +611,10 @@ case "$cmd" in
       echo "==> front end removed (${EXPOSE:-your own})"
     fi
     if [[ "$OS" == "Darwin" ]]; then  # (client mode may still have the agent from an earlier personal / shared mode)
-      launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
-      rm -f "$(plist_path $LABEL)"
+      for l in "$LABEL" "$TURBO_LABEL"; do
+        [[ -x "$PY" ]] && "$PY" "$APP/svc.py" stop "$l" 2>/dev/null || launchctl bootout "gui/$UID/$l" 2>/dev/null || true
+        rm -f "$(plist_path "$l")"
+      done
     elif command -v docker >/dev/null 2>&1; then
       docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
       for c in "${CACHE_DIRS[@]}"; do docker volume rm "l9s-cache-${c%%:*}" >/dev/null 2>&1 || true; done
@@ -493,7 +623,7 @@ case "$cmd" in
     echo "==> model server removed"
     if [[ "$OS" == "Darwin" ]]; then
       for l in "$PROXY_LABEL" dev.l9s.update dev.l9s.tunnel; do
-        launchctl bootout "gui/$UID/$l" 2>/dev/null || true
+        [[ -x "$PY" ]] && "$PY" "$APP/svc.py" stop "$l" 2>/dev/null || launchctl bootout "gui/$UID/$l" 2>/dev/null || true
         rm -f "$(plist_path "$l")"
       done
     else

@@ -179,7 +179,7 @@ if [[ "$OS" == "Darwin" ]]; then
   <key>StandardErrorPath</key><string>$L9S_HOME/logs/proxy.log</string>
 </dict></plist>
 EOF
-  launchd_load dev.l9s.proxy "$PL"
+  "$PY" "$L9S_HOME/app/svc.py" start "$PL" >/dev/null || launchd_load dev.l9s.proxy "$PL"
 else
   sed -e "s|@USER@|$USER|" -e "s|@HOME@|$HOME|g" -e "s|@L9S_HOME@|$L9S_HOME|g" systemd/l9s-proxy.service \
     | sudo tee /etc/systemd/system/l9s-proxy.service >/dev/null
@@ -204,7 +204,13 @@ if [[ "$OS" == "Darwin" ]]; then
   <key>StandardErrorPath</key><string>$L9S_HOME/logs/update.log</string>
 </dict></plist>
 EOF
-  launchd_load dev.l9s.update "$UPL"
+  if [[ "$("$PY" "$L9S_HOME/app/svc.py" mode 2>/dev/null)" == "detached" ]]; then
+    # over SSH with nobody logged in at the screen there's no launchd session for a daily job: it's set up and
+    # starts with the next login (until then: l9s update --check)
+    echo "    (no desktop session: the daily check starts once someone logs in to this Mac; until then: l9s update --check)"
+  else
+    launchd_load dev.l9s.update "$UPL"
+  fi
 else
   sed -e "s|@USER@|$USER|" -e "s|@L9S_HOME@|$L9S_HOME|g" systemd/l9s-update.service \
     | sudo tee /etc/systemd/system/l9s-update.service >/dev/null

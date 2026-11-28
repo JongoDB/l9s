@@ -39,9 +39,9 @@ def current() -> str:
 
 def server_backend() -> str:
     e = expose.env()
-    if e.get("BACKEND") in ("vllm", "mlx"):
+    if e.get("BACKEND") in ("vllm", "mlx", "magnitude"):
         return e["BACKEND"]
-    if e.get("SERVER_BACKEND") in ("vllm", "mlx"):
+    if e.get("SERVER_BACKEND") in ("vllm", "mlx", "magnitude"):
         return e["SERVER_BACKEND"]
     import hw
     return hw.detect().backend
@@ -71,11 +71,13 @@ def switch(to: str, yes: bool = False) -> int:
             print("    linked: " + ", ".join(links.load()))
         return 0
     backend = server_backend()
-    if backend not in ("vllm", "mlx"):
+    if backend not in ("vllm", "mlx", "magnitude"):
         print("this device has no GPU l9s can serve models with (an NVIDIA / AMD GPU, or Apple Silicon): it can run "
               "in client mode only", file=sys.stderr)
         return 1
     upd = {"BACKEND": backend, "MODE": to}
+    if backend == "magnitude":  # (turbo keeps the backend it replaced, for `l9s turbo off`)
+        upd["SERVER_BACKEND"] = e.get("SERVER_BACKEND") if e.get("SERVER_BACKEND") in ("vllm", "mlx") else None
     if to == "shared" and backend == "mlx":
         upd["SPEC_DECODE"] = "off"  # mlx-lm batches only without a draft model
     if to == "personal" and e.get("SPEC_DECODE") == "off" and e.get("MODE") == "shared":
