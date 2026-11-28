@@ -501,6 +501,17 @@ def test_reasoning_off_reaches_the_chat_template(stack):
     assert "chat_template_kwargs" not in json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]
 
 
+
+def test_no_reasoning_setting_leaves_thinking_to_the_model(stack):
+    """A request that says nothing about reasoning isn't "reasoning: none" (the model's own default applies)."""
+    px, up = stack
+    last = lambda: json.load(urllib.request.urlopen(f"http://127.0.0.1:{up}/_mock/state"))["last"]
+    call(px, "/v1/chat/completions", chat_body("l9s")).read()
+    assert "chat_template_kwargs" not in last()
+    call(px, "/v1/messages", {"model": "l9s", "max_tokens": 4, "messages": [{"role": "user", "content": "hi"}]}).read()
+    assert "chat_template_kwargs" not in last()
+
+
 # fields Codex's ModelInfo requires (no serde default) in codex-rs/protocol/src/openai_models.rs, rust-v0.167
 CODEX_REQUIRED = {"slug", "display_name", "supported_reasoning_levels", "shell_type", "visibility", "supported_in_api",
                   "priority", "support_verbosity", "truncation_policy", "experimental_supported_tools",
